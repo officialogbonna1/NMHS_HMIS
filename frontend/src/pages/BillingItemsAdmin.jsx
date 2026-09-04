@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import api from "../api/client";
+import { Badge, Page, PageHeader } from "../components/ui.jsx";
 
 const currency = (n) => new Intl.NumberFormat("en-NG", { style: "currency", currency: "NGN", maximumFractionDigits: 0 }).format(n ?? 0);
 
@@ -46,14 +47,13 @@ export const BILLING_CATEGORIES = [
 
 export default function BillingItemsAdmin() {
   return (
-    <div className="max-w-2xl mx-auto p-6 space-y-10">
-      <div>
-        <h1 className="text-2xl font-semibold">Billing Catalog</h1>
-        <p className="text-sm text-slate-700 mt-1">
-          What the counter can bill for, and what each costs. A service with no price here cannot be
-          billed — which is how a patient reaches the cashier with nothing to pay.
-        </p>
-      </div>
+    <Page className="space-y-10">
+      <PageHeader
+        className="mb-0"
+        icon="price"
+        title="Billing catalog"
+        subtitle="What the counter can bill for, and what each costs. A service with no price here cannot be billed — which is how a patient reaches the cashier with nothing to pay."
+      />
       {BILLING_CATEGORIES.map((c) => (
         <CategorySection
           key={c.category}
@@ -63,7 +63,7 @@ export default function BillingItemsAdmin() {
           namePlaceholder={c.namePlaceholder}
         />
       ))}
-    </div>
+    </Page>
   );
 }
 
@@ -130,17 +130,21 @@ function CategorySection({ category, title, description, namePlaceholder }) {
 
       <div className="grid gap-2">
         {(items ?? []).map((item) => (
-          <div key={item.id} className="border rounded-lg p-4 flex items-center justify-between">
-            <div>
-              <span className="font-medium">{item.name}</span>
-              <span className="text-sm text-slate-600 ml-2">{currency(item.price)}</span>
-              {!item.is_active && <span className="text-xs text-red-500 ml-2">Disabled</span>}
+          <div key={item.id} className="flex flex-col gap-3 rounded-lg border border-slate-200 bg-white p-4 sm:flex-row sm:items-center sm:justify-between">
+            <div className="min-w-0">
+              <p className="font-medium text-slate-900">{item.name}</p>
+              <p className="mt-0.5 flex flex-wrap items-center gap-2 text-sm text-slate-600">
+                <span className="tabular-nums">{currency(item.price)}</span>
+                {!item.is_active && <Badge tone="danger">Disabled</Badge>}
+              </p>
             </div>
-            <div className="flex gap-3 text-sm">
-              <button onClick={() => setForm({ id: item.id, category, name: item.name, price: item.price, is_active: item.is_active })} className="text-brand-600 hover:underline">
+            <div className="flex shrink-0 flex-wrap gap-1">
+              <button onClick={() => setForm({ id: item.id, category, name: item.name, price: item.price, is_active: item.is_active })}
+                      className="min-h-[36px] rounded-lg px-3 py-1.5 text-sm font-medium text-brand-700 transition hover:bg-brand-50">
                 Edit
               </button>
-              <button onClick={() => toggleActive.mutate(item)} className="text-slate-600 hover:underline">
+              <button onClick={() => toggleActive.mutate(item)}
+                      className="min-h-[36px] rounded-lg px-3 py-1.5 text-sm font-medium text-slate-700 transition hover:bg-slate-100">
                 {item.is_active ? "Disable" : "Enable"}
               </button>
             </div>

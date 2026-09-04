@@ -1,20 +1,18 @@
-import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useEffect, useState } from "react";
+import { useQuery, keepPreviousData } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import api from "../api/client";
 import { useAuth } from "../auth/AuthContext.jsx";
+import { EmptyState, Page, PageHeader, SearchInput, Skeleton, Button, MetaStat } from "../components/ui.jsx";
+import { Icon } from "../components/icons.jsx";
 
 const CAN_REGISTER_ROLES = ["reception", "admin", "hospital_admin"];
 const ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
 const AVATAR_TONES = [
-  "from-blue-400 to-blue-600",
-  "from-violet-400 to-violet-600",
-  "from-emerald-400 to-emerald-600",
-  "from-amber-400 to-amber-600",
-  "from-rose-400 to-rose-600",
-  "from-brand-400 to-brand-600",
-  "from-cyan-400 to-cyan-600",
-  "from-fuchsia-400 to-fuchsia-600",
+  "bg-blue-100 text-blue-700", "bg-violet-100 text-violet-700",
+  "bg-emerald-100 text-emerald-700", "bg-amber-100 text-amber-800",
+  "bg-rose-100 text-rose-700", "bg-brand-100 text-brand-700",
+  "bg-cyan-100 text-cyan-700", "bg-fuchsia-100 text-fuchsia-700",
 ];
 
 // Mirrors the reference manual's "Your Patients" screen: alphabetical
@@ -22,88 +20,117 @@ const AVATAR_TONES = [
 export default function PatientsList() {
   const { user } = useAuth();
   const [search, setSearch] = useState("");
+  const [query, setQuery] = useState("");
 
-  const { data, isLoading } = useQuery({
-    queryKey: ["patients", search],
-    queryFn: () => api.get("/patients/", { params: { search } }).then((r) => r.data.results ?? r.data),
+  // The search box used to be the query key directly, so every keystroke of
+  // "Okonkwo" fired eight requests at `/patients/` and the list flickered
+  // through eight results. A quarter second of settling makes it one, and
+  // `keepPreviousData` holds the last list on screen while it lands.
+  useEffect(() => {
+    const timer = setTimeout(() => setQuery(search.trim()), 250);
+    return () => clearTimeout(timer);
+  }, [search]);
+
+  const { data, isLoading, isFetching } = useQuery({
+    queryKey: ["patients", query],
+    queryFn: () => api.get("/patients/", { params: { search: query } }).then((r) => r.data.results ?? r.data),
+    placeholderData: keepPreviousData,
   });
 
-  const grouped = groupByLastInitial(data ?? []);
+  const patients = data ?? [];
+  const grouped = groupByLastInitial(patients);
   const activeLetters = new Set(Object.keys(grouped));
 
   return (
-    <div className="max-w-3xl mx-auto p-6 pr-14 sm:pr-16">
-      <div className="flex items-center justify-between mb-1">
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight text-slate-900">Patients</h1>
-          <p className="text-sm text-slate-600 mt-0.5">{data ? `${data.length} patient${data.length === 1 ? "" : "s"}` : " "}</p>
-        </div>
-        {CAN_REGISTER_ROLES.includes(user?.role) && (
-          <Link
-            to="/patients/new"
-            className="flex items-center gap-1.5 rounded-full bg-brand-600 px-4 py-2.5 text-sm font-medium text-white shadow-sm shadow-brand-600/20 transition hover:bg-brand-700 hover:shadow-md"
-          >
-            <svg viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4"><path d="M10 4a1 1 0 011 1v4h4a1 1 0 110 2h-4v4a1 1 0 11-2 0v-4H5a1 1 0 110-2h4V5a1 1 0 011-1z" /></svg>
-            Add Patient
-          </Link>
+    // No `pr-14` any more: that gutter was reserving room for the letter rail
+    // at every width, including the phones where the rail is not rendered.
+    <Page width="narrow" className="relative sm:pr-12">
+      <PageHeader
+        icon="users"
+        title="Patients"
+        subtitle="View, register and manage patient records."
+        meta={data && <MetaStat value={patients.length} label={`patient${patients.length === 1 ? "" : "s"}`} />}
+        actions={CAN_REGISTER_ROLES.includes(user?.role) && (
+          <Button to="/patients/new">
+            <Icon name="plus" className="h-4 w-4" aria-hidden="true" />
+            Register patient
+          </Button>
         )}
-      </div>
-
-      <div className="relative mt-5 mb-6">
-        <svg viewBox="0 0 20 20" fill="currentColor" className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400">
-          <path fillRule="evenodd" d="M9 3.5a5.5 5.5 0 100 11 5.5 5.5 0 000-11zM2 9a7 7 0 1112.45 4.39l3.08 3.08a1 1 0 01-1.42 1.42l-3.08-3.08A7 7 0 012 9z" clipRule="evenodd" />
-        </svg>
-        <input
-          className="w-full rounded-full border border-slate-200 bg-white py-2.5 pl-10 pr-4 text-sm shadow-sm outline-none transition focus:border-brand-400 focus:ring-2 focus:ring-brand-100"
-          placeholder="Search by name or file number (e.g. NMHS-000001)"
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-        />
-      </div>
+        toolbar={
+          <div className="min-w-0 flex-1">
+            <SearchInput
+              value={search}
+              onChange={setSearch}
+              label="Search patients"
+              placeholder="Name or file number (e.g. NMHS-000001)"
+            />
+            {/* Only while a *new* search is in flight — the list below stays put. */}
+            {isFetching && !isLoading && (
+              <p className="mt-1.5 text-sm text-slate-600" role="status">Searching…</p>
+            )}
+          </div>
+        }
+      />
 
       {isLoading && (
-        <div className="space-y-2">
-          {[...Array(5)].map((_, i) => (
-            <div key={i} className="h-[68px] animate-pulse rounded-2xl bg-slate-100" />
+        <div className="space-y-2" role="status" aria-label="Loading patients">
+          {Array.from({ length: 6 }, (_, i) => (
+            <div key={i} className="flex items-center gap-3 rounded-xl border border-slate-200 bg-white px-4 py-3">
+              <Skeleton className="h-11 w-11 shrink-0 rounded-full" />
+              <div className="min-w-0 flex-1 space-y-2">
+                <Skeleton className="h-4 w-1/2" />
+                <Skeleton className="h-3 w-1/4" />
+              </div>
+            </div>
           ))}
         </div>
       )}
 
-      {!isLoading && (data ?? []).length === 0 && (
-        <div className="rounded-2xl border border-dashed border-slate-200 bg-white py-14 text-center">
-          <p className="text-sm text-slate-500">{search ? "No patients match your search." : "No patients registered yet."}</p>
+      {!isLoading && patients.length === 0 && (
+        <div className="rounded-xl border border-dashed border-slate-300 bg-white">
+          <EmptyState
+            icon="users"
+            title={search ? "No patients match that search" : "No patients registered yet"}
+            description={search ? "Try part of a surname, or the file number." : undefined}
+          />
         </div>
       )}
 
-      <div className="space-y-6">
+      <div className="space-y-5">
         {Object.keys(grouped).sort().map((letter) => (
-          <div key={letter} id={`letter-${letter}`} className="scroll-mt-4">
-            <div className="mb-2 px-1 text-xs font-bold uppercase tracking-wider text-slate-600">{letter}</div>
-            <div className="overflow-hidden rounded-2xl border border-slate-100 bg-white shadow-sm divide-y divide-slate-100">
-              {grouped[letter].map((p) => (
-                <PatientRow key={p.id} patient={p} />
-              ))}
+          <section key={letter} id={`letter-${letter}`} aria-labelledby={`heading-${letter}`} className="scroll-mt-20">
+            <h2 id={`heading-${letter}`} className="mb-1.5 px-1 text-xs font-bold uppercase tracking-wider text-slate-600">
+              {letter}
+            </h2>
+            <div className="divide-y divide-slate-100 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+              {grouped[letter].map((p) => <PatientRow key={p.id} patient={p} />)}
             </div>
-          </div>
+          </section>
         ))}
       </div>
 
+      {/* The jump rail is a pointer convenience; a thumb scrolls. It sat at
+          slate-200/300, which was invisible against white. */}
       {activeLetters.size > 0 && (
-        <nav className="fixed right-1.5 top-1/2 z-10 hidden -translate-y-1/2 flex-col items-center gap-[1px] rounded-full bg-white/70 px-1 py-2 text-[10px] font-semibold text-slate-300 shadow-sm backdrop-blur sm:flex">
-          {ALPHABET.map((letter) => (
-            <button
-              key={letter}
-              type="button"
-              disabled={!activeLetters.has(letter)}
-              onClick={() => document.getElementById(`letter-${letter}`)?.scrollIntoView({ behavior: "smooth", block: "start" })}
-              className={activeLetters.has(letter) ? "px-1 text-brand-600 hover:scale-125 transition" : "px-1 text-slate-200"}
-            >
-              {letter}
-            </button>
-          ))}
+        <nav aria-label="Jump to letter"
+             className="fixed right-2 top-1/2 z-10 hidden -translate-y-1/2 flex-col items-center rounded-full border border-slate-200 bg-white/90 px-0.5 py-2 shadow-sm backdrop-blur sm:flex">
+          {ALPHABET.map((letter) => {
+            const has = activeLetters.has(letter);
+            return (
+              <button
+                key={letter} type="button" disabled={!has}
+                aria-label={`Jump to ${letter}`}
+                onClick={() => document.getElementById(`letter-${letter}`)?.scrollIntoView({ behavior: "smooth", block: "start" })}
+                className={`w-5 rounded text-[11px] font-semibold leading-[15px] transition ${
+                  has ? "text-brand-700 hover:bg-brand-50" : "cursor-default text-slate-400"}`}
+              >
+                {letter}
+              </button>
+            );
+          })}
         </nav>
       )}
-    </div>
+    </Page>
   );
 }
 
@@ -113,24 +140,27 @@ function PatientRow({ patient: p }) {
   const age = ageFrom(p);
 
   return (
-    <Link to={`/patients/${p.id}`} className="flex items-center gap-3 px-4 py-3.5 transition hover:bg-slate-50">
-      <span className={`grid h-11 w-11 shrink-0 place-items-center rounded-full bg-gradient-to-br ${tone} text-sm font-semibold text-white shadow-sm`}>
+    <Link
+      to={`/patients/${p.id}`}
+      className="flex items-center gap-3 px-4 py-3 transition hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-brand-500"
+    >
+      <span aria-hidden="true" className={`grid h-11 w-11 shrink-0 place-items-center rounded-full text-sm font-semibold ${tone}`}>
         {initials || "?"}
       </span>
-      <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-2">
-          <p className="truncate font-medium text-slate-900">{p.last_name}, {p.first_name}</p>
+      <span className="min-w-0 flex-1">
+        <span className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+          <span className="truncate font-medium text-slate-900">{p.last_name}, {p.first_name}</span>
           {p.file_number && (
-            <span className="shrink-0 rounded-full bg-brand-50 px-2 py-0.5 text-[11px] font-medium text-brand-700">{p.file_number}</span>
+            <span className="shrink-0 rounded-full bg-brand-50 px-2 py-0.5 text-xs font-medium text-brand-700 ring-1 ring-inset ring-brand-200">
+              {p.file_number}
+            </span>
           )}
-        </div>
-        <p className="mt-0.5 truncate text-xs text-slate-600">
-          {p.sex === "M" ? "Male" : "Female"}{age != null && ` · ${age} yrs`}
-        </p>
-      </div>
-      <svg viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4 shrink-0 text-slate-300">
-        <path fillRule="evenodd" d="M7.3 14.7a1 1 0 010-1.4L10.6 10 7.3 6.7a1 1 0 011.4-1.4l4 4a1 1 0 010 1.4l-4 4a1 1 0 01-1.4 0z" clipRule="evenodd" />
-      </svg>
+        </span>
+        <span className="mt-0.5 block truncate text-sm text-slate-600">
+          {p.sex === "M" ? "Male" : "Female"}{age != null && ` · ${age}`}
+        </span>
+      </span>
+      <Icon name="chevronRight" className="h-4 w-4 shrink-0 text-slate-400" aria-hidden="true" />
     </Link>
   );
 }

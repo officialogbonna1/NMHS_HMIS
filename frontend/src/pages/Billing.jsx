@@ -2,6 +2,8 @@ import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import api from "../api/client";
+import { Icon } from "../components/icons.jsx";
+import { Button, Page, PageHeader } from "../components/ui.jsx";
 import { readError } from "../api/errors";
 import { BILLING_CATEGORIES } from "./BillingItemsAdmin.jsx";
 import { BillSheet, ReceiptSheet } from "../components/PrintDocuments.jsx";
@@ -40,15 +42,17 @@ export default function Billing() {
   const [patient, setPatient] = useState(null);
 
   return (
-    <div className="mx-auto max-w-5xl space-y-6 p-5 md:p-8">
-      <header>
-        <h1 className="text-2xl font-semibold">Billing</h1>
-        <p className="mt-1 text-sm text-slate-700">
-          {patient
+    <Page width="wide" className="space-y-6">
+      <PageHeader
+        className="mb-0"
+        icon="cash"
+        title="Billing"
+        subtitle={
+          patient
             ? `Everything on this screen is ${patient.first_name}'s. Bill a service, then take payment in full, in part, or leave it to be paid later.`
-            : "Find a patient to bill, or pick one from the lists below."}
-        </p>
-      </header>
+            : "Manage charges, payments, outstanding balances and waivers."
+        }
+      />
 
       {patient ? (
         <PatientCounter patient={patient} onClear={() => setPatient(null)} canWaive={canWaive} />
@@ -61,7 +65,7 @@ export default function Billing() {
           <TodaysPayments />
         </>
       )}
-    </div>
+    </Page>
   );
 }
 
@@ -124,15 +128,14 @@ function PatientCounter({ patient, onClear, canWaive }) {
               {currency(outstanding)}
             </p>
           </div>
-          <button
-            onClick={() => setPrinting("bill")}
-            className="rounded-lg border px-3 py-2 text-sm font-medium hover:bg-slate-50"
-          >
-            🖨 Bill
-          </button>
-          <button onClick={onClear} className="rounded-lg border px-3 py-2 text-sm hover:bg-slate-50">
+          <Button variant="secondary" size="sm" onClick={() => setPrinting("bill")}>
+            <Icon name="print" className="h-4 w-4" aria-hidden="true" />
+            Bill
+          </Button>
+          <Button variant="secondary" size="sm" onClick={onClear}>
+            <Icon name="search" className="h-4 w-4" aria-hidden="true" />
             Different patient
-          </button>
+          </Button>
         </div>
       </div>
 
@@ -192,9 +195,9 @@ function PatientCounter({ patient, onClear, canWaive }) {
               <ChargeRow key={c.id} charge={c} canWaive={canWaive} onDone={refresh} />
             ))}
           </div>
-          <Link to="/transactions" className="mt-2 inline-block text-sm text-brand-600 hover:underline">
+          <Button variant="link" size="xs" to="/transactions" className="mt-2">
             Full transaction history →
-          </Link>
+          </Button>
         </div>
 
         <PatientPayments patient={patient} />
@@ -613,24 +616,22 @@ function ChargeRow({ charge, canWaive, onDone }) {
             <div className="flex shrink-0 flex-col items-end gap-0.5">
               {canWaive && (
                 <>
-                  <button onClick={() => setPanel(panel === "discount" ? null : "discount")}
-                          className="text-xs text-brand-600 hover:underline">
+                  <Button variant="link" size="xs" onClick={() => setPanel(panel === "discount" ? null : "discount")}>
                     {panel === "discount" ? "Close" : "Discount"}
-                  </button>
-                  <button onClick={() => setPanel(panel === "waive" ? null : "waive")}
-                          className="text-xs text-slate-600 hover:text-red-600 hover:underline">
+                  </Button>
+                  <Button variant="linkDanger" size="xs" onClick={() => setPanel(panel === "waive" ? null : "waive")}>
                     {panel === "waive" ? "Close" : "Waive"}
-                  </button>
+                  </Button>
                 </>
               )}
               {/* Reception can authorise this even though it cannot waive:
                   it is the desk the patient is standing at, and the money is
                   still owed afterwards. */}
               {!charge.deferral && (
-                <button onClick={() => setPanel(panel === "defer" ? null : "defer")}
-                        className="text-xs text-sky-700 hover:underline">
+                <Button variant="link" size="xs" onClick={() => setPanel(panel === "defer" ? null : "defer")}
+                        className="!text-sky-700 hover:!bg-sky-50">
                   {panel === "defer" ? "Close" : "Pay later"}
-                </button>
+                </Button>
               )}
             </div>
           )}

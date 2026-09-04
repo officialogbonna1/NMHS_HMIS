@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import api from "../api/client";
+import { Button, Page, PageHeader } from "../components/ui.jsx";
 import PatientPicker from "../components/PatientPicker.jsx";
 import { useAuth } from "../auth/AuthContext.jsx";
 import { useToast } from "../components/Toaster.jsx";
@@ -67,8 +68,13 @@ export default function Appointments() {
   });
 
   return (
-    <div className="max-w-4xl mx-auto p-6 space-y-8">
-      <h1 className="text-2xl font-semibold">Appointments</h1>
+    <Page className="space-y-8">
+      <PageHeader
+        className="mb-0"
+        icon="calendar"
+        title="Appointments"
+        subtitle="A queue, not a diary — reception picks the patient and the doctor, and the doctor's own transitions record the times."
+      />
 
       {canBook && <BookAppointmentForm onDone={() => queryClient.invalidateQueries({ queryKey: ["appointments"] })} />}
 
@@ -89,31 +95,31 @@ export default function Appointments() {
                 </p>
               </div>
               {isDoctor && (
-                <div className="flex gap-3 text-sm shrink-0">
+                <div className="flex flex-wrap items-center gap-1 text-sm sm:shrink-0">
                   {a.status === "queued" && (
                     <>
-                      <button onClick={() => transition.mutate({ id: a.id, action: "accept" })} className="text-brand-600 hover:underline">
+                      <Button variant="link" size="xs" onClick={() => transition.mutate({ id: a.id, action: "accept" })}>
                         Accept
-                      </button>
-                      <button onClick={() => transition.mutate({ id: a.id, action: "cancel" })} className="text-red-600 hover:underline">
+                      </Button>
+                      <Button variant="linkDanger" size="xs" onClick={() => transition.mutate({ id: a.id, action: "cancel" })}>
                         Cancel
-                      </button>
+                      </Button>
                     </>
                   )}
                   {a.status === "accepted" && (
                     <>
-                      <button onClick={() => transition.mutate({ id: a.id, action: "start" })} className="text-brand-600 hover:underline">
+                      <Button variant="link" size="xs" onClick={() => transition.mutate({ id: a.id, action: "start" })}>
                         Start
-                      </button>
-                      <button onClick={() => transition.mutate({ id: a.id, action: "cancel" })} className="text-red-600 hover:underline">
+                      </Button>
+                      <Button variant="linkDanger" size="xs" onClick={() => transition.mutate({ id: a.id, action: "cancel" })}>
                         Cancel
-                      </button>
+                      </Button>
                     </>
                   )}
                   {a.status === "in_progress" && (
-                    <button onClick={() => transition.mutate({ id: a.id, action: "end" })} className="text-brand-600 hover:underline">
+                    <Button variant="link" size="xs" onClick={() => transition.mutate({ id: a.id, action: "end" })}>
                       End
-                    </button>
+                    </Button>
                   )}
                 </div>
               )}
@@ -121,7 +127,7 @@ export default function Appointments() {
           ))}
         </div>
       </section>
-    </div>
+    </Page>
   );
 }
 

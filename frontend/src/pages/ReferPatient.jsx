@@ -5,6 +5,7 @@ import api from "../api/client";
 import { readError } from "../api/errors";
 import PatientPicker, { patientLabel } from "../components/PatientPicker.jsx";
 import { useToast } from "../components/Toaster.jsx";
+import { Button, Page, PageHeader } from "../components/ui.jsx";
 
 // The doctor's hand-off, mirroring nursing's Send to Doctor: pick the
 // patient, pick where they are going, and the unit is notified and sees the
@@ -213,14 +214,13 @@ export default function ReferPatient() {
   const ready = patient && purpose && !refer.isPending;
 
   return (
-    <div className="mx-auto max-w-3xl space-y-6 p-5 md:p-8">
-      <div>
-        <h1 className="text-2xl font-semibold">Refer a patient</h1>
-        <p className="mt-1 text-sm text-slate-700">
-          Send a patient on to the lab, imaging, the eye clinic or for a procedure. The unit is
-          notified and the patient appears in their queue. Your consultation stays open.
-        </p>
-      </div>
+    <Page width="narrow" className="space-y-6">
+      <PageHeader
+        className="mb-0"
+        icon="share"
+        title="Refer a patient"
+        subtitle="Send a patient on to the lab, imaging, the eye clinic or for a procedure. The unit is notified and the patient appears in their queue. Your consultation stays open."
+      />
 
       {sent && (
         <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
@@ -322,13 +322,13 @@ export default function ReferPatient() {
         >
           {refer.isPending ? "Sending…" : "Send referral"}
         </button>
-        <Link to="/queue" className="text-sm text-brand-600 hover:underline">My queue</Link>
+        <Button variant="link" size="xs" to="/queue">My queue</Button>
         <span className="text-sm text-slate-700">
           {purpose === "laboratory" && labTests.length > 0
             ? "The charge is raised with the order; the patient settles it at Reception or the cash desk."
             : "The counter bills the service separately."}
         </span>
       </div>
-    </div>
+    </Page>
   );
 }

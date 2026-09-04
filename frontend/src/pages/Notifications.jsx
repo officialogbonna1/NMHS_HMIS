@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import api from "../api/client";
+import { Button, Page, PageHeader, MetaStat } from "../components/ui.jsx";
 import { useAuth } from "../auth/AuthContext.jsx";
 
 const CATEGORY_TONE = {
@@ -75,27 +76,22 @@ export default function Notifications() {
   );
 
   return (
-    <div className="mx-auto w-full max-w-4xl px-4 py-6 sm:px-6">
-      <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
-        <div className="min-w-0">
-          <h1 className="text-xl font-semibold tracking-tight text-slate-900 sm:text-2xl">
-            Notifications
-          </h1>
-          <p className="mt-1 text-sm text-slate-700">
-            {everyone
-              ? "Everything the system has told anyone. Read-only — you can only mark your own as read."
-              : "Everything addressed to you."}
-          </p>
-        </div>
-        {!everyone && unreadCount > 0 && (
-          <button
-            onClick={() => markAllRead.mutate()}
-            className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 transition hover:border-slate-400 hover:bg-slate-50"
-          >
+    <Page>
+      <PageHeader
+        icon="bell"
+        title="Notifications"
+        subtitle={
+          everyone
+            ? "Everything the system has told anyone. Read-only — you can only mark your own as read."
+            : "Everything addressed to you."
+        }
+        meta={!everyone && unreadCount > 0 && <MetaStat value={unreadCount} label="unread" tone="danger" />}
+        actions={!everyone && unreadCount > 0 && (
+          <Button variant="secondary" onClick={() => markAllRead.mutate()}>
             Mark all as read ({unreadCount})
-          </button>
+          </Button>
         )}
-      </div>
+      />
 
       {isAdmin && (
         <div className="mb-4 flex overflow-hidden rounded-lg border border-slate-300 text-sm">
@@ -217,15 +213,15 @@ export default function Notifications() {
                 </p>
               </div>
               {!n.is_read && mine && (
-                <button
+                <Button
+                  variant="link" size="xs" className="shrink-0"
                   onClick={(e) => {
                     e.preventDefault();
                     markRead.mutate(n.id);
                   }}
-                  className="shrink-0 text-xs text-brand-600 hover:underline"
                 >
                   Mark read
-                </button>
+                </Button>
               )}
             </div>
           );
@@ -238,6 +234,6 @@ export default function Notifications() {
           );
         })}
       </div>
-    </div>
+    </Page>
   );
 }

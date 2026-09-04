@@ -2,6 +2,23 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
+    <!--
+      Without this, a phone browser lays the page out in a ~980px virtual
+      viewport and then scales the whole thing down to fit the screen. That is
+      why the HMIS looked like a shrunken desktop: every `lg:` breakpoint
+      matched, the desktop layout rendered, and a 24px heading arrived on the
+      glass as about 9 real pixels.
+
+      `viewport-fit=cover` lets the page reach under a notch; `index.css` pays
+      that back with safe-area padding so nothing lands beneath the cutout.
+
+      Deliberately no `maximum-scale` or `user-scalable=no`: pinch-zoom is an
+      accessibility right, and a clinician checking a reference range is
+      exactly who needs it.
+    -->
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#0B1730" />
+    <meta name="description" content="Ngozi Maternity and Hospital Services — hospital management information system." />
     <title>NMHS — Ngozi Maternity and Hospital Services</title>
   </head>
   <body>

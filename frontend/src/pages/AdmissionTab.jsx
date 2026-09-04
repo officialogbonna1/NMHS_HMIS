@@ -1,4 +1,5 @@
 import { Link } from "react-router-dom";
+import { Button } from "../components/ui.jsx";
 import { useQuery } from "@tanstack/react-query";
 import api from "../api/client";
 
@@ -60,9 +61,9 @@ export default function AdmissionTab({ patientId }) {
               ? "This patient has been on a ward before — the history is below."
               : "This patient has never been admitted."}
           </p>
-          <Link to="/admissions" className="mt-3 inline-block text-sm text-brand-600 hover:underline">
+          <Button variant="link" size="xs" to="/admissions" className="mt-3">
             Admit from the bed board →
-          </Link>
+          </Button>
         </section>
       )}
 

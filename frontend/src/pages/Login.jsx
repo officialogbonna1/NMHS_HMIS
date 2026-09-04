@@ -30,10 +30,9 @@ export default function Login() {
     <div className="min-h-screen bg-brand-950 flex items-center justify-center p-6">
       <div className="w-full max-w-sm">
         <div className="mb-8 flex flex-col items-center gap-2 text-center">
-          <div className="flex items-center gap-3">
-            <span className="grid h-11 w-11 place-items-center rounded-xl bg-gradient-to-br from-brand-300 to-brand-500 font-bold text-brand-950 shadow-lg shadow-brand-500/20">+</span>
-            <span className="text-2xl font-semibold tracking-tight text-white">{HOSPITAL.name}</span>
-          </div>
+          <span className="wordmark text-4xl font-extrabold tracking-[0.16em]">
+            {HOSPITAL.name}
+          </span>
           <p className="text-sm text-brand-200">{HOSPITAL.fullName}</p>
         </div>
         <div className="bg-white rounded-2xl p-7 shadow-xl">

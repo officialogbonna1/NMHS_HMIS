@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import api from "../api/client";
+import { Badge, Page, PageHeader } from "../components/ui.jsx";
 
 const emptyForm = { id: null, name: "", code: "", manager: "", staff: [], is_active: true };
 
@@ -34,8 +35,13 @@ export default function DepartmentsAdmin() {
   });
 
   return (
-    <div className="max-w-4xl mx-auto p-6 space-y-8">
-      <h1 className="text-2xl font-semibold">Departments</h1>
+    <Page className="space-y-8">
+      <PageHeader
+        className="mb-0"
+        icon="building"
+        title="Departments"
+        subtitle="Units, the staff attached to them, and the services each one offers."
+      />
 
       <form
         onSubmit={(e) => {
@@ -93,26 +99,28 @@ export default function DepartmentsAdmin() {
 
       <div className="grid gap-2">
         {(departments ?? []).map((d) => (
-          <div key={d.id} className="border rounded-lg p-4">
-            <div className="flex items-center justify-between">
-              <div>
-                <span className="font-medium">{d.name}</span>
-                <span className="text-xs text-slate-500 ml-2">{d.code}</span>
-                {!d.is_active && <span className="text-xs text-red-500 ml-2">Disabled</span>}
+          <div key={d.id} className="rounded-lg border border-slate-200 bg-white p-4">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div className="min-w-0">
+                <p className="font-medium text-slate-900">{d.name}</p>
+                <p className="mt-0.5 flex flex-wrap items-center gap-2 text-sm text-slate-600">
+                  <span>{d.code}</span>
+                  {!d.is_active && <Badge tone="danger">Disabled</Badge>}
+                </p>
               </div>
-              <div className="flex gap-3 text-sm">
+              <div className="flex shrink-0 flex-wrap gap-1">
                 <button
                   onClick={() =>
                     setForm({ id: d.id, name: d.name, code: d.code, manager: d.manager ?? "", staff: (d.staff ?? []).map(String), is_active: d.is_active })
                   }
-                  className="text-brand-600 hover:underline"
+                  className="min-h-[36px] rounded-lg px-3 py-1.5 text-sm font-medium text-brand-700 transition hover:bg-brand-50"
                 >
                   Edit
                 </button>
-                <button onClick={() => toggleActive.mutate(d)} className="text-slate-600 hover:underline">
+                <button onClick={() => toggleActive.mutate(d)} className="min-h-[36px] rounded-lg px-3 py-1.5 text-sm font-medium text-slate-700 transition hover:bg-slate-100">
                   {d.is_active ? "Disable" : "Enable"}
                 </button>
-                <button onClick={() => setExpanded(expanded === d.id ? null : d.id)} className="text-slate-600 hover:underline">
+                <button onClick={() => setExpanded(expanded === d.id ? null : d.id)} className="min-h-[36px] rounded-lg px-3 py-1.5 text-sm font-medium text-slate-700 transition hover:bg-slate-100">
                   {expanded === d.id ? "Hide services" : "Services"}
                 </button>
               </div>
@@ -121,7 +129,7 @@ export default function DepartmentsAdmin() {
           </div>
         ))}
       </div>
-    </div>
+    </Page>
   );
 }
 
@@ -161,7 +169,7 @@ function DepartmentServices({ departmentId }) {
       >
         <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Service name" className="border rounded-md px-2 py-1 text-sm flex-1" />
         <input value={price} onChange={(e) => setPrice(e.target.value)} placeholder="Price" type="number" className="border rounded-md px-2 py-1 text-sm w-28" />
-        <button type="submit" className="text-sm text-brand-600 hover:underline">Add</button>
+        <Button type="submit" variant="link" size="xs">Add</Button>
       </form>
     </div>
   );

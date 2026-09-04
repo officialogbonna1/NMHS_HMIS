@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import api from "../api/client";
+import { Button } from "../components/ui.jsx";
 
 // What this patient has actually been given.
 //
@@ -97,12 +98,9 @@ export default function PharmacyTab({ patientId, canPrescribe }) {
 
       {cancelled.length > 0 && (
         <div>
-          <button
-            onClick={() => setShowCancelled((v) => !v)}
-            className="text-sm font-medium text-brand-600 hover:underline"
-          >
+          <Button variant="link" size="xs" onClick={() => setShowCancelled((v) => !v)}>
             {showCancelled ? "Hide" : `Show ${cancelled.length}`} cancelled
-          </button>
+          </Button>
           {showCancelled && <Section title="Cancelled" rows={cancelled} />}
         </div>
       )}

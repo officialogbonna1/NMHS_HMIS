@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import api from "../api/client";
+import { TextLink } from "./ui.jsx";
 import { readError } from "../api/errors";
 
 // One modal implementation driven by tileConfig.js — same panel shape as
@@ -240,9 +241,9 @@ function FieldInput({ field, value, onChange, invalid, today }) {
         {!picked && field.currentUrl && (
           <p className="mt-1 text-sm text-slate-600">
             On file:{" "}
-            <a href={field.currentUrl} target="_blank" rel="noreferrer" className="font-medium text-brand-600 hover:underline">
+            <TextLink href={field.currentUrl} target="_blank" rel="noreferrer">
               {field.currentName || "open document"}
-            </a>
+            </TextLink>
             {" — choose a file to replace it."}
           </p>
         )}

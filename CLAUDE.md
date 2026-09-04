@@ -359,6 +359,67 @@ Two rules the admin classes follow, and new ones should:
   that list in step with `frontend/src/main.jsx`. Unmatched addresses hit the
   catch-all `NotFound` page inside the shell, never a blank screen.
 
+- **One design vocabulary: `components/ui.jsx`.** Page, PageHeader, Section,
+  Card, Button, IconButton, TextLink, Field/Input/Select/Textarea, SearchInput,
+  Badge, TableWrap, Modal, TabBar, Skeleton, EmptyState, ErrorState, Alert.
+  Reach for a primitive before writing a fifth spelling of the same button.
+
+  **A text action is still a control.** `Button`'s `link` / `linkDanger` /
+  `linkMuted` variants are the "Waive", "Cancel", "Show more", "Pay in full"
+  actions that used to be spelled `text-xs text-brand-600 hover:underline` —
+  a 16px-tall hit area in a hospital where the screen is a phone held in one
+  hand. There were 36 hand-written copies of that string at 5 different sizes;
+  they are one `size="xs"` box now (36px, still tight beside its neighbours).
+  `TextLink` is the deliberate exception: a link *inside a sentence*, which
+  stays inline because forcing a 36px box into flowing prose breaks the line
+  box. It pays for the smaller target with a permanent underline.
+
+  Three more rules are baked in so no page has to remember:
+  1. **Controls are >=44px on a phone**, tightening to ~38px from `sm`, and
+     inputs are 16px there — anything smaller and iOS zooms the page on focus.
+  2. **`min-w-0` on anything that can hold wide content.** Flex and grid
+     children default to `min-width:auto`, so one chip strip or table silently
+     widens the whole page. That single omission was the cause of every
+     horizontal-scroll bug the audit found (`/lab-catalogue` was 722px too
+     wide at 375px).
+  3. **A table lives in `TableWrap`**, which scrolls itself rather than the
+     page. Tables become cards only where a row genuinely does not fit —
+     `LabResultEntry` and the lab catalogue's parameters do; most do not.
+  Icons are `components/icons.jsx` (inline SVG on one 24px stroke grid), never
+  emoji: emoji cannot take a colour, sit off the baseline and render
+  differently on every platform.
+
+- **A navigation destination opens with a `PageHeader`.** One masthead shape
+  across the application — contextual icon, title, one line of what the page is
+  for, an optional `meta` strip of live figures (`MetaStat`), the primary
+  actions, and an optional `toolbar` row for search and filters. Every slot is
+  optional, so a page whose layout genuinely differs takes the title alone and
+  arranges the rest itself; `NotFound` and `Login` are deliberately outside the
+  system. The pages used to open with a bare
+  `<h1 className="text-2xl font-semibold">` inside a hand-rolled
+  `max-w-* mx-auto p-6` — which is also how the phone gutter bug kept coming
+  back, since `p-6` spends 15% of a 320px screen on margin. Reach for
+  `Page` + `PageHeader`, not a new wrapper.
+
+  **Actions belong in the header, and only once.** The primary action of a page
+  sits in `actions` — but check first whether the page already offers it
+  further down: Billing's counter already had "Different patient", so putting
+  it in the header too would have asked the same question twice.
+
+  **Tabs are `TabBar` + `Tab`.** Three pages had hand-rolled tab strips
+  (two identical `TabButton` copies, plus the chart's `TabLink`) and two more
+  had segmented pill controls; they scrolled differently, sized differently and
+  none of them was touch-safe. `TabBar` scrolls itself on a phone rather than
+  wrapping into three rows or widening the page.
+
+- **The navigation must work on a phone.** The sidebar was `hidden md:block`
+  with nothing behind it, so below 768px there was no way to reach any page but
+  the dashboard. `AppShell` now has a rail from `lg` and a drawer below it,
+  both rendering the same role-filtered list. **`NAV_ITEMS`' roles are the
+  source of truth and are not to be widened for layout reasons**; the `group`
+  column is presentation only, and a group with nothing visible in it does not
+  render, so grouping can never surface a link a role could not already reach.
+
 - Backend: DRF ModelViewSets + routers, one router per app in `urls.py`,
   included under `/api/` in the root `hmis/urls.py`.
 - Frontend: TanStack Query for all server state (no manual `useEffect`

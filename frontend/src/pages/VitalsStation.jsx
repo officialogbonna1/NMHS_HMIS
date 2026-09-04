@@ -2,9 +2,11 @@ import { useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import api from "../api/client";
+import { Icon } from "../components/icons.jsx";
 import { readError } from "../api/errors";
 import { useAuth } from "../auth/AuthContext.jsx";
 import { useToast } from "../components/Toaster.jsx";
+import { Button, Page, PageHeader, MetaStat, TabBar, Tab, Badge, waitedFor } from "../components/ui.jsx";
 import VitalsEntryForm from "../components/VitalsEntryForm.jsx";
 import NursingNoteForm from "../components/NursingNoteForm.jsx";
 
@@ -74,36 +76,30 @@ export default function VitalsStation() {
   }
 
   return (
-    <div className="mx-auto max-w-6xl space-y-6 p-5 md:p-8">
-      <header className="flex flex-wrap items-start justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-semibold">Vitals</h1>
-          <p className="mt-1 text-sm text-slate-500">
-            Patients the front desk has sent to you, {user?.first_name || user?.username}. Open one to record a
-            reading and an observation — the doctor sees both on the patient's chart.
-          </p>
-          <p className="mt-2 text-sm text-slate-600">
-            <strong>{stats.waiting}</strong> waiting · <strong>{stats.inProgress}</strong> in progress
-            {stats.urgent > 0 && <> · <span className="font-semibold text-red-600">{stats.urgent} urgent</span></>}
-            {" · "}<Link to="/" className="text-brand-600 hover:underline">Dashboard</Link>
-          </p>
-        </div>
-        <button onClick={refetch} className="rounded-lg border px-4 py-2 text-sm font-medium hover:bg-slate-50">
-          {isFetching ? "Refreshing…" : "Refresh"}
-        </button>
-      </header>
+    <Page width="wide">
+      <PageHeader
+        icon="activity"
+        title="Vitals"
+        subtitle={`Record and monitor patient vital signs. Patients the front desk has sent to you, ${user?.first_name || user?.username}.`}
+        meta={
+          <>
+            <MetaStat value={stats.waiting} label="waiting" />
+            <MetaStat value={stats.inProgress} label="in progress" tone="brand" />
+            {stats.urgent > 0 && <MetaStat value={stats.urgent} label="urgent" tone="danger" />}
+          </>
+        }
+        actions={
+          <Button variant="soft" onClick={refetch} loading={isFetching}>
+            {isFetching ? "Refreshing…" : "Refresh"}
+          </Button>
+        }
+      />
 
-      <div className="flex overflow-hidden rounded-xl border bg-white text-sm w-fit">
+      <TabBar label="Vitals sections">
         {[["queue", "My queue"], ["today", "Recorded today"]].map(([value, label]) => (
-          <button
-            key={value}
-            onClick={() => setTab(value)}
-            className={`px-4 py-2 font-medium ${tab === value ? "bg-brand-600 text-white" : "text-slate-600 hover:bg-slate-50"}`}
-          >
-            {label}
-          </button>
+          <Tab key={value} active={tab === value} onClick={() => setTab(value)}>{label}</Tab>
         ))}
-      </div>
+      </TabBar>
 
       {tab === "today" && <RecordedToday />}
 
@@ -168,7 +164,7 @@ export default function VitalsStation() {
         </div>
       </section>
       )}
-    </div>
+    </Page>
   );
 }
 
@@ -327,13 +323,6 @@ function Pill({ children, tone = "border-slate-200 bg-slate-50 text-slate-600" }
   return <span className={`rounded-full border px-2 py-0.5 text-xs font-medium ${tone}`}>{children}</span>;
 }
 
-function waitedFor(since) {
-  const minutes = Math.max(0, Math.round((Date.now() - new Date(since)) / 60000));
-  if (minutes < 1) return "just now";
-  if (minutes < 60) return `${minutes} min`;
-  const hours = Math.floor(minutes / 60);
-  return hours < 24 ? `${hours} hr ${minutes % 60} min` : `${Math.floor(hours / 24)} day(s)`;
-}
 
 function PatientStation({ route, onBack }) {
   const patientId = route.patient_id;
@@ -379,38 +368,46 @@ function PatientStation({ route, onBack }) {
   });
 
   return (
-    <div className="mx-auto max-w-4xl space-y-6 p-5 md:p-8">
-      <button onClick={onBack} className="text-sm text-brand-600">← Back to my queue</button>
-
-      <div className="flex flex-wrap items-start justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-semibold">{route.patient_name}</h1>
-          <p className="text-sm text-slate-600">
-            {route.patient_file_number} · {PURPOSE_LABEL[route.purpose] ?? route.purpose} requested ·
-            waiting {waitedFor(route.created_at)}
-          </p>
-          {route.notes && <p className="mt-1 text-sm text-slate-700">{route.notes}</p>}
-        </div>
-        <div className="flex gap-2">
-          {route.status === "queued" && (
-            <button
-              onClick={() => transition.mutate("start")}
-              disabled={transition.isPending}
-              className="rounded-full border px-4 py-2 text-sm font-medium hover:bg-slate-50 disabled:opacity-50"
+    <Page className="space-y-6">
+      <PageHeader
+        className="mb-0"
+        breadcrumb={
+          <div className="mb-1">
+            <Button variant="link" size="xs" onClick={onBack}>
+              <Icon name="back" className="h-4 w-4" aria-hidden="true" />
+              Back to my queue
+            </Button>
+          </div>
+        }
+        title={route.patient_name}
+        subtitle={route.notes || undefined}
+        meta={
+          <>
+            <Badge tone={route.status === "in_progress" ? "brand" : "neutral"}>
+              {route.status === "in_progress" ? "In progress" : "Waiting"}
+            </Badge>
+            <MetaStat value={route.patient_file_number} label="file number" />
+            <MetaStat value={waitedFor(route.created_at)} label="waiting" />
+          </>
+        }
+        actions={
+          <>
+            {route.status === "queued" && (
+              <Button variant="secondary" onClick={() => transition.mutate("start")} disabled={transition.isPending}>
+                Start
+              </Button>
+            )}
+            <Button
+              variant="successOutline"
+              onClick={() => transition.mutate("complete")}
+              disabled={transition.isPending || !takenForThisRoute}
+              title={takenForThisRoute ? undefined : "Record this patient's vitals first"}
             >
-              Start
-            </button>
-          )}
-          <button
-            onClick={() => transition.mutate("complete")}
-            disabled={transition.isPending || !takenForThisRoute}
-            title={takenForThisRoute ? undefined : "Record this patient's vitals first"}
-            className="rounded-full border border-emerald-300 bg-emerald-50 px-4 py-2 text-sm font-medium text-emerald-700 hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {transition.isPending ? "Working…" : "Mark done"}
-          </button>
-        </div>
-      </div>
+              {transition.isPending ? "Working…" : "Mark done"}
+            </Button>
+          </>
+        }
+      />
 
       {!takenForThisRoute && (
         <p className="text-sm text-amber-700">
@@ -492,7 +489,7 @@ function PatientStation({ route, onBack }) {
           ))}
         </div>
       </section>
-    </div>
+    </Page>
   );
 }
 

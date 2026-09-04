@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import api from "../api/client";
+import { Button, Page, PageHeader, TabBar, Tab } from "../components/ui.jsx";
 import { useToast } from "../components/Toaster.jsx";
 
 // The pharmacy counter. Prescriptions arrive here from doctors as requests;
@@ -18,30 +19,23 @@ export default function Pharmacy() {
   const [tab, setTab] = useState("queue");
 
   return (
-    <div className="max-w-5xl mx-auto p-6 space-y-6">
-      <h1 className="text-2xl font-semibold">Pharmacy</h1>
+    <Page width="wide">
+      <PageHeader
+        icon="pill"
+        title="Pharmacy"
+        subtitle="Process prescriptions, dispensing and pharmacy transactions."
+      />
 
-      <div className="flex gap-6 border-b text-sm">
-        <TabButton active={tab === "queue"} onClick={() => setTab("queue")}>Dispensing queue</TabButton>
-        <TabButton active={tab === "dispensed"} onClick={() => setTab("dispensed")}>Dispensed &amp; payment</TabButton>
-        <TabButton active={tab === "payments"} onClick={() => setTab("payments")}>Pharmacy payments</TabButton>
-      </div>
+      <TabBar label="Pharmacy sections">
+        <Tab active={tab === "queue"} onClick={() => setTab("queue")}>Dispensing queue</Tab>
+        <Tab active={tab === "dispensed"} onClick={() => setTab("dispensed")}>Dispensed &amp; payment</Tab>
+        <Tab active={tab === "payments"} onClick={() => setTab("payments")}>Pharmacy payments</Tab>
+      </TabBar>
 
       {tab === "queue" && <DispensingQueue />}
       {tab === "dispensed" && <DispensedList />}
       {tab === "payments" && <PharmacyPayments />}
-    </div>
-  );
-}
-
-function TabButton({ active, onClick, children }) {
-  return (
-    <button
-      onClick={onClick}
-      className={`pb-3 -mb-px border-b-2 ${active ? "border-brand-600 text-brand-600 font-medium" : "border-transparent text-slate-600"}`}
-    >
-      {children}
-    </button>
+    </Page>
   );
 }
 
@@ -114,15 +108,15 @@ function DispensingQueue() {
             >
               Dispense
             </button>
-            <button
+            <Button
+              variant="linkDanger" size="xs"
               onClick={() => {
                 const reason = prompt("Why is this prescription not being filled?");
                 if (reason !== null) cancel.mutate({ id: p.id, reason });
               }}
-              className="text-red-600 hover:underline"
             >
               Cancel
-            </button>
+            </Button>
           </div>
         </div>
       ))}
@@ -219,13 +213,9 @@ function PatientCounterCard({ group }) {
             <option value="transfer">Transfer</option>
             <option value="insurance">Insurance</option>
           </select>
-          <button
-            type="button"
-            onClick={() => setAmount(String(outstanding))}
-            className="text-xs text-brand-600 hover:underline"
-          >
+          <Button variant="link" size="xs" onClick={() => setAmount(String(outstanding))}>
             Pay in full
-          </button>
+          </Button>
           <button
             type="submit"
             disabled={!amount || pay.isPending}
