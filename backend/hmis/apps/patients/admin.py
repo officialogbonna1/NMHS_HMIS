@@ -45,8 +45,9 @@ class MedicalTestInline(_RecordInline):
 class PatientAdmin(admin.ModelAdmin):
     list_display = ["file_number", "last_name", "first_name", "sex", "age_display", "phone_number", "created_at"]
     list_display_links = ["file_number", "last_name", "first_name"]
-    list_filter = ["sex", "city", "created_at"]
-    search_fields = ["file_number", "first_name", "middle_name", "last_name", "phone_number", "email"]
+    list_filter = ["sex", "city", "state", "country", "created_at"]
+    search_fields = ["file_number", "first_name", "middle_name", "last_name", "phone_number",
+                     "email", "emergency_contact_name", "emergency_contact_phone"]
     ordering = ["last_name", "first_name"]
     date_hierarchy = "created_at"
     list_per_page = 50
@@ -58,16 +59,22 @@ class PatientAdmin(admin.ModelAdmin):
 
     fieldsets = (
         ("Identity", {"fields": ("file_number", ("first_name", "middle_name", "last_name"), "sex")}),
-        ("Age", {"fields": ("birthdate", "age_years"),
-                 "description": "age_years is the fallback when a birthdate is not known."}),
-        ("Contact", {"fields": ("phone_number", "email", "street_address", "city")}),
+        ("Age", {"fields": ("birthdate", ("age_value", "age_unit")),
+                 "description": "The value and unit are the fallback when a birthdate is not "
+                                "known — days and weeks matter for newborns."}),
+        ("Contact", {"fields": ("phone_number", "email", "street_address", ("city", "state"), "country")}),
+        ("Emergency contact", {
+            "fields": (("emergency_contact_name", "emergency_contact_relationship"),
+                       ("emergency_contact_phone", "emergency_contact_alt_phone"),
+                       "emergency_contact_address", "emergency_contact_notes"),
+        }),
         ("Notes", {"fields": ("short_note",)}),
         ("Record", {"fields": ("created_by", "created_at", "updated_at")}),
     )
 
     @admin.display(description="Age", ordering="birthdate")
     def age_display(self, obj):
-        return f"{obj.age_years} yrs" if obj.age_years else (obj.birthdate or "—")
+        return obj.age_display or "—"
 
 
 class _TileAdmin(admin.ModelAdmin):

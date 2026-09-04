@@ -6,6 +6,12 @@ from .models import (
 
 
 class PatientSerializer(serializers.ModelSerializer):
+    # "Male", not "M" — this is printed on the patient's card.
+    sex_display = serializers.CharField(source="get_sex_display", read_only=True)
+    # "3 days" / "7 months" / "42 yrs" — worked out from the birthdate where
+    # there is one, so nothing has to recompute it per screen.
+    age_display = serializers.CharField(read_only=True)
+
     class Meta:
         model = Patient
         fields = "__all__"
@@ -14,9 +20,23 @@ class PatientSerializer(serializers.ModelSerializer):
 
 class PatientDemographicsSerializer(serializers.ModelSerializer):
     """Reception-safe representation: no clinical or sensitive registration notes."""
+    sex_display = serializers.CharField(source="get_sex_display", read_only=True)
+    age_display = serializers.CharField(read_only=True)
+
     class Meta:
         model = Patient
-        fields = ["id", "file_number", "first_name", "middle_name", "last_name", "sex", "birthdate", "age_years", "phone_number", "email", "city", "created_at"]
+        # street_address is here because reception typed it in at
+        # registration and it goes back onto the printed card; the
+        # clinical note deliberately stays out.
+        fields = ["id", "file_number", "first_name", "middle_name", "last_name", "sex",
+                  "sex_display", "birthdate", "age_value", "age_unit", "age_display", "phone_number", "email",
+                  "street_address", "city", "state", "country",
+                  # Reception takes these at registration and is who gets
+                  # asked for them in an emergency.
+                  "emergency_contact_name", "emergency_contact_relationship",
+                  "emergency_contact_phone", "emergency_contact_alt_phone",
+                  "emergency_contact_address", "emergency_contact_notes",
+                  "created_at"]
 
 
 class AllergySerializer(serializers.ModelSerializer):

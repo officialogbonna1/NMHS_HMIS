@@ -52,20 +52,55 @@ class Charge(TimeStampedModel):
     # granted. Held here as well as on the Adjustment so the charge's own
     # balance is true; the Adjustment carries the reason and who approved it.
     amount_discounted = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    # Money written off outright rather than reduced — the hospital has
+    # decided nobody will collect it. Held separately from a discount so a
+    # bill can show Original / Discount / Waived / Payable, which is what an
+    # audit asks for, and so `balance` stops reading as owed the moment it
+    # is waived.
+    amount_waived = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     status = models.CharField(max_length=15, choices=STATUS, default="unpaid")
     source_type = models.CharField(max_length=50, blank=True); source_id = models.PositiveBigIntegerField(null=True, blank=True)
     created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT)
     class Meta: ordering = ["-created_at"]
 
     @property
+    def payable(self):
+        """What is actually collectable: the face value less what was given away."""
+        return self.amount - self.amount_discounted - self.amount_waived
+
+    @property
     def balance(self):
-        return self.amount - self.amount_paid - self.amount_discounted
+        return self.amount - self.amount_paid - self.amount_discounted - self.amount_waived
 
     @property
     def discount_percent(self):
         if not self.amount:
             return 0
         return round(self.amount_discounted / self.amount * 100, 1)
+
+    @property
+    def active_deferral(self):
+        """The live "pay later" authorisation on this charge, if there is one."""
+        if self.balance <= 0:
+            return None
+        return self.deferrals.filter(released_at__isnull=True).first()
+
+    @property
+    def settlement_status(self):
+        """
+        What the money actually says, rather than a stored flag: a charge is
+        only paid when nothing is left on it, and "deferred" is an
+        authorisation to proceed while still owing — never a kind of paid.
+        """
+        if self.status == "cancelled":
+            return "cancelled"
+        if self.balance <= 0:
+            if self.amount_waived > 0 and self.amount_paid <= 0:
+                return "waived"
+            return "paid"
+        if self.active_deferral is not None:
+            return "deferred"
+        return "partial" if self.amount_paid > 0 else "unpaid"
 
 class Payment(TimeStampedModel):
     METHOD = [("cash", "Cash"), ("card", "Card"), ("transfer", "Transfer"), ("insurance", "Insurance")]
@@ -80,6 +115,35 @@ class Payment(TimeStampedModel):
     reference = models.CharField(max_length=100, blank=True)
     received_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT)
     class Meta: ordering = ["-created_at"]
+
+class PaymentDeferral(TimeStampedModel):
+    """
+    "Pay later": an authorised decision to let a patient have the service
+    before the money is collected.
+
+    It is deliberately **not** a charge status. The charge stays unpaid or
+    part-paid, keeps its balance, keeps appearing on the debtors list and
+    keeps taking payment allocations — because the hospital is still owed
+    the money. What this row adds is who said the patient could proceed, when,
+    for how much, and why, so "the lab ran it without payment" has a name
+    against it.
+    """
+    charge = models.ForeignKey(Charge, on_delete=models.CASCADE, related_name="deferrals")
+    patient = models.ForeignKey(Patient, on_delete=models.PROTECT, related_name="deferrals")
+    amount_deferred = models.DecimalField(max_digits=12, decimal_places=2)
+    reason = models.TextField(blank=True)
+    approved_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
+                                    related_name="deferrals_approved")
+    # Stamped when the charge is finally settled, so a deferral reads as
+    # history rather than an open authorisation forever.
+    released_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"Deferred {self.amount_deferred} on {self.charge_id}"
+
 
 class Adjustment(TimeStampedModel):
     KIND = [("discount", "Discount"), ("waiver", "Waiver"), ("refund", "Refund")]

@@ -89,7 +89,7 @@ class UserViewSet(viewsets.ModelViewSet):
         return [IsAdmin()]
 
     def get_serializer_class(self):
-        if self.action in ("list", "retrieve") and not self.request.user.is_admin:
+        if self.action in ("list", "retrieve") and not getattr(self.request.user, "is_admin", False):
             return UserDirectorySerializer
         return UserAdminSerializer
 

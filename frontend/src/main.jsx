@@ -7,6 +7,10 @@ import "./index.css";
 
 import { AuthProvider } from "./auth/AuthContext.jsx";
 import RequireAuth from "./auth/RequireAuth.jsx";
+import {
+  BILLING_ROLES, CHART_ROLES, CLINICAL_ROLES, PATIENT_LOOKUP_ROLES,
+  QUEUE_ROLES, STOCK_ROLES, WARD_ROLES,
+} from "./auth/roles.js";
 import Login from "./pages/Login.jsx";
 import NotFound from "./pages/NotFound.jsx";
 import PatientsList from "./pages/PatientsList.jsx";
@@ -22,10 +26,14 @@ import VitalsStation from "./pages/VitalsStation.jsx";
 import SendToConsultation from "./pages/SendToConsultation.jsx";
 import ReferPatient from "./pages/ReferPatient.jsx";
 import DepartmentStation from "./pages/DepartmentStation.jsx";
+import LabCatalogue from "./pages/LabCatalogue.jsx";
+import Admissions from "./pages/Admissions.jsx";
 import DepartmentsAdmin from "./pages/DepartmentsAdmin.jsx";
 import UsersAdmin from "./pages/UsersAdmin.jsx";
 import Billing from "./pages/Billing.jsx";
 import TransactionHistory from "./pages/TransactionHistory.jsx";
+import Outstanding from "./pages/Outstanding.jsx";
+import Waivers from "./pages/Waivers.jsx";
 import BillingItemsAdmin from "./pages/BillingItemsAdmin.jsx";
 import Appointments from "./pages/Appointments.jsx";
 import AppShell from "./components/AppShell.jsx";
@@ -43,7 +51,17 @@ ReactDOM.createRoot(document.getElementById("root")).render(
             <Route path="/login" element={<Login />} />
             <Route element={<RequireAuth><AppShell /></RequireAuth>}>
             <Route path="/" element={<Dashboard />} />
-            <Route path="/patients" element={<PatientsList />} />
+            {/* Looking a patient up is not reading their chart, but it is
+                still not for every role: the API refuses the rest, so a
+                bare guard here only produced a page of errors. */}
+            <Route
+              path="/patients"
+              element={
+                <RequireAuth roles={PATIENT_LOOKUP_ROLES}>
+                  <PatientsList />
+                </RequireAuth>
+              }
+            />
 
             <Route
               path="/patients/new"
@@ -57,7 +75,7 @@ ReactDOM.createRoot(document.getElementById("root")).render(
             <Route
               path="/patients/:id"
               element={
-                <RequireAuth>
+                <RequireAuth roles={CHART_ROLES}>
                   <PatientDetail />
                 </RequireAuth>
               }
@@ -66,7 +84,7 @@ ReactDOM.createRoot(document.getElementById("root")).render(
             <Route
               path="/patients/:id/record"
               element={
-                <RequireAuth>
+                <RequireAuth roles={CHART_ROLES}>
                   <PatientDetail />
                 </RequireAuth>
               }
@@ -75,7 +93,7 @@ ReactDOM.createRoot(document.getElementById("root")).render(
             <Route
               path="/patients/:id/notes"
               element={
-                <RequireAuth>
+                <RequireAuth roles={CHART_ROLES}>
                   <PatientDetail />
                 </RequireAuth>
               }
@@ -84,16 +102,32 @@ ReactDOM.createRoot(document.getElementById("root")).render(
             <Route
               path="/patients/:id/vitals"
               element={
-                <RequireAuth>
+                <RequireAuth roles={CHART_ROLES}>
                   <PatientDetail />
                 </RequireAuth>
               }
             />
 
+            {/* Everything a department has sent back, each addressable so a
+                notification or a bookmark can land straight on it. Same
+                guard as the chart itself — PatientDetail decides which tabs
+                a role actually gets. */}
+            {["lab", "ultrasound", "eye", "procedure", "admission", "pharmacy"].map((section) => (
+              <Route
+                key={section}
+                path={`/patients/:id/${section}`}
+                element={
+                  <RequireAuth roles={CHART_ROLES}>
+                    <PatientDetail />
+                  </RequireAuth>
+                }
+              />
+            ))}
+
             <Route
               path="/patients/:id/billing"
               element={
-                <RequireAuth roles={["cashier", "accountant", "reception"]}>
+                <RequireAuth roles={BILLING_ROLES}>
                   <PatientDetail />
                 </RequireAuth>
               }
@@ -102,7 +136,7 @@ ReactDOM.createRoot(document.getElementById("root")).render(
             <Route
               path="/patients/:id/prescribe"
               element={
-                <RequireAuth roles={["doctor"]}>
+                <RequireAuth roles={CLINICAL_ROLES}>
                   <PrescribeDrug />
                 </RequireAuth>
               }
@@ -120,7 +154,7 @@ ReactDOM.createRoot(document.getElementById("root")).render(
             <Route
               path="/inventory"
               element={
-                <RequireAuth roles={["pharmacist", "inventory_manager"]}>
+                <RequireAuth roles={STOCK_ROLES}>
                   <InventoryDashboard />
                 </RequireAuth>
               }
@@ -131,7 +165,7 @@ ReactDOM.createRoot(document.getElementById("root")).render(
             <Route
               path="/billing"
               element={
-                <RequireAuth roles={["cashier", "accountant", "reception"]}>
+                <RequireAuth roles={BILLING_ROLES}>
                   <Billing />
                 </RequireAuth>
               }
@@ -140,8 +174,26 @@ ReactDOM.createRoot(document.getElementById("root")).render(
             <Route
               path="/transactions"
               element={
-                <RequireAuth roles={["cashier", "accountant", "reception"]}>
+                <RequireAuth roles={BILLING_ROLES}>
                   <TransactionHistory />
+                </RequireAuth>
+              }
+            />
+
+            <Route
+              path="/outstanding"
+              element={
+                <RequireAuth roles={BILLING_ROLES}>
+                  <Outstanding />
+                </RequireAuth>
+              }
+            />
+
+            <Route
+              path="/waivers"
+              element={
+                <RequireAuth roles={BILLING_ROLES}>
+                  <Waivers />
                 </RequireAuth>
               }
             />
@@ -185,8 +237,17 @@ ReactDOM.createRoot(document.getElementById("root")).render(
             <Route
               path="/refer"
               element={
-                <RequireAuth roles={["doctor", "admin", "hospital_admin"]}>
+                <RequireAuth roles={CLINICAL_ROLES}>
                   <ReferPatient />
+                </RequireAuth>
+              }
+            />
+
+            <Route
+              path="/admissions"
+              element={
+                <RequireAuth roles={WARD_ROLES}>
+                  <Admissions />
                 </RequireAuth>
               }
             />
@@ -198,6 +259,16 @@ ReactDOM.createRoot(document.getElementById("root")).render(
               element={
                 <RequireAuth roles={["laboratory", "admin", "hospital_admin"]}>
                   <DepartmentStation station="laboratory" />
+                </RequireAuth>
+              }
+            />
+            {/* The catalogue behind the laboratory station: the lab's own
+                tests, parameters, units and ranges, edited by the lab. */}
+            <Route
+              path="/lab-catalogue"
+              element={
+                <RequireAuth roles={["laboratory", "admin", "hospital_admin"]}>
+                  <LabCatalogue />
                 </RequireAuth>
               }
             />
@@ -224,7 +295,7 @@ ReactDOM.createRoot(document.getElementById("root")).render(
             <Route
               path="/queue"
               element={
-                <RequireAuth roles={["reception", "doctor", "nurse", "laboratory", "radiology", "optometrist", "ophthalmologist"]}>
+                <RequireAuth roles={QUEUE_ROLES}>
                   <PatientQueue />
                 </RequireAuth>
               }

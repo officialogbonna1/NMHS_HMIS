@@ -74,10 +74,23 @@ def build_overview(*, patient, user):
             "name": f"{patient.last_name}, {patient.first_name}",
             "sex": patient.get_sex_display(),
             "birthdate": patient.birthdate,
-            "age_years": patient.age_years,
+            "age_display": patient.age_display,
             "phone_number": patient.phone_number,
             "city": patient.city,
+            "address": ", ".join(
+                p for p in [patient.street_address, patient.city, patient.state, patient.country] if p
+            ),
             "short_note": patient.short_note,
+            # On the chart because the moment it is needed is not the moment
+            # to be opening the registration screen.
+            "emergency_contact": None if not patient.emergency_contact_name else {
+                "name": patient.emergency_contact_name,
+                "relationship": patient.emergency_contact_relationship,
+                "phone": patient.emergency_contact_phone,
+                "alt_phone": patient.emergency_contact_alt_phone,
+                "address": patient.emergency_contact_address,
+                "notes": patient.emergency_contact_notes,
+            },
             "registered": patient.created_at,
         },
         # Allergies lead: they change what the doctor is allowed to prescribe.

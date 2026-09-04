@@ -4,7 +4,7 @@ from django.conf import settings
 from django.conf.urls.static import static
 
 # The admin is the back office for this hospital, not a generic Django site.
-admin.site.site_header = "NMHS administration"
+admin.site.site_header = "Ngozi Maternity and Hospital Services — administration"
 admin.site.site_title = "NMHS admin"
 admin.site.index_title = "Hospital records and staff"
 
@@ -24,6 +24,7 @@ urlpatterns = [
     path("api/", include("apps.workflow.urls")),
     path("api/", include("apps.billing.urls")),
     path("api/", include("apps.diagnostics.urls")),
+    path("api/", include("apps.laboratory.urls")),
     path("api/", include("apps.inpatient.urls")),
     path("api/", include("apps.core.urls")),
 ]

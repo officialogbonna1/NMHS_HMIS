@@ -1,6 +1,9 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import api from "../api/client";
+import { readError } from "../api/errors";
+import { BILLING_CATEGORIES } from "./BillingItemsAdmin.jsx";
+import { BillSheet, ReceiptSheet } from "../components/PrintDocuments.jsx";
 import { useAuth } from "../auth/AuthContext.jsx";
 import { useToast } from "../components/Toaster.jsx";
 
@@ -17,6 +20,14 @@ const STATUS_TONE = {
 };
 
 export default function PatientBillingTab({ patientId }) {
+  // Which sheet is open, and the payment a receipt would be for.
+  const [printing, setPrinting] = useState(null);
+  const [receipt, setReceipt] = useState(null);
+
+  const { data: patient } = useQuery({
+    queryKey: ["patient", String(patientId)],
+    queryFn: () => api.get(`/patients/${patientId}/`).then((r) => r.data),
+  });
   const { user } = useAuth();
   const canWaive = CAN_WAIVE_ROLES.includes(user?.role);
   const queryClient = useQueryClient();
@@ -55,8 +66,42 @@ export default function PatientBillingTab({ patientId }) {
 
   const transactions = buildTransactionHistory(charges, payments, adjustments);
 
+  const openCharges = (charges ?? []).filter((c) => ["unpaid", "partial"].includes(c.status));
+
   return (
     <div className="space-y-8">
+      <div className="flex flex-wrap justify-end gap-2">
+        <button
+          onClick={() => setPrinting("bill")}
+          className="rounded-md border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
+        >
+          🖨 Print bill
+        </button>
+        <button
+          onClick={() => setPrinting("statement")}
+          className="rounded-md border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
+        >
+          🖨 Print full statement
+        </button>
+      </div>
+
+      {printing && patient && (
+        <BillSheet
+          patient={patient}
+          charges={printing === "bill" ? openCharges : (charges ?? [])}
+          title={printing === "bill" ? "Invoice" : "Statement of account"}
+          onClose={() => setPrinting(null)}
+        />
+      )}
+      {receipt && patient && (
+        <ReceiptSheet
+          patient={patient}
+          payment={receipt}
+          balanceAfter={ledger?.outstanding_balance}
+          onClose={() => setReceipt(null)}
+        />
+      )}
+
       <section className="grid sm:grid-cols-4 gap-3">
         <SummaryCard label="Total charges" value={ledger?.total_charges} />
         <SummaryCard label="Total paid" value={ledger?.total_payments} tone="text-emerald-700" />
@@ -66,7 +111,7 @@ export default function PatientBillingTab({ patientId }) {
 
       <div className="grid md:grid-cols-2 gap-6">
         <BillFromCatalogForm patientId={patientId} onDone={invalidateAll} />
-        <RecordPaymentForm patientId={patientId} onDone={invalidateAll} />
+        <RecordPaymentForm patientId={patientId} onDone={invalidateAll} onPaid={setReceipt} />
       </div>
 
       <AddChargeForm patientId={patientId} onDone={invalidateAll} />
@@ -146,59 +191,130 @@ function TransactionRow({ tx, onDone, canWaive }) {
   );
 }
 
-const BILLING_TYPES = [
-  { value: "consultation", label: "Consultation Fee" },
-  { value: "card", label: "Card" },
-];
 
+// Everything the hospital charges for, in one place: the priced catalogue
+// for anything that has a price, and a write-in for the one-off that does
+// not. What is typed here is saved as the charge description, so it reads
+// the same on the statement as a catalogued item does.
 function BillFromCatalogForm({ patientId, onDone }) {
   const [category, setCategory] = useState("consultation");
   const [itemId, setItemId] = useState("");
+  const [customDescription, setCustomDescription] = useState("");
+  const [customAmount, setCustomAmount] = useState("");
+  const [error, setError] = useState(null);
 
+  const chosen = BILLING_CATEGORIES.find((c) => c.category === category);
   const { data: items } = useQuery({
     queryKey: ["billing-items", category],
-    queryFn: () => api.get("/billing-items/", { params: { category, is_active: true } }).then((r) => r.data.results ?? r.data),
+    queryFn: () => api.get("/billing-items/", { params: { category, is_active: true, page_size: 200 } })
+      .then((r) => r.data.results ?? r.data),
   });
 
-  const billItem = useMutation({
+  const priced = items ?? [];
+  // Only "Other" is typed in. Everything else is billed at the price the
+  // catalogue holds, so the same service costs the same at every window.
+  const writeIn = category === "other";
+
+  const bill = useMutation({
     mutationFn: () => {
-      const item = items.find((i) => String(i.id) === itemId);
-      return api.post("/charges/", { patient: patientId, description: item.name, amount: item.price });
+      if (writeIn) {
+        return api.post("/charges/", {
+          patient: patientId,
+          description: customDescription.trim(),
+          amount: customAmount,
+          source_type: category,
+        });
+      }
+      const item = priced.find((i) => String(i.id) === itemId);
+      return api.post("/charges/", {
+        patient: patientId, description: item.name, amount: item.price, source_type: category,
+      });
     },
     onSuccess: () => {
       onDone();
-      setItemId("");
+      setItemId(""); setCustomDescription(""); setCustomAmount(""); setError(null);
     },
+    onError: (err) => setError(readError(err, "Could not bill this item.")),
   });
+
+  const ready = writeIn
+    ? customDescription.trim().length > 0 && Number(customAmount) > 0
+    : Boolean(itemId);
 
   return (
     <form
-      onSubmit={(e) => { e.preventDefault(); if (itemId) billItem.mutate(); }}
+      onSubmit={(e) => { e.preventDefault(); if (ready) bill.mutate(); }}
       className="bg-white border rounded-xl p-5 space-y-3"
     >
-      <h2 className="font-medium text-slate-800">Bill a fee or card</h2>
+      <h2 className="font-medium text-slate-800">Bill for a service</h2>
       <div>
-        <label className="block text-sm font-medium mb-1">Billing type</label>
+        <label className="block text-sm font-medium mb-1 text-slate-700">What are you billing for?</label>
         <select
           value={category}
-          onChange={(e) => { setCategory(e.target.value); setItemId(""); }}
-          className="w-full border rounded-md px-3 py-2 text-sm"
+          onChange={(e) => { setCategory(e.target.value); setItemId(""); setError(null); }}
+          className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm"
         >
-          {BILLING_TYPES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
-        </select>
-      </div>
-      <div>
-        <label className="block text-sm font-medium mb-1">{category === "card" ? "Card type" : "Consultation fee"}</label>
-        <select value={itemId} onChange={(e) => setItemId(e.target.value)} className="w-full border rounded-md px-3 py-2 text-sm">
-          <option value="">Select…</option>
-          {(items ?? []).map((i) => (
-            <option key={i.id} value={i.id}>{i.name} — {currency(i.price)}</option>
+          {BILLING_CATEGORIES.map((c) => (
+            <option key={c.category} value={c.category}>{c.label}</option>
           ))}
         </select>
       </div>
-      {billItem.isError && <p className="text-xs text-red-600">Could not bill this item.</p>}
-      <button type="submit" disabled={!itemId || billItem.isPending} className="bg-brand-600 text-white px-4 py-2 rounded-md text-sm hover:bg-brand-700 disabled:opacity-50">
-        {billItem.isPending ? "Billing…" : "Bill"}
+
+      {!writeIn && (
+        <div>
+          <label className="block text-sm font-medium mb-1 text-slate-700">{chosen?.title ?? "Item"}</label>
+          <select
+            value={itemId}
+            onChange={(e) => setItemId(e.target.value)}
+            className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm"
+          >
+            <option value="">Select…</option>
+            {priced.map((i) => (
+              <option key={i.id} value={i.id}>{i.name} — {currency(i.price)}</option>
+            ))}
+          </select>
+          {items && priced.length === 0 && (
+            <p className="mt-1 text-sm text-amber-700">
+              Nothing priced under {chosen?.label} yet — add it under Billing Catalog.
+            </p>
+          )}
+        </div>
+      )}
+
+      {writeIn && (
+        <>
+          <div>
+            <label className="block text-sm font-medium mb-1 text-slate-700">What is it for? *</label>
+            <input
+              value={customDescription}
+              onChange={(e) => setCustomDescription(e.target.value)}
+              placeholder="e.g. Medical report, ambulance, dressing pack"
+              className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm"
+            />
+            <p className="mt-1 text-sm text-slate-600">
+              This is what the patient sees on their statement, so write it the way you would say it.
+            </p>
+          </div>
+          <div>
+            <label className="block text-sm font-medium mb-1 text-slate-700">Amount *</label>
+            <input
+              type="number" min="0" step="0.01"
+              value={customAmount}
+              onChange={(e) => setCustomAmount(e.target.value)}
+              placeholder="0.00"
+              className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm"
+            />
+          </div>
+        </>
+      )}
+
+      {error && <p className="text-sm text-red-600">{error}</p>}
+      <button
+        type="submit"
+        disabled={!ready || bill.isPending}
+        className="bg-brand-600 text-white px-4 py-2 rounded-md text-sm hover:bg-brand-700 disabled:opacity-50"
+      >
+        {bill.isPending ? "Billing…" : "Bill"}
       </button>
     </form>
   );
@@ -246,7 +362,7 @@ function AddChargeForm({ patientId, onDone }) {
   );
 }
 
-function RecordPaymentForm({ patientId, onDone }) {
+function RecordPaymentForm({ patientId, onDone, onPaid }) {
   const { showToast } = useToast();
   const [amount, setAmount] = useState("");
   const [method, setMethod] = useState("cash");
@@ -259,6 +375,8 @@ function RecordPaymentForm({ patientId, onDone }) {
       showToast({ title: "Payment recorded", message: `${response.data.patient_name} — ${currency(response.data.amount)}` });
       setAmount("");
       setReference("");
+      // Offer the receipt straight away — the patient is still at the desk.
+      onPaid?.(response.data);
     },
   });
 

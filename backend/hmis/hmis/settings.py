@@ -33,6 +33,7 @@ INSTALLED_APPS = [
     "apps.workflow",
     "apps.billing",
     "apps.diagnostics",
+    "apps.laboratory",
     "apps.inpatient",
 ]
 

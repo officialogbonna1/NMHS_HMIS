@@ -16,7 +16,6 @@ from apps.appointments.models import Appointment
 from apps.clinical.models import Vitals, NursingNote
 from apps.inventory.models import Item, Batch
 from apps.pharmacy.models import Prescription
-from apps.diagnostics.models import InvestigationOrder
 from apps.inpatient.models import Admission, Bed
 from apps.billing.models import Charge, Payment, PatientLedger, Adjustment
 from django_filters.rest_framework import DjangoFilterBackend
@@ -56,21 +55,71 @@ REFERRAL_PURPOSES = ["laboratory", "ultrasound", "eye", "procedure"]
 # which has to list the same roles or a referral notification is a dead link.
 WORKING_ROLES = sorted({role for roles in PURPOSE_ROLE.values() for role in roles})
 
+# Roles that work from a station of their own rather than the shared queue.
+ROLE_STATION_PURPOSE = {
+    "laboratory": "laboratory",
+    "radiology": "ultrasound",
+    "optometrist": "eye",
+    "ophthalmologist": "eye",
+}
+STATION_ROLES = set(ROLE_STATION_PURPOSE)
+
 
 def _display_name(user):
     return user.get_full_name() or user.username
 
 
+# Roles that work a shared queue: the whole team sees the list, one person
+# claims each patient. Broadcasting unassigned work to all of them is right —
+# it is how a lab request reaches whoever is on the bench tonight.
+#
+# A doctor is not a pool. A patient belongs to *their* doctor, so telling
+# every doctor in the hospital about one referral is noise that trains people
+# to ignore the bell — see `_doctor_targets`.
+POOLED_ROLES = {"nurse", "laboratory", "radiology", "optometrist", "ophthalmologist"}
+
+
+def _doctor_targets(route):
+    """
+    Which doctor should hear about doctor-work (a consultation, a procedure).
+
+    Whoever it was assigned to; otherwise the doctors who actually hold this
+    patient right now — the same definition the chart uses
+    (`patients.access.doctors_for_patient`). If nobody holds them, nobody is
+    pinged: the route still sits in `/queue`, which every doctor can see, and
+    a queue is the right place for unclaimed work. A notification to all of
+    them is not.
+    """
+    from apps.patients.access import doctors_for_patient
+    return list(doctors_for_patient(route.visit.patient))
+
+
 def route_targets(route):
-    """Who should hear about this route."""
+    """
+    Who should hear about this route — and, just as important, who should not.
+
+    Never the person who raised it: telling a doctor about the referral she
+    just wrote is pure noise, and it is how a bell full of your own actions
+    stops being read.
+    """
+    raiser_id = route.routed_by_id
+
     if route.assigned_to_id:
-        return [route.assigned_to] if route.assigned_to.is_active else []
-    roles = PURPOSE_ROLE.get(route.purpose)
-    if roles:
-        # Unassigned work goes to everyone who can pick it up, not only the
-        # staff someone remembered to add to the department.
-        return list(User.objects.filter(role__in=roles, is_active=True))
-    return list(route.department.staff.filter(is_active=True))
+        targets = [route.assigned_to] if route.assigned_to.is_active else []
+    else:
+        roles = PURPOSE_ROLE.get(route.purpose)
+        if roles is None:
+            # A purpose with no role of its own ("other"). Department
+            # membership is the only signal left.
+            targets = list(route.department.staff.filter(is_active=True))
+        elif set(roles) & POOLED_ROLES:
+            # Unassigned work goes to everyone who can pick it up, not only
+            # the staff someone remembered to add to the department.
+            targets = list(User.objects.filter(role__in=roles, is_active=True))
+        else:
+            targets = _doctor_targets(route)
+
+    return [user for user in targets if user.pk != raiser_id]
 
 
 def _vitals_taken_on(route):
@@ -236,6 +285,24 @@ def _file_result_on_the_record(route, author, title="", document=None):
     )
 
 
+# Which tab on the patient's chart holds each unit's answers. A result
+# notification should open on the answer, not on the chart's front page with
+# the doctor left to hunt for it. Keep in step with PatientDetail's tabs.
+PURPOSE_CHART_TAB = {
+    "laboratory": "lab",
+    "investigation": "lab",
+    "ultrasound": "ultrasound",
+    "eye": "eye",
+    "procedure": "procedure",
+}
+
+
+def chart_url_for(route):
+    tab = PURPOSE_CHART_TAB.get(route.purpose)
+    base = f"/patients/{route.visit.patient_id}"
+    return f"{base}/{tab}" if tab else base
+
+
 def _notify_result(route, author):
     """
     Send the finding back to whoever asked for it. A result nobody is told
@@ -249,7 +316,7 @@ def _notify_result(route, author):
     notify(recipient=doctor,
            title=f"{route.get_purpose_display()} result: {route.visit.patient}",
            message=f"{summary} — {_display_name(author)}",
-           category="clinical", action_url=f"/patients/{route.visit.patient_id}")
+           category="clinical", action_url=chart_url_for(route))
 
 
 # Where each unit actually works. A notification has to land on the page
@@ -269,11 +336,13 @@ def _notify_referral(route, doctor):
     is one nobody can query.
     """
     station = PURPOSE_STATION.get(route.purpose, "/queue")
-    for user in route_targets(route):
+    targets = route_targets(route)
+    for user in targets:
         notify(recipient=user,
                title=f"{route.get_purpose_display()} requested: {route.visit.patient}",
                message=(route.notes or "No clinical note given.") + f" — Dr. {_display_name(doctor)}",
                category="routing", action_url=station)
+    return targets
 
 
 def _notify_route(route):
@@ -573,8 +642,21 @@ class PatientRouteViewSet(viewsets.ModelViewSet):
         )
         audit_event(actor=user, action="patient.referred", instance=route,
                     details={"purpose": purpose, "department": department.name}, request=request)
-        _notify_referral(route, user)
-        return Response(PatientRouteSerializer(route).data, status=drf_status.HTTP_201_CREATED)
+        told = _notify_referral(route, user)
+
+        data = PatientRouteSerializer(route).data
+        # Doctor-work with nobody holding the patient reaches no inbox on
+        # purpose — telling every doctor in the hospital about one dressing
+        # is how a bell stops being read. But silence must not be a surprise,
+        # so the referrer is told the patient is in the shared queue and can
+        # name somebody instead.
+        data["notified"] = [_display_name(person) for person in told]
+        if not told:
+            data["notice"] = (
+                f"{patient} is in the queue, but nobody has been notified — no doctor is "
+                "currently holding them. Name who should do this if it is urgent."
+            )
+        return Response(data, status=drf_status.HTTP_201_CREATED)
 
     @action(detail=True, methods=["post"])
     def start(self, request, pk=None):
@@ -745,20 +827,38 @@ class DashboardView(APIView):
         # the patient list, so a doctor with somebody waiting had no way in
         # from here; the queue page is only routable for the roles that have
         # one, so the rest keep the patient list.
-        queue_href = "/queue" if role in {"doctor", "nurse", "reception"} else "/patients"
+        queue_href = PURPOSE_STATION.get(ROLE_STATION_PURPOSE.get(role), "/queue") if role in STATION_ROLES \
+            else ("/queue" if role in {"doctor", "nurse", "reception"} else "/patients")
         cards = [
             {"key": "my_patients", "label": "My patients",
              "value": patient_queryset_for(user).count(), "href": "/patients", "tone": "violet"},
             {"key": "my_queue", "label": "My queue", "value": routes.count(), "href": queue_href, "tone": "blue"},
             {"key": "unread", "label": "Unread notifications", "value": unread, "href": "/notifications", "tone": "slate"},
         ]
-        if role in {"doctor", "optometrist", "ophthalmologist"}:
+        # The eye roles are clinicians *and* run a station, so the station
+        # branch below is a separate `if` — an elif chain gave them the
+        # doctor's cards and never their own.
+        if role == "doctor":
             cards.append({"key": "seen_today", "label": "Patients seen today", "value": Visit.objects.filter(attending_doctor=user, created_at__date=today).count(), "href": "/patients", "tone": "green"})
         elif role == "pharmacist":
             cards.append({"label": "Prescriptions awaiting dispensing", "value": Prescription.objects.filter(status="pending").count(), "href": "/pharmacy", "tone": "amber"})
             cards.append({"label": "Dispensed, awaiting payment", "value": Charge.objects.filter(source_type="prescription", status__in=["unpaid", "partial"]).count(), "href": "/pharmacy", "tone": "red"})
-        elif role == "laboratory":
-            cards.append({"label": "Investigations awaiting work", "value": InvestigationOrder.objects.filter(status__in=["requested", "collected", "in_progress"]).count(), "href": "/investigation-orders", "tone": "violet"})
+        if role in STATION_ROLES:
+            # Their own station, counting the referrals actually waiting on
+            # them. It used to count InvestigationOrders and link to a page
+            # that was never built, so the number was wrong *and* the card
+            # was a dead end.
+            purpose = ROLE_STATION_PURPOSE[role]
+            station = PURPOSE_STATION[purpose]
+            waiting = routes.filter(purpose=purpose, status="queued").count()
+            in_progress = routes.filter(purpose=purpose, status="in_progress").count()
+            cards.append({"key": "referrals_waiting", "label": "Referrals waiting",
+                          "value": waiting, "href": station, "tone": "amber"})
+            cards.append({"key": "referrals_in_progress", "label": "In progress",
+                          "value": in_progress, "href": station, "tone": "violet"})
+            cards.append({"key": "results_today", "label": "Results filed today",
+                          "value": PatientRoute.objects.filter(result_by=user, result_at__date=today).count(),
+                          "href": station, "tone": "green"})
         return cards
 
     def _cash_desk_cards(self, user, today, unread):

@@ -1,6 +1,8 @@
+import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import api from "../api/client";
+import LabReportSheet from "../components/LabReportSheet.jsx";
 
 // The doctor's single view of a patient: everything attached to them, in the
 // order it gets read — allergies first because they change what can be
@@ -74,9 +76,27 @@ export default function PatientOverview({ patientId }) {
           <Row label="Sex" value={patient.sex} />
           <Row label="Age" value={ageLabel(patient)} />
           <Row label="Phone" value={patient.phone_number} />
-          <Row label="City" value={patient.city} />
+          <Row label="Address" value={patient.address} />
           <Row label="Registered" value={patient.registered && new Date(patient.registered).toLocaleDateString()} />
           {patient.short_note && <p className="mt-2 border-t pt-2 text-sm text-slate-700">{patient.short_note}</p>}
+          {patient.emergency_contact && (
+            <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 p-3">
+              <p className="text-xs font-semibold uppercase tracking-wide text-amber-800">
+                Emergency contact
+              </p>
+              <p className="mt-1 font-medium text-slate-900">
+                {patient.emergency_contact.name}
+                {patient.emergency_contact.relationship && ` · ${patient.emergency_contact.relationship}`}
+              </p>
+              <p className="text-sm text-slate-800">
+                {[patient.emergency_contact.phone, patient.emergency_contact.alt_phone]
+                  .filter(Boolean).join(" · ") || "No number on file"}
+              </p>
+              {patient.emergency_contact.notes && (
+                <p className="mt-1 text-sm text-slate-700">{patient.emergency_contact.notes}</p>
+              )}
+            </div>
+          )}
         </Card>
 
         <Card
@@ -391,7 +411,116 @@ export default function PatientOverview({ patientId }) {
           )}
         />
       </Card>
+
+      <LabOrdersCard patientId={patientId} />
     </div>
+  );
+}
+
+// Laboratory results as the lab filed them — parameter, value, unit,
+// reference range and flag — rather than only the summary that travels onto
+// the routing note. Read straight from `/lab-orders/`, which scopes itself
+// to the patients this doctor holds.
+function LabOrdersCard({ patientId }) {
+  const [printing, setPrinting] = useState(null);
+  const { data } = useQuery({
+    queryKey: ["lab-orders", String(patientId)],
+    queryFn: () => api.get("/lab-orders/", {
+      // `detail` brings the values with the list; the counter asking the
+      // same endpoint gets the summary, which has none.
+      params: { patient: patientId, detail: 1, page_size: 20 },
+    })
+      .then((r) => r.data.results ?? r.data),
+  });
+
+  const orders = (data ?? []).filter((o) => o.status !== "cancelled");
+
+  return (
+    <Card
+      title="Laboratory results"
+      subtitle="What the bench actually reported, against the reference ranges in force when the test was run. Parameters that were not run are simply absent."
+    >
+      {orders.length === 0 && <p className="text-sm text-slate-600">No laboratory orders yet.</p>}
+
+      <ul className="space-y-4">
+        {orders.map((order) => (
+          <li key={order.id} className="rounded-lg border border-slate-200 p-3">
+            <div className="flex flex-wrap items-start justify-between gap-2">
+              <div className="min-w-0">
+                <p className="font-medium text-slate-800">
+                  {order.order_number}
+                  <span className="ml-2 text-sm font-normal text-slate-600">
+                    {order.status_label}
+                  </span>
+                </p>
+                <p className="text-xs text-slate-600">
+                  {new Date(order.created_at).toLocaleString()}
+                  {order.verified_by_name && ` · verified by ${order.verified_by_name}`}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setPrinting(order.id)}
+                className="rounded-md border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
+              >
+                🖨 Report
+              </button>
+            </div>
+
+            {order.items.filter((i) => i.values?.length || i.comments).map((item) => (
+              <div key={item.id} className="mt-3">
+                <p className="flex flex-wrap items-center gap-2 text-sm font-semibold text-slate-800">
+                  {item.test_name}
+                  {/* An unverified result is not a report. It is shown —
+                      a doctor sometimes needs the figure before the bench
+                      has signed it off — but never as a finished one. */}
+                  {item.status === "verified" ? (
+                    <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-xs font-medium text-emerald-700 ring-1 ring-inset ring-emerald-200">
+                      Released{item.verified_by_name && ` · ${item.verified_by_name}`}
+                    </span>
+                  ) : (
+                    <span className="rounded-full bg-amber-50 px-2 py-0.5 text-xs font-medium text-amber-800 ring-1 ring-inset ring-amber-200">
+                      Provisional — not yet verified
+                    </span>
+                  )}
+                </p>
+                <div className="overflow-x-auto">
+                  <table className="mt-1 w-full min-w-[22rem] text-sm">
+                    <tbody>
+                      {[...(item.values ?? [])]
+                        .sort((a, b) => a.display_order - b.display_order)
+                        .map((value) => (
+                          <tr key={value.id} className="border-b border-slate-100 last:border-0">
+                            <td className="py-1 pr-3 text-slate-700">{value.parameter_name}</td>
+                            <td className="py-1 pr-3 font-medium text-slate-900">
+                              {value.value} {value.unit}
+                              {["low", "high", "abnormal", "critical"].includes(value.flag) && (
+                                <span className="ml-1 rounded bg-amber-100 px-1.5 py-0.5 text-xs font-semibold text-amber-800">
+                                  {value.flag_label}
+                                </span>
+                              )}
+                            </td>
+                            <td className="py-1 text-xs text-slate-600">
+                              {value.reference_range}
+                            </td>
+                          </tr>
+                        ))}
+                    </tbody>
+                  </table>
+                </div>
+                {item.comments && (
+                  <p className="mt-1 text-sm text-slate-700">
+                    <span className="font-medium">Comment:</span> {item.comments}
+                  </p>
+                )}
+              </div>
+            ))}
+          </li>
+        ))}
+      </ul>
+
+      {printing && <LabReportSheet orderId={printing} onClose={() => setPrinting(null)} />}
+    </Card>
   );
 }
 
@@ -436,8 +565,5 @@ function dateLabel(value) {
 }
 
 function ageLabel(patient) {
-  if (patient.age_years) return `${patient.age_years} yrs`;
-  if (!patient.birthdate) return null;
-  const years = Math.floor((Date.now() - new Date(patient.birthdate)) / (365.25 * 24 * 3600 * 1000));
-  return `${years} yrs`;
+  return patient.age_display ?? null;
 }

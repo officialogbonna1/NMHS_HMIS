@@ -135,12 +135,10 @@ function PatientRow({ patient: p }) {
   );
 }
 
+// The server works this out from the birthdate in the right unit, so a
+// newborn reads "3 days" rather than the "0" a years-only division gives.
 function ageFrom(p) {
-  if (p.birthdate) {
-    const diff = Date.now() - new Date(p.birthdate).getTime();
-    return Math.floor(diff / (365.25 * 24 * 60 * 60 * 1000));
-  }
-  return p.age_years ?? null;
+  return p.age_display ?? null;
 }
 
 function hashCode(str) {

@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { HOSPITAL } from "../components/PrintSheet.jsx";
 import { useNavigate, useLocation } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext.jsx";
 
@@ -28,13 +29,16 @@ export default function Login() {
   return (
     <div className="min-h-screen bg-brand-950 flex items-center justify-center p-6">
       <div className="w-full max-w-sm">
-        <div className="flex items-center justify-center gap-3 mb-8">
-          <span className="grid h-11 w-11 place-items-center rounded-xl bg-gradient-to-br from-brand-300 to-brand-500 font-bold text-brand-950 shadow-lg shadow-brand-500/20">+</span>
-          <span className="text-2xl font-semibold tracking-tight text-white">NMHS</span>
+        <div className="mb-8 flex flex-col items-center gap-2 text-center">
+          <div className="flex items-center gap-3">
+            <span className="grid h-11 w-11 place-items-center rounded-xl bg-gradient-to-br from-brand-300 to-brand-500 font-bold text-brand-950 shadow-lg shadow-brand-500/20">+</span>
+            <span className="text-2xl font-semibold tracking-tight text-white">{HOSPITAL.name}</span>
+          </div>
+          <p className="text-sm text-brand-200">{HOSPITAL.fullName}</p>
         </div>
         <div className="bg-white rounded-2xl p-7 shadow-xl">
           <h1 className="text-lg font-semibold text-slate-900 mb-1">Sign in</h1>
-          <p className="text-sm text-slate-500 mb-5">Hospital Management Information System</p>
+          <p className="mb-5 text-sm text-slate-600">Hospital Management Information System</p>
           <form onSubmit={handleSubmit} className="space-y-3">
             <input
               className="w-full border rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-400 focus:border-transparent"

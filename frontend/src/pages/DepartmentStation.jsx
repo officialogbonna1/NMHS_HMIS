@@ -5,6 +5,7 @@ import api from "../api/client";
 import { readError } from "../api/errors";
 import { useAuth } from "../auth/AuthContext.jsx";
 import { useToast } from "../components/Toaster.jsx";
+import LabResultEntry from "../components/LabResultEntry.jsx";
 
 // One working page, three units. Laboratory, Ultrasound and the Eye clinic
 // do the same job in the same order — a doctor refers, somebody claims the
@@ -25,6 +26,10 @@ export const STATIONS = {
     resultPlaceholder: "e.g. Hb 11.2 g/dL, WBC 6.1, no parasites seen",
     titlePlaceholder: "e.g. Full blood count",
     roles: ["laboratory"],
+    // The laboratory works off the configured test catalogue — pick the
+    // tests, fill in the parameters you ran. The other two units write a
+    // report in prose, so they have no `structured` mode.
+    structured: true,
   },
   ultrasound: {
     purpose: "ultrasound",
@@ -244,6 +249,9 @@ function Station({ config, route, onBack }) {
   const [title, setTitle] = useState("");
   const [file, setFile] = useState(null);
   const [error, setError] = useState(null);
+  // Structured entry is the lab's normal way of working; the prose form
+  // stays one click away for a result that came in on paper from outside.
+  const [mode, setMode] = useState(config.structured ? "structured" : "freeform");
 
   // Multipart: the result is usually a scanned printout or a photo of one
   // as well as typed values, and JSON cannot carry a File.
@@ -337,6 +345,28 @@ function Station({ config, route, onBack }) {
         </section>
       )}
 
+      {config.structured && (
+        <div className="flex overflow-hidden rounded-lg border border-slate-300 text-sm">
+          {[["structured", "Result form"], ["freeform", "Free text / upload"]].map(([value, label]) => (
+            <button
+              key={value}
+              onClick={() => setMode(value)}
+              className={`flex-1 px-4 py-2 font-medium transition ${
+                mode === value ? "bg-brand-600 text-white" : "bg-white text-slate-700 hover:bg-slate-50"}`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {mode === "structured" ? (
+        <LabResultEntry
+          routeId={route.id}
+          patientId={route.patient_id}
+          onDone={onBack}
+        />
+      ) : (
       <section className="rounded-xl border bg-white p-5">
         <h2 className="font-medium text-slate-800">Conduct the test</h2>
         <p className="mb-4 text-sm text-slate-700">
@@ -412,6 +442,7 @@ function Station({ config, route, onBack }) {
           </span>
         </div>
       </section>
+      )}
     </div>
   );
 }

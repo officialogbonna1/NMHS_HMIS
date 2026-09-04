@@ -6,3 +6,44 @@
   body { @apply antialiased; }
   button, a { -webkit-tap-highlight-color: transparent; }
 }
+
+/* ---------------------------------------------------------------------
+   Printing.
+
+   A print sheet renders inside #print-area. When the browser prints, the
+   whole app is hidden and only that element is laid out — so what comes
+   out of the printer is the document, not the nav, the buttons or the
+   patient list behind it.
+
+   Black on white throughout: coloured backgrounds either burn toner or
+   are dropped by the driver, and a receipt that prints as pale grey is a
+   receipt nobody can read.
+   --------------------------------------------------------------------- */
+@media print {
+  @page { margin: 14mm; }
+
+  body { background: #fff; }
+
+  /* Hide the app, keep the sheet. */
+  body * { visibility: hidden; }
+  #print-area, #print-area * { visibility: visible; }
+  #print-area {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    padding: 0;
+    margin: 0;
+    box-shadow: none;
+    color: #000;
+    background: #fff;
+    font-size: 12pt;
+  }
+
+  .no-print, .no-print * { display: none !important; }
+
+  #print-area table { width: 100%; border-collapse: collapse; }
+  #print-area th, #print-area td { padding: 6px 4px; }
+
+  /* Keep a row and its total on the same page. */
+  #print-area tr, #print-area .keep-together { break-inside: avoid; }
+}

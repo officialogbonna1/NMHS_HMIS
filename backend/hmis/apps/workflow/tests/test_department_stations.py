@@ -70,7 +70,7 @@ class DepartmentStationTests(TestCase):
         self.assertIsNotNone(note, "the doctor was not told their result was ready")
         self.assertIn("Laboratory result", note.title)
         self.assertIn("Hb 11.2", note.message)
-        self.assertEqual(note.action_url, f"/patients/{self.patient.id}")
+        self.assertEqual(note.action_url, f"/patients/{self.patient.id}/lab")
 
     def test_closing_the_work_can_carry_the_result_with_it(self):
         route_id = self._refer()

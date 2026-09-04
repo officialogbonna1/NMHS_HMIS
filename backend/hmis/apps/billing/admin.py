@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from .models import BillingItem, PatientLedger, Charge, Payment, Adjustment
+from .models import BillingItem, PatientLedger, Charge, Payment, Adjustment, PaymentDeferral
 
 
 @admin.register(BillingItem)
@@ -54,6 +54,21 @@ class PaymentAdmin(_MoneyAdmin):
 class AdjustmentAdmin(_MoneyAdmin):
     list_display = ["created_at", "patient", "kind", "charge", "reason"]
     list_filter = ["kind", "created_at"]
+
+
+@admin.register(PaymentDeferral)
+class PaymentDeferralAdmin(_MoneyAdmin):
+    """
+    The pay-later register: who allowed a patient to have the service before
+    paying. Read-only here like every other money row — a deferral is created
+    by the counter through `billing/services.defer_charge`, which is also
+    what closes it when the charge is finally settled.
+    """
+    list_display = ["created_at", "patient", "charge", "amount_deferred", "approved_by",
+                    "released_at"]
+    list_filter = ["created_at", "released_at"]
+    search_fields = ["patient__last_name", "patient__first_name", "patient__file_number",
+                     "charge__description"]
 
 
 @admin.register(PatientLedger)

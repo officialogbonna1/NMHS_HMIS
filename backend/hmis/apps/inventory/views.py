@@ -8,15 +8,11 @@ from django_filters.rest_framework import DjangoFilterBackend
 from .models import Item, Batch, StockMovement
 from . import serializers
 from .services import receive_batch, record_stock_count, write_off_expired
-from apps.accounts.permissions import RoleRequired
+from apps.accounts.permissions import STOCK_ROLES, RoleRequired
 from apps.core.services import audit_event
-
-STOCK_ROLES = ["pharmacist", "inventory_manager"]
-
 
 class ItemViewSet(viewsets.ModelViewSet):
     queryset = Item.objects.all()
-    permission_classes = [RoleRequired]
     # The doctor's drug picker searches this list rather than filtering the
     # first page client-side, which quietly hid every drug past number 25.
     filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
@@ -25,13 +21,16 @@ class ItemViewSet(viewsets.ModelViewSet):
     ordering = ["name"]
 
     def get_permissions(self):
-        if self.action == "list" and self.request.user.role == "doctor":
+        # getattr, not `.role` — get_permissions runs *before* authentication
+        # has been established, so an anonymous request reaches here with an
+        # AnonymousUser and must be refused, not crash with a 500.
+        if self.action == "list" and getattr(self.request.user, "role", None) == "doctor":
             return [RoleRequired(["doctor"])]
         return [RoleRequired(STOCK_ROLES)]
 
     def get_serializer_class(self):
         # Doctors get the availability-only view; everyone else sees real numbers.
-        if self.request.user.role == "doctor" and self.action == "list":
+        if getattr(self.request.user, "role", None) == "doctor" and self.action == "list":
             return serializers.ItemForPrescribingSerializer
         return serializers.ItemSerializer
 
@@ -44,7 +43,6 @@ class BatchViewSet(viewsets.ModelViewSet):
     """
     queryset = Batch.objects.select_related("item")
     serializer_class = serializers.BatchSerializer
-    permission_classes = [RoleRequired]
     filter_backends = [DjangoFilterBackend]
     filterset_fields = ["item"]
 
@@ -89,7 +87,6 @@ class BatchViewSet(viewsets.ModelViewSet):
 class StockMovementViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = StockMovement.objects.select_related("batch__item", "performed_by")
     serializer_class = serializers.StockMovementSerializer
-    permission_classes = [RoleRequired]
     filter_backends = [DjangoFilterBackend]
     filterset_fields = ["batch", "reason"]
 

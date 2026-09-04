@@ -7,7 +7,9 @@ from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework.filters import SearchFilter
 
 from . import models, serializers
-from apps.accounts.permissions import ClinicalRecordAccess, IsReception, RoleRequired
+from apps.accounts.permissions import (
+    PATIENT_LOOKUP_ROLES, ClinicalRecordAccess, IsReception, RoleRequired,
+)
 from .access import doctor_patient_q, patient_queryset_for
 from .overview import build_overview
 
@@ -34,10 +36,13 @@ class PatientViewSet(viewsets.ModelViewSet):
             # prescriptions. It is for the clinician treating the patient, not
             # for every role that may look up a name.
             return [ClinicalRecordAccess()]
-        return [RoleRequired(["reception", "doctor", "nurse", "pharmacist", "laboratory", "radiology", "optometrist", "ophthalmologist", "cashier", "accountant", "ward_manager"]) ]
+        # Looking a patient up is not reading their chart: the tiles, the
+        # notes and the overview are gated separately and far more tightly.
+        return [RoleRequired(PATIENT_LOOKUP_ROLES)]
 
     def get_serializer_class(self):
-        if self.request.user.role == "reception" and not self.request.user.sensitive_record_access:
+        user = self.request.user
+        if getattr(user, "role", None) == "reception" and not user.sensitive_record_access:
             return serializers.PatientDemographicsSerializer
         return serializers.PatientSerializer
 

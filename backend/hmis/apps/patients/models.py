@@ -1,3 +1,5 @@
+from datetime import date
+
 from django.db import models
 from django.conf import settings
 from apps.core.mixins import TimeStampedModel
@@ -13,13 +15,32 @@ class Patient(TimeStampedModel):
     last_name = models.CharField(max_length=100)
     sex = models.CharField(max_length=1, choices=SEX_CHOICES)
     birthdate = models.DateField(null=True, blank=True)
-    age_years = models.PositiveIntegerField(null=True, blank=True)  # if birthdate unknown
+    # The fallback when a birthdate is not known. It carries its own unit
+    # because "0 years" is how a three-day-old baby disappears from the
+    # record — and on a maternity ward that is most of the register.
+    AGE_UNITS = [("days", "Days"), ("weeks", "Weeks"), ("months", "Months"), ("years", "Years")]
+    age_value = models.PositiveIntegerField(null=True, blank=True)
+    age_unit = models.CharField(max_length=10, choices=AGE_UNITS, default="years", blank=True)
     email = models.EmailField(blank=True)
     phone_number = models.CharField(max_length=30, blank=True)
     short_note = models.TextField(blank=True)
 
     street_address = models.CharField(max_length=255, blank=True)
     city = models.CharField(max_length=100, blank=True)
+    state = models.CharField(max_length=100, blank=True)
+    # Defaulted rather than required: almost every patient is local, and a
+    # field the desk has to retype for each one gets left blank.
+    country = models.CharField(max_length=100, blank=True, default="Nigeria")
+
+    # Who to call if something happens. Kept on the patient rather than in a
+    # note, because at the moment it is needed nobody is going to read prose
+    # looking for a phone number.
+    emergency_contact_name = models.CharField(max_length=150, blank=True)
+    emergency_contact_relationship = models.CharField(max_length=60, blank=True)
+    emergency_contact_phone = models.CharField(max_length=30, blank=True)
+    emergency_contact_alt_phone = models.CharField(max_length=30, blank=True)
+    emergency_contact_address = models.CharField(max_length=255, blank=True)
+    emergency_contact_notes = models.TextField(blank=True)
 
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, related_name="patients_registered"
@@ -31,6 +52,32 @@ class Patient(TimeStampedModel):
 
     def __str__(self):
         return f"{self.last_name}, {self.first_name}"
+
+    @property
+    def age_display(self):
+        """
+        How old, in the largest unit that still says something useful. A
+        birthdate is exact, so it is preferred; otherwise the stated age is
+        shown in the unit it was given in.
+        """
+        if self.birthdate:
+            days = (date.today() - self.birthdate).days
+            if days < 0:
+                return None
+            if days < 14:
+                return f"{days} day{'s' if days != 1 else ''}"
+            if days < 60:
+                weeks = days // 7
+                return f"{weeks} week{'s' if weeks != 1 else ''}"
+            if days < 730:
+                months = days // 30
+                return f"{months} month{'s' if months != 1 else ''}"
+            return f"{days // 365} yrs"
+        if self.age_value is None:
+            return None
+        unit = self.age_unit or "years"
+        label = "yrs" if unit == "years" else unit.rstrip("s") + ("s" if self.age_value != 1 else "")
+        return f"{self.age_value} {label}"
 
     def save(self, *args, **kwargs):
         is_new = self._state.adding

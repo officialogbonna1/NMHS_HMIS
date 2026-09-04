@@ -51,12 +51,20 @@ def patient_queryset_for(user):
     if user.role == "nurse":
         return Patient.objects.filter(nurse_patient_q(user)).distinct()
     if user.role == "pharmacist":
-        # Prescriptions waiting to be filled, plus anyone the pharmacy has
-        # dispensed to but not yet been paid by — the counter still has to
-        # take that money.
+        # The queue, plus everyone the pharmacy has actually served.
+        #
+        # A patient does not stop being the pharmacy's the moment they pay.
+        # This used to require an unpaid charge alongside a dispensed
+        # prescription, so somebody who collected their drugs and settled at
+        # the counter dropped off the list — and "who did I hand that to on
+        # Tuesday?" became unanswerable from the Patients page.
+        #
+        # (That condition was also wrong on its own terms: two multi-valued
+        # relations in one Q match independently, so any unpaid charge at all
+        # — a consultation fee, a lab test — satisfied it, whether or not it
+        # was the pharmacy's.)
         return Patient.objects.filter(
-            models.Q(prescriptions__status="pending")
-            | models.Q(prescriptions__status="dispensed", charges__status__in=["unpaid", "partial"])
+            prescriptions__status__in=["pending", "dispensed"]
         ).distinct()
     if user.role in {"laboratory", "radiology", "optometrist", "ophthalmologist"}:
         return Patient.objects.filter(investigation_orders__status__in=["requested", "collected", "in_progress"]).distinct()

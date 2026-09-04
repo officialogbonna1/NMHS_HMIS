@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import api from "../api/client";
@@ -32,6 +32,136 @@ const PRIORITIES = [
   ["emergency", "Emergency"],
 ];
 
+// Which tests the doctor wants, when the referral is going to the lab.
+// The list is the catalogue's — never a hard-coded one — so a test the lab
+// added this morning is orderable this afternoon.
+function LabTestChooser({ chosen, onToggle }) {
+  const [term, setTerm] = useState("");
+
+  const { data: tests } = useQuery({
+    queryKey: ["lab-tests", term],
+    queryFn: () => api.get("/lab-tests/", {
+      params: { ...(term.trim() ? { search: term.trim() } : {}), page_size: 300 },
+    }).then((r) => r.data.results ?? r.data),
+    staleTime: 60000,
+  });
+
+  const { data: panels } = useQuery({
+    queryKey: ["lab-panels"],
+    queryFn: () => api.get("/lab-panels/").then((r) => r.data.results ?? r.data),
+    staleTime: 300000,
+  });
+
+  const grouped = useMemo(() => {
+    const groups = new Map();
+    for (const test of tests ?? []) {
+      if (!groups.has(test.category_label)) groups.set(test.category_label, []);
+      groups.get(test.category_label).push(test);
+    }
+    return [...groups.entries()];
+  }, [tests]);
+
+  return (
+    <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50/60 p-4">
+      <p className="text-sm font-medium text-slate-800">Which tests?</p>
+      <p className="mt-0.5 text-sm text-slate-600">
+        These, and only these, go onto the lab's worklist — the catalogue is what is available,
+        not what gets ordered. Each one raises a charge on the patient at the price shown, which
+        the front desk or the cash desk collects.
+      </p>
+
+      {(panels?.length ?? 0) > 0 && (
+        <div className="mt-3 flex flex-wrap gap-2">
+          {panels.map((panel) => (
+            <button
+              key={panel.id}
+              type="button"
+              title={panel.description}
+              onClick={() => {
+                const adding = panel.test_details.filter((t) => !chosen.some((c) => c.id === t.id));
+                const total = adding.reduce((sum, t) => sum + Number(t.charge_amount ?? 0), 0);
+                // A panel is several tests and several charges. Asking first
+                // is the difference between ordering a profile and ordering
+                // twelve tests by accident.
+                if (adding.length && window.confirm(
+                  `Add all ${adding.length} tests in "${panel.name}"?\n\n`
+                  + adding.map((t) => `• ${t.name}`).join("\n")
+                  + `\n\nThis adds ₦${total.toLocaleString()} to the patient's bill.`)) {
+                  adding.forEach(onToggle);
+                }
+              }}
+              className="rounded-full border border-brand-200 bg-brand-50 px-3 py-1.5 text-xs font-semibold text-brand-700 transition hover:bg-brand-100"
+            >
+              + {panel.name}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {chosen.length > 0 && (
+        <div className="mt-3">
+          <div className="flex flex-wrap gap-2">
+            {chosen.map((test) => (
+              <button
+                key={test.id}
+                type="button"
+                onClick={() => onToggle(test)}
+                className="rounded-full bg-brand-600 px-3 py-1.5 text-xs font-semibold text-white"
+              >
+                {test.name} ✕
+              </button>
+            ))}
+          </div>
+          <p className="mt-2 text-sm font-medium text-slate-800">
+            {chosen.length} test{chosen.length === 1 ? "" : "s"} · ₦
+            {chosen.reduce((sum, t) => sum + Number(t.charge_amount ?? 0), 0).toLocaleString()}{" "}
+            will be added to the patient's bill.
+          </p>
+        </div>
+      )}
+
+      <input
+        value={term}
+        onChange={(e) => setTerm(e.target.value)}
+        placeholder="Search the catalogue — FBC, MP, urinalysis…"
+        className="mt-3 w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-base text-slate-900 sm:py-2 sm:text-sm"
+      />
+      <div className="mt-3 max-h-56 overflow-y-auto pr-1">
+        {grouped.map(([category, rows]) => (
+          <div key={category} className="mb-3">
+            <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-slate-500">
+              {category}
+            </p>
+            <div className="flex flex-wrap gap-2">
+              {rows.map((test) => {
+                const picked = chosen.some((c) => c.id === test.id);
+                return (
+                  <button
+                    key={test.id}
+                    type="button"
+                    onClick={() => onToggle(test)}
+                    className={`rounded-lg border px-3 py-1.5 text-sm transition ${
+                      picked
+                        ? "border-brand-500 bg-brand-50 text-brand-800"
+                        : "border-slate-300 bg-white text-slate-800 hover:border-brand-400"}`}
+                  >
+                    {picked ? "✓ " : ""}{test.name}
+                    {Number(test.charge_amount) > 0 && (
+                      <span className={picked ? "text-brand-700" : "text-slate-600"}>
+                        {" "}· ₦{Number(test.charge_amount).toLocaleString()}
+                      </span>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export default function ReferPatient() {
   const queryClient = useQueryClient();
   const { showToast } = useToast();
@@ -42,13 +172,30 @@ export default function ReferPatient() {
   const [notes, setNotes] = useState("");
   const [sent, setSent] = useState(null);
   const [error, setError] = useState(null);
+  const [labTests, setLabTests] = useState([]);
 
   const refer = useMutation({
-    mutationFn: () => api.post("/patient-routes/refer/", {
-      patient: patient.id, purpose, priority, notes,
-    }),
-    onSuccess: () => {
+    // Two calls on purpose: the referral is the existing workflow and must
+    // happen whatever else does, then the named tests are put on the order
+    // it created. A catalogue hiccup must not swallow the referral.
+    mutationFn: async () => {
+      const { data: route } = await api.post("/patient-routes/refer/", {
+        patient: patient.id, purpose, priority, notes,
+      });
+      if (purpose === "laboratory" && labTests.length) {
+        const { data: order } = await api.post("/lab-orders/for-route/", { route: route.id });
+        await api.post(`/lab-orders/${order.id}/add-tests/`,
+          { tests: labTests.map((t) => t.id) });
+      }
+      return route;
+    },
+    onSuccess: (route) => {
       const where = DESTINATIONS.find((d) => d.purpose === purpose);
+      // The server says who it actually reached. Silence is deliberate for
+      // doctor-work nobody is holding, but the referrer has to know.
+      if (route?.notice) {
+        showToast({ title: "Nobody notified", message: route.notice, tone: "error" });
+      }
       queryClient.invalidateQueries({ queryKey: ["patient-routes"] });
       queryClient.invalidateQueries({ queryKey: ["dashboard"] });
       queryClient.invalidateQueries({ queryKey: ["patient-overview", String(patient.id)] });
@@ -57,7 +204,8 @@ export default function ReferPatient() {
         message: `${patientLabel(patient)} is now waiting on ${where?.label ?? purpose}.`,
       });
       setSent({ patient, where: where?.label ?? purpose });
-      setPatient(null); setPurpose(""); setPriority("routine"); setNotes(""); setError(null);
+      setPatient(null); setPurpose(""); setPriority("routine"); setNotes("");
+      setLabTests([]); setError(null);
     },
     onError: (err) => setError(readError(err, "Could not send this referral.")),
   });
@@ -149,6 +297,17 @@ export default function ReferPatient() {
             </p>
           </div>
         </div>
+
+        {purpose === "laboratory" && patient && (
+          <LabTestChooser
+            chosen={labTests}
+            onToggle={(test) => setLabTests((current) => (
+              current.some((t) => t.id === test.id)
+                ? current.filter((t) => t.id !== test.id)
+                : [...current, test]
+            ))}
+          />
+        )}
       </section>
 
       {error && (
@@ -165,7 +324,9 @@ export default function ReferPatient() {
         </button>
         <Link to="/queue" className="text-sm text-brand-600 hover:underline">My queue</Link>
         <span className="text-sm text-slate-700">
-          The counter bills the service separately — referring does not raise the charge.
+          {purpose === "laboratory" && labTests.length > 0
+            ? "The charge is raised with the order; the patient settles it at Reception or the cash desk."
+            : "The counter bills the service separately."}
         </span>
       </div>
     </div>
