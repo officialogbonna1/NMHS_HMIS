@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import api from "../api/client";
+import { Button } from "./ui.jsx";
 
 // One patient picker for every screen that has to find a patient.
 //
@@ -95,13 +96,12 @@ export default function PatientPicker({
           {value.file_number && <span className="ml-2 text-sm text-slate-600">{value.file_number}</span>}
         </span>
         {!disabled && (
-          <button
-            type="button"
+          <Button
+            variant="link" size="xs" className="shrink-0"
             onClick={() => { onChange(null); setTimeout(() => inputRef.current?.focus(), 0); }}
-            className="shrink-0 text-sm font-medium text-brand-600 hover:underline"
           >
             Change
-          </button>
+          </Button>
         )}
       </div>
     );

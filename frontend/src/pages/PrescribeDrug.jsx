@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import api from "../api/client";
+import { Button, Page, PageHeader, Breadcrumb } from "../components/ui.jsx";
 import { readError } from "../api/errors";
 import { useToast } from "../components/Toaster.jsx";
 
@@ -81,18 +82,30 @@ export default function PrescribeDrug() {
   const canSend = lines.length > 0 && incomplete.length === 0 && !send.isPending;
 
   return (
-    <div className="mx-auto max-w-3xl space-y-6 p-5 md:p-8">
-      <div>
-        <button onClick={() => navigate(`/patients/${patientId}`)} className="text-sm text-brand-600">
-          ← Back to patient
-        </button>
-        <h1 className="mt-2 text-2xl font-semibold">Prescribe medication</h1>
-        <p className="mt-1 text-sm text-slate-700">
-          {patient
-            ? <>For <span className="font-medium text-slate-800">{patient.last_name}, {patient.first_name}</span> · {patient.file_number}</>
-            : "Loading patient…"}
-        </p>
-      </div>
+    <Page width="narrow" className="space-y-6">
+      {/* The chart is where this was started, so the way back names it. */}
+      <PageHeader
+        className="mb-0"
+        icon="pill"
+        title="Prescribe medication"
+        breadcrumb={
+          <Breadcrumb
+            items={[
+              { label: "Patients", to: "/patients" },
+              {
+                label: patient ? `${patient.last_name}, ${patient.first_name}` : "Patient",
+                to: `/patients/${patientId}`,
+              },
+              { label: "Prescribe" },
+            ]}
+          />
+        }
+        subtitle={
+          patient
+            ? `For ${patient.last_name}, ${patient.first_name} · ${patient.file_number}`
+            : "Loading patient…"
+        }
+      />
 
       {pending.length > 0 && (
         <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
@@ -138,12 +151,9 @@ export default function PrescribeDrug() {
                       {line.item.unit && ` · per ${line.item.unit}`}
                     </p>
                   </div>
-                  <button
-                    onClick={() => removeLine(line.item.id)}
-                    className="text-sm font-medium text-red-600 hover:underline"
-                  >
+                  <Button variant="linkDanger" size="xs" onClick={() => removeLine(line.item.id)}>
                     Remove
-                  </button>
+                  </Button>
                 </div>
 
                 <div className="mt-3 grid gap-3 sm:grid-cols-[8rem,1fr]">
@@ -214,7 +224,7 @@ export default function PrescribeDrug() {
           The pharmacy deducts stock and takes payment when they hand the drugs over.
         </span>
       </div>
-    </div>
+    </Page>
   );
 }
 

@@ -3,8 +3,84 @@
 @tailwind utilities;
 
 @layer base {
-  body { @apply antialiased; }
+  /* iOS inflates text on rotation unless this is pinned, which made landscape
+     a different type size from portrait on the same phone. */
+  html {
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
+  }
+
+  body {
+    @apply antialiased;
+    /* A file number, an email or a long drug name has no break opportunity,
+       so it used to push its container — and the page — wider than the
+       screen. Breaking inside the word is better than a sideways page. */
+    overflow-wrap: break-word;
+  }
+
   button, a { -webkit-tap-highlight-color: transparent; }
+
+  /* Tapping a control should not bounce the layout on iOS. */
+  button, [role="button"] { touch-action: manipulation; }
+
+  /* A heading that is one long word still must not widen the page. */
+  h1, h2, h3 { overflow-wrap: break-word; }
+}
+
+@layer utilities {
+  /* `viewport-fit=cover` lets the page reach under a notch; these put the
+     padding back so a header button is never under the cutout and a footer
+     action is never under the home indicator. They are 0 on every device
+     without insets, so they cost nothing elsewhere. */
+  .pt-safe { padding-top: env(safe-area-inset-top, 0px); }
+  .pb-safe { padding-bottom: env(safe-area-inset-bottom, 0px); }
+  .px-safe {
+    padding-left: env(safe-area-inset-left, 0px);
+    padding-right: env(safe-area-inset-right, 0px);
+  }
+  .mb-safe { margin-bottom: env(safe-area-inset-bottom, 0px); }
+
+  /* The NMHS wordmark: the periwinkle gradient the old "+" tile was filled
+     with, moved onto the letters — densest on the first letter, feeding out
+     to white across the word.
+
+     Written out rather than composed from Tailwind's `bg-clip-text
+     text-transparent` because that pair sets `color: transparent`
+     unconditionally — anywhere `background-clip: text` is not honoured, the
+     hospital's name in the header would simply not be there. The plain colour
+     is the base; the gradient only replaces it where the clip actually works. */
+  .wordmark {
+    color: #DCE6FF;
+  }
+  @supports ((-webkit-background-clip: text) or (background-clip: text)) {
+    .wordmark {
+      background-image: linear-gradient(100deg, #6E93F7 0%, #B9CCFF 52%, #FFFFFF 100%);
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
+    }
+  }
+
+  /* The navigation list's own scroller. Momentum on iOS, so a flick carries
+     the way it does in a native app instead of stopping the moment the finger
+     lifts; `overscroll-contain` keeps a flick at the end of the list from
+     dragging the page behind the drawer. */
+  .nav-scroll {
+    overflow-y: auto;
+    scroll-behavior: smooth;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior-y: contain;
+    scrollbar-width: thin;
+  }
+
+  /* A rail that scrolls sideways on purpose, without the scrollbar furniture. */
+  .scroll-rail {
+    overflow-x: auto;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior-x: contain;
+  }
+  .scroll-rail::-webkit-scrollbar { display: none; }
 }
 
 /* ---------------------------------------------------------------------
@@ -46,4 +122,16 @@
 
   /* Keep a row and its total on the same page. */
   #print-area tr, #print-area .keep-together { break-inside: avoid; }
+}
+
+/* Somebody who has asked their system for less motion gets the drawer with no
+   slide and no fade — it still opens, it just arrives. The drawer itself is
+   handled by `motion-reduce:transition-none` on the panel and its scrim. */
+@media (prefers-reduced-motion: reduce) {
+  .animate-toast-in {
+    animation: none !important;
+  }
+  .nav-scroll {
+    scroll-behavior: auto;
+  }
 }

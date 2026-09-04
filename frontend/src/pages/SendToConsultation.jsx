@@ -5,6 +5,7 @@ import api from "../api/client";
 import PatientPicker, { patientLabel } from "../components/PatientPicker.jsx";
 import { readError } from "../api/errors";
 import { useToast } from "../components/Toaster.jsx";
+import { Button, Page, PageHeader } from "../components/ui.jsx";
 
 // Nursing's hand-off desk. The vitals station forwards the patient in front
 // of you; this page is for the rest of it — someone whose route you already
@@ -102,14 +103,13 @@ export default function SendToConsultation() {
   const readyToSend = patient && doctorId && !send.isPending;
 
   return (
-    <div className="mx-auto max-w-4xl space-y-6 p-5 md:p-8">
-      <div>
-        <h1 className="text-2xl font-semibold">Send to a doctor</h1>
-        <p className="mt-1 text-sm text-slate-600">
-          Queue a patient you have seen for consultation. The doctor is notified, the patient
-          appears in their queue, and the chart opens to them.
-        </p>
-      </div>
+    <Page className="space-y-6">
+      <PageHeader
+        className="mb-0"
+        icon="handoff"
+        title="Send to a doctor"
+        subtitle="Queue a patient you have seen for consultation. The doctor is notified, the patient appears in their queue, and the chart opens to them."
+      />
 
       {sent && (
         <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
@@ -127,9 +127,9 @@ export default function SendToConsultation() {
               <p className="font-medium">{patientLabel(patient)}</p>
               <p className="text-xs text-slate-600">{patient.file_number}</p>
             </div>
-            <button onClick={() => setPatient(null)} className="text-sm text-brand-600 hover:underline">
+            <Button variant="link" size="xs" onClick={() => setPatient(null)}>
               Choose someone else
-            </button>
+            </Button>
           </div>
         ) : (
           <>
@@ -284,15 +284,15 @@ export default function SendToConsultation() {
           >
             {send.isPending && !confirmNoVitals ? "Sending…" : "Send for consultation"}
           </button>
-          <Link to="/vitals" className="text-sm text-brand-600 hover:underline">
+          <Button variant="link" size="xs" to="/vitals">
             Back to the vitals station
-          </Link>
+          </Button>
         </div>
         <p className="mt-3 text-sm text-slate-600">
           The patient needs an open visit. Vitals should be recorded first — if they are not, you
           will be asked to confirm before the patient goes through.
         </p>
       </section>
-    </div>
+    </Page>
   );
 }

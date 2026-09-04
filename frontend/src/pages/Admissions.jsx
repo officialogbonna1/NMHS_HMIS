@@ -1,6 +1,8 @@
 import { useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import api from "../api/client";
+import { Icon } from "../components/icons.jsx";
+import { Page, PageHeader, MetaStat, TabBar, Tab, Button } from "../components/ui.jsx";
 import { readError } from "../api/errors";
 import PatientPicker, { patientLabel } from "../components/PatientPicker.jsx";
 import { useToast } from "../components/Toaster.jsx";
@@ -38,34 +40,40 @@ export default function Admissions() {
   }, [beds.data]);
 
   return (
-    <div className="mx-auto max-w-6xl space-y-6 p-5 md:p-8">
-      <header>
-        <h1 className="text-2xl font-semibold">Admissions</h1>
-        <p className="mt-1 text-sm text-slate-700">
-          Who is on the ward, and in which bed. Admit a patient, move them, or discharge them.
-        </p>
-        <p className="mt-2 text-sm text-slate-700">
-          <strong>{stats.occupied}</strong> of <strong>{stats.beds}</strong> beds occupied ·{" "}
-          <strong className={stats.free === 0 ? "text-red-600" : ""}>{stats.free}</strong> free
-        </p>
-      </header>
-
-      <div className="flex w-fit overflow-hidden rounded-xl border bg-white text-sm">
-        {[["beds", "Beds"], ["admitted", "On the ward"], ["admit", "Admit a patient"]].map(([value, label]) => (
-          <button
-            key={value}
-            onClick={() => setTab(value)}
-            className={`px-4 py-2 font-medium ${tab === value ? "bg-brand-600 text-white" : "text-slate-700 hover:bg-slate-50"}`}
+    <Page width="wide">
+      <PageHeader
+        icon="bed"
+        title="Admissions"
+        subtitle="Manage admitted patients, wards and bed assignments."
+        meta={
+          <>
+            <MetaStat value={`${stats.occupied} of ${stats.beds}`} label="beds occupied" />
+            <MetaStat value={stats.free} label="free" tone={stats.free === 0 ? "danger" : "positive"} />
+          </>
+        }
+        actions={
+          /* Admitting is the ward's primary action, so it sits in the header
+             rather than hiding as the third tab. It still drives the same
+             `tab` state, so nothing about the flow changed. */
+          <Button
+            variant={tab === "admit" ? "secondary" : "primary"}
+            onClick={() => setTab("admit")}
           >
-            {label}
-          </button>
-        ))}
-      </div>
+            <Icon name="plus" className="h-4 w-4" aria-hidden="true" />
+            Admit patient
+          </Button>
+        }
+      />
+
+      <TabBar label="Ward sections">
+        <Tab active={tab === "beds"} onClick={() => setTab("beds")}>Beds</Tab>
+        <Tab active={tab === "admitted"} onClick={() => setTab("admitted")}>On the ward</Tab>
+      </TabBar>
 
       {tab === "beds" && <BedBoard wards={wards.data} beds={beds.data} loading={beds.isLoading} />}
       {tab === "admitted" && <OnTheWard admissions={admissions.data} beds={beds.data} loading={admissions.isLoading} />}
       {tab === "admit" && <AdmitForm beds={beds.data} onDone={() => setTab("admitted")} />}
-    </div>
+    </Page>
   );
 }
 

@@ -2,9 +2,11 @@ import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import api from "../api/client";
+import { Icon } from "../components/icons.jsx";
 import { readError } from "../api/errors";
 import { useAuth } from "../auth/AuthContext.jsx";
 import { useToast } from "../components/Toaster.jsx";
+import { Button, TextLink, Page, PageHeader, MetaStat, Badge, waitedFor } from "../components/ui.jsx";
 import LabResultEntry from "../components/LabResultEntry.jsx";
 
 // One working page, three units. Laboratory, Ultrasound and the Eye clinic
@@ -21,6 +23,7 @@ export const STATIONS = {
     purpose: "laboratory",
     title: "Laboratory",
     icon: "🧫",
+    iconName: "flask",
     blurb: "Requests the doctors have sent to the lab. Claim one, run it, and write what it showed.",
     resultLabel: "Findings",
     resultPlaceholder: "e.g. Hb 11.2 g/dL, WBC 6.1, no parasites seen",
@@ -35,6 +38,7 @@ export const STATIONS = {
     purpose: "ultrasound",
     title: "Ultrasound / Imaging",
     icon: "🩻",
+    iconName: "scan",
     blurb: "Scans the doctors have requested. Claim one, scan, and write the report.",
     resultLabel: "Report",
     resultPlaceholder: "e.g. Normal liver echotexture. No gallstones seen.",
@@ -45,6 +49,7 @@ export const STATIONS = {
     purpose: "eye",
     title: "Eye Clinic",
     icon: "👁",
+    iconName: "eye",
     blurb: "Patients referred to the eye clinic. Claim one, see them, and write your findings.",
     resultLabel: "Findings",
     resultPlaceholder: "e.g. VA 6/6 both eyes. IOP 14/15 mmHg.",
@@ -104,23 +109,24 @@ export default function DepartmentStation({ station }) {
   }
 
   return (
-    <div className="mx-auto max-w-6xl space-y-6 p-5 md:p-8">
-      <header className="flex flex-wrap items-start justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-semibold">
-            <span className="mr-2">{config.icon}</span>{config.title}
-          </h1>
-          <p className="mt-1 text-sm text-slate-700">{config.blurb}</p>
-          <p className="mt-2 text-sm text-slate-700">
-            <strong>{stats.waiting}</strong> waiting · <strong>{stats.inProgress}</strong> in progress
-            {stats.urgent > 0 && <> · <span className="font-semibold text-red-600">{stats.urgent} urgent</span></>}
-            {" · "}<Link to="/" className="text-brand-600 hover:underline">Dashboard</Link>
-          </p>
-        </div>
-        <button onClick={refetch} className="rounded-lg border px-4 py-2 text-sm font-medium hover:bg-slate-50">
-          {isFetching ? "Refreshing…" : "Refresh"}
-        </button>
-      </header>
+    <Page width="wide">
+      <PageHeader
+        icon={config.iconName}
+        title={config.title}
+        subtitle={config.blurb}
+        meta={
+          <>
+            <MetaStat value={stats.waiting} label="waiting" />
+            <MetaStat value={stats.inProgress} label="in progress" tone="brand" />
+            {stats.urgent > 0 && <MetaStat value={stats.urgent} label="urgent" tone="danger" />}
+          </>
+        }
+        actions={
+          <Button variant="soft" onClick={refetch} loading={isFetching}>
+            {isFetching ? "Refreshing…" : "Refresh"}
+          </Button>
+        }
+      />
 
       <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
         <div className="flex flex-wrap items-center justify-between gap-3 border-b px-5 py-4">
@@ -179,7 +185,7 @@ export default function DepartmentStation({ station }) {
           ))}
         </div>
       </section>
-    </div>
+    </Page>
   );
 }
 
@@ -303,40 +309,47 @@ function Station({ config, route, onBack }) {
   const canFinish = result.trim().length > 0 || Boolean(file) || Boolean(route.result_file_url);
 
   return (
-    <div className="mx-auto max-w-3xl space-y-6 p-5 md:p-8">
-      <button onClick={onBack} className="text-sm text-brand-600">← Back to the queue</button>
-
-      <div className="flex flex-wrap items-start justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-semibold">{route.patient_name}</h1>
-          <p className="text-sm text-slate-700">
-            {route.patient_file_number} · {route.purpose_label ?? config.title} requested ·
-            waiting {waitedFor(route.created_at)}
-          </p>
-          <p className="mt-1 text-sm text-slate-700">
-            Requested by {route.routed_by_name ?? "a doctor"}
-          </p>
-        </div>
-        <div className="flex gap-2">
-          {route.status === "queued" && (
-            <button
-              onClick={() => transition.mutate("start")}
-              disabled={transition.isPending}
-              className="rounded-full border px-4 py-2 text-sm font-medium hover:bg-slate-50 disabled:opacity-50"
+    <Page width="narrow" className="space-y-6">
+      <PageHeader
+        className="mb-0"
+        breadcrumb={
+          <div className="mb-1">
+            <Button variant="link" size="xs" onClick={onBack}>
+              <Icon name="back" className="h-4 w-4" aria-hidden="true" />
+              Back to the queue
+            </Button>
+          </div>
+        }
+        title={route.patient_name}
+        subtitle={`Requested by ${route.routed_by_name ?? "a doctor"}`}
+        meta={
+          <>
+            <Badge tone={route.status === "in_progress" ? "brand" : "neutral"}>
+              {route.status === "in_progress" ? "In progress" : "Waiting"}
+            </Badge>
+            <MetaStat value={route.patient_file_number} label="file number" />
+            <MetaStat value={route.purpose_label ?? config.title} label="requested" />
+            <MetaStat value={waitedFor(route.created_at)} label="waiting" />
+          </>
+        }
+        actions={
+          <>
+            {route.status === "queued" && (
+              <Button variant="secondary" onClick={() => transition.mutate("start")} disabled={transition.isPending}>
+                Start
+              </Button>
+            )}
+            <Button
+              variant="successOutline"
+              onClick={() => transition.mutate("complete")}
+              disabled={transition.isPending || !canFinish}
+              title={canFinish ? undefined : "Write the result first"}
             >
-              Start
-            </button>
-          )}
-          <button
-            onClick={() => transition.mutate("complete")}
-            disabled={transition.isPending || !canFinish}
-            title={canFinish ? undefined : "Write the result first"}
-            className="rounded-full border border-emerald-300 bg-emerald-50 px-4 py-2 text-sm font-medium text-emerald-700 hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {transition.isPending ? "Working…" : "Save & mark done"}
-          </button>
-        </div>
-      </div>
+              {transition.isPending ? "Working…" : "Save & mark done"}
+            </Button>
+          </>
+        }
+      />
 
       {route.notes && (
         <section className="rounded-xl border border-brand-200 bg-brand-50/60 p-4">
@@ -410,14 +423,9 @@ function Station({ config, route, onBack }) {
         {!file && route.result_file_url && (
           <p className="mt-1 text-sm text-slate-700">
             On file:{" "}
-            <a
-              href={route.result_file_url}
-              target="_blank"
-              rel="noreferrer"
-              className="font-medium text-brand-600 hover:underline"
-            >
-              📎 {route.result_file_name}
-            </a>
+            <TextLink href={route.result_file_url} target="_blank" rel="noreferrer">
+              {route.result_file_name}
+            </TextLink>
             {" — choose a file to replace it."}
           </p>
         )}
@@ -443,7 +451,7 @@ function Station({ config, route, onBack }) {
         </div>
       </section>
       )}
-    </div>
+    </Page>
   );
 }
 
@@ -451,10 +459,3 @@ function Pill({ children, tone = "border-slate-200 bg-slate-50 text-slate-700" }
   return <span className={`rounded-full border px-2 py-0.5 text-xs font-medium ${tone}`}>{children}</span>;
 }
 
-function waitedFor(since) {
-  const minutes = Math.max(0, Math.round((Date.now() - new Date(since)) / 60000));
-  if (minutes < 1) return "just now";
-  if (minutes < 60) return `${minutes} min`;
-  const hours = Math.floor(minutes / 60);
-  return hours < 24 ? `${hours} hr ${minutes % 60} min` : `${Math.floor(hours / 24)} day(s)`;
-}

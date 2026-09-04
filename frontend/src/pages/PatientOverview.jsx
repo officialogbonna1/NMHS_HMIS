@@ -2,6 +2,8 @@ import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import api from "../api/client";
+import { Icon } from "../components/icons.jsx";
+import { Button } from "../components/ui.jsx";
 import LabReportSheet from "../components/LabReportSheet.jsx";
 
 // The doctor's single view of a patient: everything attached to them, in the
@@ -101,7 +103,7 @@ export default function PatientOverview({ patientId }) {
 
         <Card
           title="Latest vitals"
-          action={<Link to={`/patients/${patientId}/vitals`} className="text-xs text-brand-600 hover:underline">All readings →</Link>}
+          action={<Button variant="link" size="xs" to={`/patients/${patientId}/vitals`}>All readings →</Button>}
         >
           {latest ? (
             <>
@@ -174,7 +176,7 @@ export default function PatientOverview({ patientId }) {
       <section className="grid gap-4 md:grid-cols-2">
         <Card
           title="Allergies"
-          action={<Link to={`/patients/${patientId}/record`} className="text-xs text-brand-600 hover:underline">Edit record →</Link>}
+          action={<Button variant="link" size="xs" to={`/patients/${patientId}/record`}>Edit record →</Button>}
         >
           <List
             items={data.allergies}
@@ -245,9 +247,10 @@ export default function PatientOverview({ patientId }) {
                 <span className="text-slate-500"> · {t.test_type} · {dateLabel(t.test_date)}</span>
                 {t.impressions && <p className="text-sm text-slate-700">{t.impressions}</p>}
                 {t.file_url ? (
-                  <a href={t.file_url} target="_blank" rel="noreferrer" className="text-sm font-medium text-brand-600 hover:underline">
-                    📎 {t.file_name || "Open document"} →
-                  </a>
+                  <Button as="a" variant="link" size="xs" href={t.file_url} target="_blank" rel="noreferrer">
+                    <Icon name="paperclip" className="h-4 w-4 shrink-0" aria-hidden="true" />
+                    <span className="min-w-0 truncate">{t.file_name || "Open document"}</span>
+                  </Button>
                 ) : (
                   !t.impressions && <p className="text-sm text-slate-500">No document or finding recorded.</p>
                 )}
@@ -307,7 +310,7 @@ export default function PatientOverview({ patientId }) {
 
       <Card
         title="Consultation notes"
-        action={<Link to={`/patients/${patientId}/notes`} className="text-xs text-brand-600 hover:underline">Open notes →</Link>}
+        action={<Button variant="link" size="xs" to={`/patients/${patientId}/notes`}>Open notes →</Button>}
       >
         <List
           items={data.consultation_notes}
@@ -326,7 +329,7 @@ export default function PatientOverview({ patientId }) {
       <section className="grid gap-4 md:grid-cols-2">
         <Card
           title="Prescriptions"
-          action={<Link to={`/patients/${patientId}/prescribe`} className="text-xs text-brand-600 hover:underline">Prescribe →</Link>}
+          action={<Button variant="link" size="xs" to={`/patients/${patientId}/prescribe`}>Prescribe →</Button>}
         >
           <List
             items={data.prescriptions}

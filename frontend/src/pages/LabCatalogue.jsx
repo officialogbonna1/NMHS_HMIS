@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import api from "../api/client";
+import { Icon } from "../components/icons.jsx";
+import { Page, PageHeader, MetaStat, Button } from "../components/ui.jsx";
 import { readError } from "../api/errors";
 import { useToast } from "../components/Toaster.jsx";
 
@@ -123,36 +125,29 @@ export default function LabCatalogue() {
   const backToList = () => { setSelectedId(null); setCreating(false); };
 
   return (
-    <div className="mx-auto w-full max-w-7xl px-4 py-6 sm:px-6 lg:px-8">
-      <header className="mb-5 flex flex-wrap items-start justify-between gap-x-4 gap-y-3">
-        <div className="min-w-0">
-          <h1 className="text-xl font-semibold tracking-tight text-slate-900 sm:text-2xl">
-            Laboratory Catalogue
-          </h1>
-          <p className="mt-1 max-w-2xl text-sm text-slate-700">
-            Every test the lab offers and the parameters under it. Change a unit or a reference
-            range here and the bench's result form follows immediately.
-          </p>
-        </div>
-        <div className="flex items-center gap-3">
-          <p className="hidden text-sm text-slate-600 sm:block">
-            <span className="font-semibold text-slate-900">{all.filter((t) => t.is_active).length}</span> in use
-            {retiredCount > 0 && <> · {retiredCount} retired</>}
-          </p>
-          <button
-            type="button"
-            onClick={() => { setCreating(true); setSelectedId(null); }}
-            className="rounded-lg bg-brand-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-brand-700 sm:px-5"
-          >
-            + New test
-          </button>
-        </div>
-      </header>
+    <Page width="wide">
+      <PageHeader
+        icon="list"
+        title="Laboratory catalogue"
+        subtitle="Every test the lab offers and the parameters under it. Change a unit or a reference range here and the bench's result form follows immediately."
+        meta={
+          <>
+            <MetaStat value={all.filter((t) => t.is_active).length} label="in use" />
+            {retiredCount > 0 && <MetaStat value={retiredCount} label="retired" tone="warning" />}
+          </>
+        }
+        actions={
+          <Button onClick={() => { setCreating(true); setSelectedId(null); }}>
+            <Icon name="plus" className="h-4 w-4" aria-hidden="true" />
+            New test
+          </Button>
+        }
+      />
 
       <div className="grid items-start gap-5 lg:grid-cols-[minmax(0,23rem)_minmax(0,1fr)]">
         {/* On a phone the list steps aside once something is open. */}
         <section
-          className={`${showingDetail ? "hidden lg:block" : "block"} lg:sticky lg:top-[88px]`}
+          className={`min-w-0 ${showingDetail ? "hidden lg:block" : "block"} lg:sticky lg:top-[76px]`}
         >
           <CatalogueList
             groups={groups}
@@ -209,7 +204,7 @@ export default function LabCatalogue() {
           )}
         </div>
       </div>
-    </div>
+    </Page>
   );
 }
 
@@ -220,8 +215,8 @@ function CatalogueList({
   showRetired, onShowRetired, retiredCount, counts, selectedId, onOpen, total,
 }) {
   return (
-    <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
-      <div className="space-y-3 border-b border-slate-100 p-4">
+    <div className="min-w-0 overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+      <div className="min-w-0 space-y-3 border-b border-slate-100 p-4">
         <div className="relative">
           <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" aria-hidden="true">⌕</span>
           <input

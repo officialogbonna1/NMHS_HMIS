@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import api from "../api/client";
+import { Badge, Page, PageHeader } from "../components/ui.jsx";
 
 const ROLES = [
   ["admin", "Super Admin"], ["hospital_admin", "Hospital Admin"], ["doctor", "Doctor"], ["nurse", "Nurse"],
@@ -47,8 +48,13 @@ export default function UsersAdmin() {
   });
 
   return (
-    <div className="max-w-4xl mx-auto p-6 space-y-8">
-      <h1 className="text-2xl font-semibold">Users</h1>
+    <Page className="space-y-8">
+      <PageHeader
+        className="mb-0"
+        icon="shield"
+        title="Users"
+        subtitle="Staff accounts and the role each one signs in with."
+      />
 
       <form
         onSubmit={(e) => {
@@ -113,25 +119,28 @@ export default function UsersAdmin() {
 
       <div className="grid gap-2">
         {(users ?? []).map((u) => (
-          <div key={u.id} className="border rounded-lg p-4 flex items-center justify-between">
-            <div>
-              <span className="font-medium">{u.first_name || u.username} {u.last_name}</span>
-              <span className="text-xs text-slate-500 ml-2">@{u.username}</span>
-              <span className="text-xs text-slate-500 ml-2">{u.role.replaceAll("_", " ")}</span>
-              {u.department && <span className="text-xs text-slate-500 ml-2">· {u.department}</span>}
-              {!u.is_active && <span className="text-xs text-red-500 ml-2">Disabled</span>}
+          <div key={u.id} className="flex flex-col gap-3 rounded-lg border border-slate-200 bg-white p-4 sm:flex-row sm:items-center sm:justify-between">
+            <div className="min-w-0">
+              <p className="font-medium text-slate-900">{u.first_name || u.username} {u.last_name}</p>
+              <p className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-slate-600">
+                <span>@{u.username}</span>
+                <span aria-hidden="true" className="text-slate-400">·</span>
+                <span className="capitalize">{u.role.replaceAll("_", " ")}</span>
+                {u.department && <><span aria-hidden="true" className="text-slate-400">·</span><span>{u.department}</span></>}
+                {!u.is_active && <Badge tone="danger">Disabled</Badge>}
+              </p>
             </div>
-            <div className="flex gap-3 text-sm">
+            <div className="flex shrink-0 flex-wrap gap-1">
               <button
                 onClick={() => setForm({ id: u.id, username: u.username, first_name: u.first_name, last_name: u.last_name, email: u.email, role: u.role, department: u.department, password: "", must_change_password: u.must_change_password })}
-                className="text-brand-600 hover:underline"
+                className="min-h-[36px] rounded-lg px-3 py-1.5 text-sm font-medium text-brand-700 transition hover:bg-brand-50"
               >
                 Edit
               </button>
-              <button onClick={() => toggleActive.mutate(u)} className="text-slate-600 hover:underline">
+              <button onClick={() => toggleActive.mutate(u)} className="min-h-[36px] rounded-lg px-3 py-1.5 text-sm font-medium text-slate-700 transition hover:bg-slate-100">
                 {u.is_active ? "Disable" : "Enable"}
               </button>
-              <button onClick={() => setResetTarget(u)} className="text-slate-600 hover:underline">
+              <button onClick={() => setResetTarget(u)} className="min-h-[36px] rounded-lg px-3 py-1.5 text-sm font-medium text-slate-700 transition hover:bg-slate-100">
                 Reset password
               </button>
             </div>
@@ -147,7 +156,7 @@ export default function UsersAdmin() {
           pending={resetPassword.isPending}
         />
       )}
-    </div>
+    </Page>
   );
 }
 

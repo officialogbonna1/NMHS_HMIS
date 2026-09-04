@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import api from "../api/client";
+import { Button } from "../components/ui.jsx";
 import LabReportSheet from "../components/LabReportSheet.jsx";
 
 // The lab's answers, on the patient's chart.
@@ -68,12 +69,9 @@ export default function LabResultsTab({ patientId }) {
           {orders.length === 1 ? "" : "s"} reported.
         </p>
         {orders.length > withResults.length && (
-          <button
-            onClick={() => setShowAll((v) => !v)}
-            className="text-sm font-medium text-brand-600 hover:underline"
-          >
+          <Button variant="link" size="xs" onClick={() => setShowAll((v) => !v)}>
             {showAll ? "Show only reported" : `Show the ${orders.length - withResults.length} still running`}
-          </button>
+          </Button>
         )}
       </div>
 

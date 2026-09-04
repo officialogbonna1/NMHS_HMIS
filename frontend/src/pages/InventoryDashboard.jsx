@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import api from "../api/client";
 import { useToast } from "../components/Toaster.jsx";
+import { Button, Page, PageHeader, TabBar, Tab } from "../components/ui.jsx";
 
 // Pharmacy stock control: what's on the shelf, what's running out, what's
 // about to expire — plus the two ways stock legitimately changes outside
@@ -21,30 +22,23 @@ export default function InventoryDashboard() {
   const [tab, setTab] = useState("stock");
 
   return (
-    <div className="max-w-5xl mx-auto p-6 space-y-6">
-      <h1 className="text-2xl font-semibold">Inventory</h1>
+    <Page width="wide">
+      <PageHeader
+        icon="box"
+        title="Inventory"
+        subtitle="Track stock on hand, receive deliveries and audit every movement."
+      />
 
-      <div className="flex gap-6 border-b text-sm">
-        <TabButton active={tab === "stock"} onClick={() => setTab("stock")}>Stock on hand</TabButton>
-        <TabButton active={tab === "receive"} onClick={() => setTab("receive")}>Receive stock</TabButton>
-        <TabButton active={tab === "movements"} onClick={() => setTab("movements")}>Movement log</TabButton>
-      </div>
+      <TabBar label="Inventory sections">
+        <Tab active={tab === "stock"} onClick={() => setTab("stock")}>Stock on hand</Tab>
+        <Tab active={tab === "receive"} onClick={() => setTab("receive")}>Receive stock</Tab>
+        <Tab active={tab === "movements"} onClick={() => setTab("movements")}>Movement log</Tab>
+      </TabBar>
 
       {tab === "stock" && <StockOnHand />}
       {tab === "receive" && <ReceiveStock />}
       {tab === "movements" && <MovementLog />}
-    </div>
-  );
-}
-
-function TabButton({ active, onClick, children }) {
-  return (
-    <button
-      onClick={onClick}
-      className={`pb-3 -mb-px border-b-2 ${active ? "border-brand-600 text-brand-600 font-medium" : "border-transparent text-slate-600"}`}
-    >
-      {children}
-    </button>
+    </Page>
   );
 }
 
@@ -162,13 +156,14 @@ function BatchRow({ batch }) {
             {batch.supplier && ` · ${batch.supplier}`}
           </p>
         </div>
-        <div className="flex items-center gap-3 text-sm shrink-0">
-          <span className="font-medium">{batch.quantity}</span>
-          <button onClick={() => setCounting((c) => !c)} className="text-brand-600 hover:underline">Count</button>
+        <div className="flex shrink-0 flex-wrap items-center gap-1">
+          <span className="px-1 font-medium tabular-nums text-slate-900">{batch.quantity}</span>
+          <Button variant="link" size="sm" onClick={() => setCounting((c) => !c)}>Count</Button>
           {batch.is_expired && batch.quantity > 0 && (
-            <button onClick={() => confirm("Write off the remaining units of this expired batch?") && writeOff.mutate()} className="text-red-600 hover:underline">
+            <Button variant="linkDanger" size="sm"
+                    onClick={() => confirm("Write off the remaining units of this expired batch?") && writeOff.mutate()}>
               Write off
-            </button>
+            </Button>
           )}
         </div>
       </div>

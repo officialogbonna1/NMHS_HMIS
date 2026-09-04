@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import api from "../api/client";
+import { Page, PageHeader, MetaStat, Button } from "../components/ui.jsx";
 
 // Money written off, and who approved it. Waivers, discounts and refunds
 // are all Adjustments — the same ledger entry with a different kind — so
@@ -41,22 +42,24 @@ export default function Waivers() {
   const label = KINDS.find(([k]) => k === kind)?.[1] ?? kind;
 
   return (
-    <div className="mx-auto max-w-4xl space-y-6 p-5 md:p-8">
-      <header className="flex flex-wrap items-start justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-semibold">Waived &amp; written off</h1>
-          <p className="mt-1 text-sm text-slate-700">
-            Money the hospital decided not to collect, and who approved each one.
-          </p>
-          <p className="mt-2 text-sm text-slate-700">
-            <strong>{rows.length}</strong> {label.toLowerCase()} ·{" "}
-            <strong>{currency(total)}</strong> in total · <strong>{currency(todayTotal)}</strong> today
-          </p>
-        </div>
-        <button onClick={refetch} className="rounded-lg border px-4 py-2 text-sm font-medium hover:bg-slate-50">
+    <Page>
+      <PageHeader
+        icon="tag"
+        title="Waived &amp; written off"
+        subtitle="Money the hospital decided not to collect, and who approved each one."
+        meta={
+          <>
+            <MetaStat value={rows.length} label={label.toLowerCase()} />
+            <MetaStat value={currency(total)} label="in total" />
+            <MetaStat value={currency(todayTotal)} label="today" tone="brand" />
+          </>
+        }
+        actions={
+          <Button variant="soft" onClick={refetch} loading={isFetching}>
           {isFetching ? "Refreshing…" : "Refresh"}
-        </button>
-      </header>
+          </Button>
+        }
+      />
 
       <div className="flex flex-wrap items-center gap-3">
         <div className="flex overflow-hidden rounded-lg border text-sm">
@@ -105,7 +108,7 @@ export default function Waivers() {
                   <div className="flex flex-wrap items-center gap-2">
                     <Link
                       to={`/patients/${adjustment.patient}/billing`}
-                      className="font-medium text-slate-800 hover:text-brand-600"
+                      className="inline-flex min-h-[32px] items-center rounded font-medium text-slate-800 underline-offset-2 transition hover:text-brand-700 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500"
                     >
                       {adjustment.patient_name}
                     </Link>
@@ -136,6 +139,6 @@ export default function Waivers() {
           );
         })}
       </div>
-    </div>
+    </Page>
   );
 }

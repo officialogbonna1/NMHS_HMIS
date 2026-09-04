@@ -2,6 +2,7 @@ import { useMemo } from "react";
 import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import api from "../api/client";
+import { Button, TextLink } from "../components/ui.jsx";
 
 // Ultrasound, the eye clinic and procedures, on the chart.
 //
@@ -84,8 +85,7 @@ export default function ReferralResultsTab({ patientId, kind }) {
         <p className="text-3xl">{config.icon}</p>
         <p className="mt-2 font-medium text-slate-800">{config.empty}</p>
         <p className="mt-1 text-sm text-slate-600">
-          Send them with <Link to="/refer" className="text-brand-600 hover:underline">Refer
-          Patient</Link> and the answer comes back here.
+          Send them with <TextLink to="/refer">Refer Patient</TextLink> and the answer comes back here.
         </p>
       </div>
     );
@@ -142,12 +142,9 @@ export default function ReferralResultsTab({ patientId, kind }) {
               {/* The uploaded report itself lives on the Health Record's
                   Tests & Diagnostics tile, filed there so it survives the
                   visit closing. */}
-              <Link
-                to={`/patients/${patientId}/record`}
-                className="mt-1 inline-block text-sm text-brand-600 hover:underline"
-              >
+              <Button variant="link" size="xs" to={`/patients/${patientId}/record`} className="mt-1">
                 Any uploaded report is on the Health Record →
-              </Link>
+              </Button>
             </div>
           ) : (
             <p className="mt-3 text-sm text-slate-600">

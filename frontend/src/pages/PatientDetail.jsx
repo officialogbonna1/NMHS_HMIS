@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useParams, useNavigate, Routes, Route, Link, useLocation } from "react-router-dom";
+import { useParams, useNavigate, Routes, Route, useLocation } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import api from "../api/client";
 import { PatientCardSheet } from "../components/PrintDocuments.jsx";
@@ -15,6 +15,8 @@ import ReferralResultsTab from "./ReferralResultsTab.jsx";
 import AdmissionTab from "./AdmissionTab.jsx";
 import PharmacyTab from "./PharmacyTab.jsx";
 import { useAuth } from "../auth/AuthContext.jsx";
+import { Page, Skeleton, Breadcrumb, Button, TabBar, Tab } from "../components/ui.jsx";
+import { Icon } from "../components/icons.jsx";
 
 const TILES = [
   { key: "allergies", title: "Allergies", icon: "⚠️" },
@@ -74,36 +76,84 @@ export default function PatientDetail() {
       : canSeePharmacy ? "pharmacy"
       : "record");
 
+  const initials = `${patient?.first_name?.[0] ?? ""}${patient?.last_name?.[0] ?? ""}`.toUpperCase();
+
   return (
-    <div className="max-w-5xl mx-auto p-6">
-      {patient && (
-        <div className="mb-4 flex justify-between items-start">
-          <div>
-            <h1 className="text-xl font-semibold">{patient.last_name}, {patient.first_name}</h1>
-            <p className="text-sm text-slate-600">{patient.file_number} · DOB: {patient.birthdate ?? "—"} · Sex: {patient.sex}</p>
-            <p className="text-sm text-slate-700 mt-1">{patient.short_note}</p>
+    <Page width="default">
+      {/* Two levels only, and the second is the patient in front of you — a
+          chart is always reached from the list, and CHART_ROLES is a subset of
+          PATIENT_LOOKUP_ROLES, so the link is never a dead end. */}
+      <Breadcrumb
+        items={[
+          { label: "Patients", to: "/patients" },
+          { label: patient ? `${patient.last_name}, ${patient.first_name}` : "Patient" },
+        ]}
+      />
+
+      {/* The identity band. Whoever opens this chart has to be certain, in one
+          glance, which patient they are looking at — so the name, the file
+          number and the age/sex sit together and wrap as a block instead of
+          being squeezed by the buttons beside them. */}
+      {patient ? (
+        <div className="mb-5 rounded-xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
+          {/* Stacked on a phone. As one wrapping row the identity block —
+              `flex-1`, so free to shrink below its content — was crushed to a
+              sliver by the buttons, which sat on top of the patient's name. */}
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between sm:gap-4">
+            <div className="flex min-w-0 items-start gap-3 sm:flex-1">
+              <span aria-hidden="true" className="grid h-12 w-12 shrink-0 place-items-center rounded-full bg-brand-100 text-base font-semibold text-brand-700">
+                {initials || "?"}
+              </span>
+              <div className="min-w-0">
+                <h1 className="truncate text-lg font-semibold text-slate-900 sm:text-xl">
+                  {patient.last_name}, {patient.first_name}
+                </h1>
+                <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-slate-600">
+                  {patient.file_number && (
+                    <span className="rounded-full bg-brand-50 px-2 py-0.5 text-xs font-medium text-brand-700 ring-1 ring-inset ring-brand-200">
+                      {patient.file_number}
+                    </span>
+                  )}
+                  <span>{patient.sex === "M" ? "Male" : patient.sex === "F" ? "Female" : patient.sex}</span>
+                  {patient.age_display && <><span aria-hidden="true" className="text-slate-400">·</span><span>{patient.age_display}</span></>}
+                  <span aria-hidden="true" className="text-slate-400">·</span>
+                  <span>DOB {patient.birthdate ?? "—"}</span>
+                </div>
+                {patient.short_note && (
+                  <p className="mt-1.5 text-sm text-slate-700">{patient.short_note}</p>
+                )}
+              </div>
+            </div>
+            <div className="flex shrink-0 flex-wrap gap-2">
+              {/* Cards get lost. Anyone at the desk can reprint one. */}
+              <Button variant="secondary" onClick={() => setShowCard(true)}>
+                <Icon name="print" className="h-4 w-4" aria-hidden="true" />
+                Patient card
+              </Button>
+              {canPrescribe && (
+                <Button onClick={() => navigate(`/patients/${id}/prescribe`)}>
+                  <Icon name="plus" className="h-4 w-4" aria-hidden="true" />
+                  Prescribe
+                </Button>
+              )}
+            </div>
           </div>
-          <div className="flex shrink-0 gap-2">
-            {/* Cards get lost. Anyone at the desk can reprint one. */}
-            <button
-              onClick={() => setShowCard(true)}
-              className="rounded-full border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
-            >
-              🖨 Patient card
-            </button>
-            {canPrescribe && <button
-              onClick={() => navigate(`/patients/${id}/prescribe`)}
-              className="bg-brand-600 text-white px-4 py-2 rounded-full text-sm"
-            >
-              + Prescribe
-            </button>}
+        </div>
+      ) : (
+        <div className="mb-5 rounded-xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
+          <div className="flex items-start gap-3">
+            <Skeleton className="h-12 w-12 shrink-0 rounded-full" />
+            <div className="min-w-0 flex-1 space-y-2">
+              <Skeleton className="h-5 w-56" />
+              <Skeleton className="h-4 w-72" />
+            </div>
           </div>
         </div>
       )}
 
       {showCard && patient && <PatientCardSheet patient={patient} onClose={() => setShowCard(false)} />}
 
-      {(isClinical || canSeeVitals || canBill || canSeePharmacy) && <div className="mb-6 flex gap-6 overflow-x-auto border-b text-sm">
+      {(isClinical || canSeeVitals || canBill || canSeePharmacy) && <TabBar label="Chart sections">
         {isClinical && <TabLink to={`/patients/${id}`} active={tab === "overview"}>Overview</TabLink>}
         {isClinical && <TabLink to={`/patients/${id}/record`} active={tab === "record"}>Health Record</TabLink>}
         {isClinical && <TabLink to={`/patients/${id}/notes`} active={tab === "notes"}>Medical Notes</TabLink>}
@@ -115,7 +165,7 @@ export default function PatientDetail() {
         {canSeeCare && <TabLink to={`/patients/${id}/admission`} active={tab === "admission"}>Admission</TabLink>}
         {canSeePharmacy && <TabLink to={`/patients/${id}/pharmacy`} active={tab === "pharmacy"}>Pharmacy</TabLink>}
         {canBill && <TabLink to={`/patients/${id}/billing`} active={tab === "billing"}>Billing</TabLink>}
-      </div>}
+      </TabBar>}
 
       {!isClinical && !canSeeVitals && !canBill && !canSeePharmacy && <div className="rounded-xl border border-slate-200 bg-slate-50 p-5 text-sm text-slate-600">This role can view only the patient’s basic registration details. Use Appointments and Routing to continue the front-desk workflow.</div>}
 
@@ -138,19 +188,12 @@ export default function PatientDetail() {
         <PharmacyTab patientId={id} canPrescribe={canPrescribe} />
       )}
       {canBill && tab === "billing" && <PatientBillingTab patientId={id} />}
-    </div>
+    </Page>
   );
 }
 
 function TabLink({ to, active, children }) {
-  return (
-    <Link
-      to={to}
-      className={`pb-3 -mb-px border-b-2 ${active ? "border-brand-600 text-brand-600 font-medium" : "border-transparent text-slate-600 hover:text-slate-800"}`}
-    >
-      {children}
-    </Link>
-  );
+  return <Tab to={to} active={active}>{children}</Tab>;
 }
 
 function TileLoader({ patientId, tileKey, title, icon }) {

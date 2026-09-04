@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import api from "../api/client";
+import { TextLink, Page, PageHeader } from "../components/ui.jsx";
 import PatientPicker from "../components/PatientPicker.jsx";
 
 // A patient's full financial statement: every charge, payment, discount,
@@ -30,13 +31,13 @@ export default function TransactionHistory() {
   const [patient, setPatient] = useState(null);
 
   return (
-    <div className="mx-auto max-w-5xl space-y-6 p-5 md:p-8">
-      <header>
-        <h1 className="text-2xl font-semibold">Transaction History</h1>
-        <p className="mt-1 text-sm text-slate-500">
-          Pick a patient to see everything they have been charged, paid, and had taken off.
-        </p>
-      </header>
+    <Page width="wide" className="space-y-6">
+      <PageHeader
+        className="mb-0"
+        icon="receipt"
+        title="Transaction history"
+        subtitle="Every charge, payment, discount, waiver and refund on one timeline."
+      />
 
       <ChooseWhoseHistory patient={patient} onPick={setPatient} onClear={() => setPatient(null)} />
 
@@ -45,7 +46,7 @@ export default function TransactionHistory() {
       ) : (
         <RecentlyBilled onPick={setPatient} />
       )}
-    </div>
+    </Page>
   );
 }
 
@@ -181,7 +182,7 @@ function Statement({ patient }) {
       </section>
 
       <p className="text-xs text-slate-500">
-        Need to bill or take money? Use the <Link to="/billing" className="text-brand-600 hover:underline">Billing counter</Link>.
+        Need to bill or take money? Use the <TextLink to="/billing">Billing counter</TextLink>.
       </p>
     </div>
   );

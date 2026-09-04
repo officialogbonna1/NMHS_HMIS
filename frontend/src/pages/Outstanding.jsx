@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import api from "../api/client";
+import { Page, PageHeader, MetaStat, Button, SearchInput } from "../components/ui.jsx";
 
 // Who owes money, biggest first. The list is filtered in the database
 // (`?owing=true`), so settling in full is what takes somebody off it —
@@ -26,28 +27,33 @@ export default function Outstanding() {
   const total = rows.reduce((sum, l) => sum + Number(l.outstanding_balance), 0);
 
   return (
-    <div className="mx-auto max-w-4xl space-y-6 p-5 md:p-8">
-      <header className="flex flex-wrap items-start justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-semibold">Outstanding</h1>
-          <p className="mt-1 text-sm text-slate-700">
-            Patients who still owe. They drop off this list the moment their balance reaches zero.
-          </p>
-          <p className="mt-2 text-sm text-slate-700">
-            <strong>{rows.length}</strong> patient{rows.length === 1 ? "" : "s"} ·{" "}
-            <strong className="text-red-700">{currency(total)}</strong> owed in total
-          </p>
-        </div>
-        <button onClick={refetch} className="rounded-lg border px-4 py-2 text-sm font-medium hover:bg-slate-50">
-          {isFetching ? "Refreshing…" : "Refresh"}
-        </button>
-      </header>
-
-      <input
-        value={search}
-        onChange={(e) => setSearch(e.target.value)}
-        placeholder="Search by name or file number…"
-        className="w-full rounded-md border border-slate-300 px-3 py-2"
+    <Page>
+      <PageHeader
+        icon="clock"
+        title="Outstanding"
+        subtitle="Patients who still owe. They drop off this list the moment their balance reaches zero."
+        meta={
+          <>
+            <MetaStat value={rows.length} label={`patient${rows.length === 1 ? "" : "s"}`} />
+            <MetaStat value={currency(total)} label="owed in total" tone="danger" />
+          </>
+        }
+        actions={
+          <Button variant="soft" onClick={refetch} loading={isFetching}>
+            {isFetching ? "Refreshing…" : "Refresh"}
+          </Button>
+        }
+        toolbar={
+          /* The debtors list is worked by phone, so search belongs with the
+             header rather than floating above the rows. */
+          <SearchInput
+            value={search}
+            onChange={setSearch}
+            label="Search debtors"
+            placeholder="Search by name or file number…"
+            className="sm:max-w-sm"
+          />
+        }
       />
 
       {isLoading && <p className="text-sm text-slate-700">Loading…</p>}
@@ -69,7 +75,7 @@ export default function Outstanding() {
             <div className="min-w-0">
               <Link
                 to={`/patients/${ledger.patient}/billing`}
-                className="font-medium text-slate-800 hover:text-brand-600"
+                className="inline-flex min-h-[32px] items-center rounded font-medium text-slate-800 underline-offset-2 transition hover:text-brand-700 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500"
               >
                 {ledger.patient_name}
               </Link>
@@ -96,6 +102,6 @@ export default function Outstanding() {
           </div>
         ))}
       </div>
-    </div>
+    </Page>
   );
 }

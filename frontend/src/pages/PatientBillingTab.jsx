@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import api from "../api/client";
+import { Button } from "../components/ui.jsx";
 import { readError } from "../api/errors";
 import { BILLING_CATEGORIES } from "./BillingItemsAdmin.jsx";
 import { BillSheet, ReceiptSheet } from "../components/PrintDocuments.jsx";
@@ -172,18 +173,18 @@ function TransactionRow({ tx, onDone, canWaive }) {
         </span>
         {canWaive && tx.kind === "charge" && ["unpaid", "partial"].includes(tx.status) && (
           <>
-            <button
+            <Button
+              variant="link" size="xs"
               onClick={() => { const reason = prompt("Reason for waiving this charge:"); if (reason) waive.mutate(reason); }}
-              className="text-xs text-brand-600 hover:underline"
             >
               Waive
-            </button>
-            <button
+            </Button>
+            <Button
+              variant="linkDanger" size="xs"
               onClick={() => confirm("Cancel this charge?") && cancelCharge.mutate()}
-              className="text-xs text-red-600 hover:underline"
             >
               Cancel
-            </button>
+            </Button>
           </>
         )}
       </div>
