@@ -100,7 +100,9 @@ person explicitly asks for something different.
    not quantities. Keep this distinction if you touch the drug picker.
 8. **Batches are FEFO** (first-expiry-first-out) — `Batch` ordering and the
    dispense service both rely on `expiry_date` ascending. Don't reorder
-   this without updating both.
+   this without updating both. FEFO is always applied *within one location*
+   (rule 30): the earliest-expiring lot **on that shelf**, never the
+   earliest in the building.
 9. **One definition of "assigned patient"**, and a role keeps the patients it
    has actually served — `patients/access.py`
    (`doctor_patient_q` / `nurse_patient_q`). Patient identity, the health
@@ -183,6 +185,20 @@ person explicitly asks for something different.
    read-only on both serializers). Reception can raise a route and *cancel*
    it (the patient left, or it was a mistake); saying the work started or
    finished belongs to the clinician it was sent to.
+
+   **And it sees only the work it raised.** `work_routes_for` used to hand
+   reception every route in the hospital, which put the clinical routing on
+   the front-desk screen: a doctor's laboratory referral reading "Do malaria
+   test", a nurse's hand-off reading "No vitals recorded for this visit".
+   Those notes are one clinician writing to another — the chart, not the
+   desk's queue. Reception's queue is now `routed_by__role="reception"`:
+   scoped to the desk rather than to one person, because a route raised on the
+   morning shift still has to be cancellable in the afternoon. The same
+   boundary is drawn wherever those rows are reachable — the printable
+   `document` endpoint, and the finding on it, which the front desk never
+   reads even on a route it raised itself. The laboratory request form drops
+   its `clinical_notes` for the desk for the same reason. Held by
+   `apps/workflow/tests/test_reception_limits.py`.
 18. **The pharmacy takes its own money** — a pharmacist can read ledgers and
    charges and record a `Payment` (stamped `channel="pharmacy"` from their
    role, never from the request body), but can never waive, void or adjust.
@@ -304,6 +320,152 @@ person explicitly asks for something different.
    a page that would only fail, and keeps the nav honest. `RequireAuth` says
    so in as many words, and the API is what actually refuses. Never move a
    check to the client to "save a round trip".
+
+29. **Administration configures inventory; Pharmacy operates pharmacy stock.**
+   One shared inventory, two workspaces, and the line between them is *what
+   you may change*, not what you may see.
+
+   - **Configuration** — products, categories, units, stock locations — is
+     read by everyone who works stock and **written only by an admin**. The
+     pharmacy reads the catalogue constantly (every dispense resolves a
+     product, a unit and a price) and must never be shut out of it; what it
+     cannot do is rename a category or retire a drug.
+   - **Operations** — receiving, transferring, counting, writing off,
+     dispensing — stay with `STOCK_ROLES`. That is the pharmacy's actual job.
+   - Removing the navigation link is housekeeping, never the control:
+     `apps/inventory/tests/test_workspace_boundary.py` calls each
+     configuration endpoint as a pharmacist and expects 403, and calls each
+     operation and expects it to work.
+
+   `/inventory` is Administration's stock desk (admin + inventory manager);
+   the pharmacy works its own shelf from `/pharmacy`. Both render the **same
+   components** — `components/StockPanels.jsx` — with the pharmacy passing
+   `lockedLocation`, so a pharmacist counting "the shelf" cannot post the
+   count against the Main Store and a pharmacy transfer can only bring stock
+   *in*. Two workspaces, one implementation; there is no second stock screen
+   to drift.
+
+   A card that opens a page the role's own guard bounces is as dead as one
+   pointing at nothing — the pharmacist's low-stock alert kept aiming at
+   `/inventory` after the desk moved. `ROUTE_ROLES` in
+   `apps/workflow/tests/test_dashboard_links.py` mirrors `main.jsx`'s guards
+   and fails on it; keep the two in step.
+
+30. **Stock is product + batch + location, and there is no total anywhere.**
+   `Item` is the product, `Batch` is the lot (batch number, expiry, cost, sale
+   price — defined once, because a lot is the same lot wherever it stands),
+   and **`StockRecord` is the quantity of one batch in one location**. That
+   row is the unit of stock in this system. `Batch.quantity` used to be a
+   column and is gone: with one number, the store and the dispensing shelf
+   were the same pile and moving between them was an unaudited edit.
+   `Batch.total_quantity` and `Item.total_quantity` still answer "what does
+   the hospital own", but they are derived by summing locations, so they can
+   never disagree with the parts.
+
+   **Two locations run this deployment, but locations are rows, not code.**
+   `StockLocation` is seeded by `inventory/migrations/0004` with `main-store`
+   and `pharmacy`. The workflow is carried by two flags, never by a name:
+   `is_default_receiving` (deliveries land here — Main Store) and
+   `is_dispensing_point` (patients are dispensed from here — Pharmacy), read
+   through `receiving_location()` / `dispensing_location()`. Adding a theatre
+   store is a row; nothing in the services counts to two.
+
+   The flow is **Supplier → Receipt → Main Store → Transfer → Pharmacy →
+   Dispensing → Patient**, and each arrow is a service:
+   - `receive_stock()` — a delivery, into the receiving location unless the
+     caller names another. Creating a `Batch` through the API *is* receiving:
+     `opening_quantity` (aliased as `quantity` for the existing form) is
+     handed to the service, and is write-only so it cannot be PATCHed later.
+   - `transfer_stock()` — the **only** way stock moves between locations. It
+     writes a `StockTransfer` (`TRF-000123`) with a line per batch and a
+     movement at each end (`transfer_out` at the source, `transfer_in` at the
+     destination), applied all-or-nothing under `select_for_update`. A line
+     names a *batch*, never just a product, or the expiry dates on the two
+     shelves stop meaning anything; `fefo_lines_for()` turns "100 units of
+     paracetamol" into batch lines first.
+   - `post_stock_count()` / `record_stock_count()` — physical inventory, **per
+     location**. A `StockCount` (`CNT-000123`) keeps what the system believed,
+     what was found and the difference per line, and posts one adjustment per
+     line that differs. `/batches/<id>/count/` **requires** a `location` and
+     has no default: guessing the shelf would invent stock in one place and
+     destroy it in the other.
+   - `write_off_expired()` — clears every location holding the lot unless one
+     is named. Expired is expired on both shelves.
+   - `dispense_prescription()` (pharmacy) — draws **only** from
+     `dispensing_location()`. Stock in the Main Store is not dispensable, and
+     `available_quantity()` and the doctor's `available` flag both mean
+     "available at the pharmacy" for that reason.
+
+   **A quantity moves through a service or it does not move.**
+   `apply_stock_change()` writes the `StockMovement` and the new quantity in
+   one transaction, and `StockRecord.save()` raises `PermissionDenied` on any
+   quantity change that did not come through it — the `LockedRecordMixin`
+   idiom applied to stock. Over the API that is three layers saying the same
+   thing: no writable quantity field on any serializer, `stock-records` and
+   `stock-movements` are read-only viewsets, and the model refuses whatever
+   gets past both. (`BatchSerializer` was `fields = "__all__"` with `quantity`
+   writable — `PATCH /api/batches/<id>/ {"quantity": 9999}` was a valid
+   request until this change.) `apps/inventory/tests/test_locations.py` holds
+   all of it, including the worked example: 500 in the store, transfer 100,
+   store 400 / pharmacy 100 / hospital 500.
+
+   In a test, `apps/inventory/testing.py` (`stock_the_pharmacy` /
+   `stock_the_store`) is how you put stock somewhere — a bare
+   `Batch.objects.create()` now puts stock nowhere at all.
+
+31. **One set of models, two administration interfaces.** The HMIS
+   administration screens (`/admin`, `pages/admin/`) and Django admin are two
+   front doors onto the same Django models — a product added on
+   Administration → Products *is* the `inventory.Item` row Django admin lists,
+   and a price changed in Django admin is what the HMIS loads next. Neither
+   may grow its own copy of anything;
+   `apps/core/tests/test_configuration.py` writes through each door and reads
+   through the other, for departments, services, products, categories, units,
+   locations, wards, beds, the price list and the laboratory catalogue.
+
+   The HMIS screens are config-driven: `pages/admin/configResources.js`
+   describes each configurable entity (columns, fields, what makes a row
+   undeletable) and `ConfigResource.jsx` renders all of them. Adding a
+   configurable entity is an entry there, not another page — the same way
+   `tileConfig.js` serves the nine health-record tiles. `AdminHome.jsx` is the
+   hub, and it *links* the dedicated pages that already existed (Departments,
+   Users, Lab Catalogue, Billing Catalog) rather than rebuilding them.
+
+   **Delete what was never used; deactivate what history points at.**
+   `apps/core/config.py` holds the rule once: `ProtectedConfigMixin` for the
+   API (409 with the counts and "deactivate it instead") and
+   `ProtectedConfigAdmin` for Django admin (the delete button disappears on
+   the same rows). A category nobody filed a product under is a typo and goes;
+   one that fifty products point at is retired. Stock, receipts, movements,
+   dispensing, invoices and lab orders are never deleted from either
+   interface — they are corrected by adjustment, reversal or amendment.
+
+   **Django admin is a technical interface, not a bypass.** It is held to the
+   same rules the API is: `StockRecord` is read-only there (quantities move
+   only through the services — rule 30), locked clinical records and the
+   money models refuse changes, and `Batch` has no quantity field to type
+   into. What Django admin adds is breadth for administration —
+   `list_editable`, `list_filter`, `search_fields`, `autocomplete_fields`,
+   `fieldsets` and activate/deactivate actions on the configuration models.
+
+   **Product categories and units of measure are rows, not strings.**
+   `ItemCategory` and `UnitOfMeasure` (migration `inventory/0006`, backfilled
+   from the free text that was there) — so a category can be renamed once and
+   reach every product, and `Item.unit_label` is what a prescription and a
+   dispensing label print. `apps/inventory/testing.py`'s `product()` is how a
+   test makes one; `Item.objects.create(unit="tablet")` is now a `ValueError`.
+
+   **Settings are only settings if they do something.** `core.HospitalSettings`
+   is a singleton holding the hospital's identity — which lived in a
+   JavaScript constant, so a rename meant a deployment; it is loaded by
+   `HospitalProvider` in `AppShell` and every printed document follows — plus
+   the three thresholds the dashboards alert on (`expiry_warning_days`,
+   `vitals_wait_alert_minutes`, `unpaid_charge_alert_hours`), each of which
+   was a hard-coded number. `core.NotificationSetting` is read by
+   `core.services.notify()` itself, so switching a category off actually stops
+   those notifications; `clinical` is in `ALWAYS_ON` and cannot be switched
+   off from either interface — a result reaching the clinician who ordered it
+   is not a preference. Never add a setting nothing reads.
 
 ## Django admin
 
@@ -429,11 +591,51 @@ Two rules the admin classes follow, and new ones should:
   `PrintSheet` (`components/PrintSheet.jsx`) rendering into `#print-area`;
   the `@media print` block in `index.css` hides everything else, so the page
   that comes out is the document alone. No library, works with whatever
-  printer the desk has, and "Save as PDF" is in the same dialog. Documents
-  live in `PrintDocuments.jsx` — `PatientCardSheet`, `BillSheet`,
-  `ReceiptSheet` — and print black on white, because a coloured panel either
-  burns toner or is dropped by the driver. Hospital name and address are the
-  `HOSPITAL` constant in `PrintSheet.jsx`: edit once, every document follows.
+  printer the desk has, and "Save as PDF" is in the same dialog. Reception's
+  documents live in `PrintDocuments.jsx` — `PatientCardSheet`, `BillSheet`,
+  `PatientBillSheet`, `ReceiptSheet` — and every other department's in
+  `DepartmentDocuments.jsx`. All of them print black on white, because a
+  coloured panel either burns toner or is dropped by the driver. Hospital name
+  and address are the `HOSPITAL` constant in `PrintSheet.jsx`: edit once,
+  every document follows. Shared parts — `SheetHeader`, `PatientBlock`,
+  `SheetSection`, `Stamp`, `WriteInLines`, `SheetStatus`, `SheetFooter` — are
+  in `PrintSheet.jsx`; reach for one before spelling a second patient block.
+
+- **What "Print" means is decided by the department, in one place:
+  `components/printing.jsx`.** The chart's Print button used to be the patient
+  card for everybody — right at the front desk, a wasted sheet at the bench.
+  It now asks `chartDocuments({role, tab})`, and every other page passes an
+  explicit list to `<PrintButton>`. **The first document it resolves is what
+  the button prints**; anything else that role may print is behind a caret,
+  never a second button that looks the same. The registry is the contract:
+
+  1. **`roles` mirrors the backend, and never widens it.** Each sheet fetches
+     its own data from an endpoint that role already passes — the clinical
+     summary from `/patients/<id>/overview/` (ClinicalRecordAccess), the
+     dispensing note from `/prescriptions/` (doctor + pharmacist), the lab
+     request form from `/lab-orders/<id>/request-form/` (WORKLIST_ROLES, which
+     is why a nurse is *not* on that one). The list exists so a role is never
+     offered a button that would only 403; the API is what actually refuses.
+  2. **`needs` is honesty about context** — a document with no record behind
+     it is not offered, so no button ever opens an empty sheet.
+  3. **A patient-level document belongs to the page header; a per-record one
+     belongs to its row.** *This* laboratory order and *this* scan print from
+     the row, because a header button would have to guess which you meant.
+     A tab in `TAB_OWNS_ITS_DOCUMENTS` (billing) prints its own, and the
+     header does not offer a second copy under a different name.
+
+  Two endpoints exist for the paperwork itself.
+  `GET /lab-orders/<id>/request-form/` is the sheet that travels with the
+  specimen — what was asked for, on what sample, at the order-time price, and
+  **never a result value**, which is exactly why the desk may print it while
+  `/report/` stays laboratory-and-doctor.
+  `GET /patient-routes/<id>/document/` answers the referral form and the
+  report from one payload, so a form cannot disagree with the report stapled
+  to it; the `result` half is omitted for reception. Both read wider than the
+  queue in one direction only — time, not ownership: a document outlives the
+  errand (`work_routes_for(user, statuses=None)`). Held by
+  `apps/laboratory/tests/test_request_form.py` and
+  `apps/workflow/tests/test_printable_documents.py`.
 - **Text contrast**: no `text-gray-*` anywhere — the rungs are `slate-500`
   for labels and meta, `slate-600` for supporting copy, `slate-700` for
   instructions, `slate-800`/`900` for content. `slate-400` is reserved for
@@ -663,7 +865,11 @@ Done:
   statement reconciles, but still cannot create one.
 - Pharmacy counter (`/pharmacy`, `Pharmacy.jsx`): dispensing queue →
   Dispense (deducts stock, raises the charge) → take payment at the
-  counter, plus a pharmacy-payments tab filtered on `channel=pharmacy`.
+  counter, plus a pharmacy-payments tab filtered on `channel=pharmacy` — and
+  four stock tabs pinned to the dispensing shelf (stock on hand, request from
+  the store, physical count, movement history), rendered from the same
+  `StockPanels.jsx` components Administration uses (rule 29). The tab is in
+  the URL, so the dashboard's stock alert lands on the shelf it warns about.
 - Prescribing (`/patients/<id>/prescribe`, `PrescribeDrug.jsx`): a whole
   script, not one drug at a time — a searchable drug combobox (browse the
   catalogue or type; `/items/` is searched server-side now, so a drug past
@@ -671,10 +877,33 @@ Done:
   sent as one `POST /prescriptions/bulk/`. Out-of-stock drugs are shown and
   unpickable; doctors still never see counts. One notification reaches the
   pharmacy per script, not per drug.
-- Inventory (`/inventory`): stock on hand, receive a delivery, per-batch
-  stock count, expired write-off, and the movement log. Every quantity
-  change goes through `inventory/services.py` and leaves a StockMovement.
-- Tests: 460 passing (`./venv/bin/python manage.py test` — the venv is at
+- **Administration** (`/admin`, `pages/admin/`) — the hospital's own setup in
+  one place, editing the same Django models Django admin edits (rule 31), and
+  the only workspace that configures inventory (rule 29). Its **Inventory**
+  section holds products, product categories, units of measure and stock
+  locations, plus the stock desk itself — stock operations, physical counts,
+  adjustments and write-offs, and the movement log, each opening `/inventory`
+  on the tab it names.
+  Also:
+  services, wards and beds; hospital settings (identity + the three alert
+  thresholds) and notification settings. The hub also links Departments,
+  Users, the Laboratory Catalogue and the Billing Catalog, which keep their
+  own pages. Every list shows what is in use by default with a "Show
+  inactive" toggle, and offers Delete only where nothing points at the row —
+  the API's 409 is the backstop, not the first anyone hears of it.
+- Inventory (`/inventory`) — **Administration's** stock desk (admin +
+  inventory manager; a pharmacist works their own shelf from `/pharmacy`
+  instead, rule 29): five tabs against **two stock locations** (rule
+  30) — **Stock on hand** (product / batch / location / expiry / quantity,
+  filterable by location, with per-shelf count and write-off), **Receive**
+  (into the Main Store by default), **Transfer** (Main Store → Pharmacy: pick
+  batches off the source shelf, one document, its own `TRF-` reference),
+  **Physical count** (per location — system qty, counted qty, difference per
+  line, posted as one `CNT-` document) and the **Movement log** (filterable by
+  location and kind, showing the transfer reference on both halves). Every
+  quantity change goes through `inventory/services.py`, leaves a
+  StockMovement, and cannot be made any other way.
+- Tests: 540 passing (`./venv/bin/python manage.py test` — the venv is at
   `backend/hmis/venv`; a bare `python` has no Django and fails misleadingly) — pharmacy dispensing +
   payment flow, charge settlement (full / half / later, oldest-first
   allocation), percentage discounts and their permission boundary, reception's boundaries on appointments and routes,
@@ -778,7 +1007,21 @@ Done:
   **Invoice** (open charges) or a **Statement** (everything), and offer a
   **Receipt** the moment a payment is taken — the patient is still at the
   desk. Receipts carry the amount in words, method, channel, who received
-  it and the balance left.
+  it and the balance left. Transaction History prints the statement too, and
+  the pharmacy counter now prints its own receipt as it takes the money.
+- **Every department prints its own document, chosen for it.** The Print
+  button reads `components/printing.jsx` (see the convention above), so:
+  reception keeps the **patient card** (plus the bill behind the caret), the
+  laboratory prints the **request form** at the order header and the
+  **report** from the results panel, ultrasound / the eye clinic / procedures
+  print the **request form** while the work is open and the **report** once a
+  finding is written — from the station *and* from the chart's own tab, per
+  referral — the pharmacy counter prints the **dispensing note** (with the
+  script behind the caret), the bed board prints the **admission slip** off
+  the row it belongs to, the vitals station prints the **observation record**,
+  and a doctor prints the **clinical summary**: allergies, latest
+  observations, the last three notes, what the units reported and current
+  medication. Nothing prints a registration card by accident any more.
 - **Admissions** (`/admissions`, `Admissions.jsx`): the bed board per ward,
   who is on the ward, admit / move bed / discharge. The `apps/inpatient` API
   already existed with no page in front of it. A bed is held under

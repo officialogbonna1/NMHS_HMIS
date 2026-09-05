@@ -1,5 +1,7 @@
 from django.contrib import admin
 
+from apps.core.config import ProtectedConfigAdmin
+
 from .models import Ward, Bed, Admission, BedTransfer, DischargeSummary
 
 
@@ -10,10 +12,23 @@ class BedInline(admin.TabularInline):
 
 
 @admin.register(Ward)
-class WardAdmin(admin.ModelAdmin):
+class WardAdmin(ProtectedConfigAdmin, admin.ModelAdmin):
+    """Wards — configuration, edited here or on the HMIS admin screens."""
     list_display = ["name", "department", "bed_count", "is_active"]
+    list_editable = ["is_active"]
     list_filter = ["is_active", "department"]
     search_fields = ["name"]
+    autocomplete_fields = ["department"]
+    actions = ["activate", "deactivate"]
+    protected_relations = ("beds",)
+
+    @admin.action(description="Activate selected")
+    def activate(self, request, queryset):
+        self.message_user(request, f"{queryset.update(is_active=True)} ward(s) activated.")
+
+    @admin.action(description="Deactivate selected")
+    def deactivate(self, request, queryset):
+        self.message_user(request, f"{queryset.update(is_active=False)} ward(s) deactivated.")
     inlines = [BedInline]
 
     @admin.display(description="Beds")
@@ -22,10 +37,23 @@ class WardAdmin(admin.ModelAdmin):
 
 
 @admin.register(Bed)
-class BedAdmin(admin.ModelAdmin):
+class BedAdmin(ProtectedConfigAdmin, admin.ModelAdmin):
+    """A bed somebody has occupied is part of the stay record: deactivate it."""
     list_display = ["ward", "number", "is_active", "occupied"]
+    list_editable = ["is_active"]
     list_filter = ["ward", "is_active"]
     search_fields = ["number", "ward__name"]
+    autocomplete_fields = ["ward"]
+    actions = ["activate", "deactivate"]
+    protected_relations = ("admissions", "transfers_out", "transfers_in")
+
+    @admin.action(description="Activate selected")
+    def activate(self, request, queryset):
+        self.message_user(request, f"{queryset.update(is_active=True)} bed(s) activated.")
+
+    @admin.action(description="Deactivate selected")
+    def deactivate(self, request, queryset):
+        self.message_user(request, f"{queryset.update(is_active=False)} bed(s) deactivated.")
     list_select_related = ["ward"]
 
     @admin.display(description="Occupied", boolean=True)

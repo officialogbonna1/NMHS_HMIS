@@ -7,14 +7,14 @@ from rest_framework.views import APIView
 from django.db import models, transaction
 from django.utils import timezone
 from datetime import timedelta
-from apps.core.models import Notification
+from apps.core.models import HospitalSettings, Notification
 from apps.core.models import AuditLog
 from apps.patients.models import Patient
 from apps.patients.access import patient_queryset_for
 from apps.departments.models import Department
 from apps.appointments.models import Appointment
 from apps.clinical.models import Vitals, NursingNote
-from apps.inventory.models import Item, Batch
+from apps.inventory.models import Item, StockRecord
 from apps.pharmacy.models import Prescription
 from apps.inpatient.models import Admission, Bed
 from apps.billing.models import Charge, Payment, PatientLedger, Adjustment
@@ -352,10 +352,34 @@ def _notify_route(route):
                action_url="/vitals" if user.role == "nurse" else f"/patients/{route.visit.patient_id}")
 
 
-def work_routes_for(user):
-    routes = PatientRoute.objects.filter(status__in=["queued", "in_progress"])
-    if user.role in {"admin", "hospital_admin", "reception"}:
+def work_routes_for(user, statuses=("queued", "in_progress")):
+    """
+    The routes this user works.
+
+    `statuses` narrows it to the live queue, which is what a queue page wants.
+    A *document* outlives the queue — the bench reprints the request form for
+    a scan it finished this morning — so the printable endpoint passes
+    `statuses=None` and gets the same ownership rule without the time limit.
+    """
+    routes = PatientRoute.objects.all() if statuses is None \
+        else PatientRoute.objects.filter(status__in=list(statuses))
+    if user.role in {"admin", "hospital_admin"}:
         return routes
+    if user.role == "reception":
+        # **The front desk sees the work it raised, and nothing else.**
+        #
+        # Reception's queue used to be every route in the hospital, which put
+        # the clinical routing on the front-desk screen: a doctor's
+        # laboratory referral reading "Do malaria test", a nurse's hand-off
+        # reading "No vitals recorded for this visit". Those notes are the
+        # chart — written by a clinician, for a clinician — and the desk has
+        # no business in them.
+        #
+        # What reception legitimately does with this list is call off work it
+        # queued (rule 17), so what it needs to see is exactly that. Scoped
+        # to the desk rather than to one person: a route raised on the morning
+        # shift still has to be cancellable in the afternoon.
+        return routes.filter(routed_by__role="reception")
     # Unclaimed work reaches the role the purpose calls for — a vitals
     # request is a nurse's, not every doctor who happens to be listed in that
     # department. Department membership is the fallback only for purposes
@@ -395,7 +419,45 @@ class PatientRouteViewSet(viewsets.ModelViewSet):
     queryset = PatientRoute.objects.select_related("visit__patient", "department", "assigned_to"); serializer_class = PatientRouteSerializer; filter_backends = [DjangoFilterBackend]; filterset_fields = ["visit", "department", "status", "assigned_to"]
 
     def get_queryset(self):
+        if self.action == "document":
+            return self._document_queryset()
         return work_routes_for(self.request.user).select_related("visit__patient", "department", "assigned_to")
+
+    def _document_queryset(self):
+        """
+        Which routes this user may print a form for.
+
+        Wider than the queue in one direction only — time. A request form and
+        the report that answers it are documents: the bench reprints the form
+        for a scan it finished this morning, and the doctor who raised the
+        referral reprints it for the patient's folder. So `status` is not a
+        filter here, but *who owns the work* still is.
+
+        A pooled unit (rule 14: laboratory, radiology, the eye clinic, the
+        nurses) shares its queue, so it shares its paperwork — any route with
+        that unit's purpose. A doctor is not a pool: theirs are the routes
+        they raised, were sent, or that belong to a patient they are holding —
+        `patients.access.patient_queryset_for`, the same definition of "my
+        patient" the chart itself filters by, so a doctor who can open the
+        chart can print what is on it and a covering colleague is not locked
+        out of a form the doctor who is off raised.
+        """
+        user = self.request.user
+        base = PatientRoute.objects.select_related(
+            "visit__patient", "department", "assigned_to", "routed_by", "result_by")
+        if user.role in {"admin", "hospital_admin"}:
+            return base
+        if user.role == "reception":
+            # Same boundary as the queue: the desk prints the forms it raised.
+            # A doctor's referral form carries the doctor's clinical note, so
+            # hiding it from the queue and leaving it printable would only
+            # move the leak one URL along.
+            return base.filter(routed_by__role="reception")
+        mine = (models.Q(assigned_to=user) | models.Q(routed_by=user)
+                | models.Q(visit__patient__in=patient_queryset_for(user)))
+        if user.role in POOLED_ROLES:
+            mine |= models.Q(purpose__in=ROLE_PURPOSES.get(user.role, []))
+        return base.filter(mine).distinct()
 
     def get_permissions(self):
         if self.action in {"create", "update", "partial_update", "destroy"}:
@@ -694,6 +756,80 @@ class PatientRouteViewSet(viewsets.ModelViewSet):
             title=request.data.get("title", ""),
         )
 
+    @action(detail=True, methods=["get"])
+    def document(self, request, pk=None):
+        """
+        The referral as a printable document: the request the unit works
+        from, and — once it has been written — the finding that answers it.
+
+        One payload, two documents, because they are two halves of the same
+        sheet and a form that disagrees with the report it is stapled to is
+        worse than no form at all.
+
+        **The finding is not for everybody.** Reception raises and cancels
+        routes (rule 17) and so can reach this endpoint, but a scan report is
+        clinical: `result` is included only for the unit that wrote it, the
+        clinician who asked, and admin. The request half — who, what, how
+        urgent — is what the front desk needs and all it gets.
+        """
+        route = self.get_object()
+        patient = route.visit.patient
+        user = request.user
+        # A finding is clinical, so the front desk never reads one — not even
+        # on a route reception raised itself. Reception asking a nurse for
+        # vitals does not make the reading ("BP 180/110, referred urgently")
+        # the desk's to read back; being the referrer is what earns the answer
+        # only when the referrer is a clinician.
+        may_read_result = user.role != "reception" and (
+            user.is_admin
+            or route.routed_by_id == user.pk
+            or route.assigned_to_id == user.pk
+            or route.result_by_id == user.pk
+            or user.role in PURPOSE_ROLE.get(route.purpose, [])
+        )
+        filed = route.filed_tests.first()
+        try:
+            file_url = filed.file.url if filed and filed.file else None
+        except ValueError:
+            file_url = None
+
+        data = {
+            "route": {
+                "id": route.pk,
+                "purpose": route.purpose,
+                "purpose_label": route.get_purpose_display(),
+                "priority": route.get_priority_display(),
+                "status": route.get_status_display(),
+                "department": route.department.name,
+                "notes": route.notes,
+                "created_at": route.created_at,
+                "routed_by": _display_name(route.routed_by) if route.routed_by else None,
+                "assigned_to": _display_name(route.assigned_to) if route.assigned_to else None,
+                "visit": route.visit_id,
+                "reference": f"REF-{route.pk:06d}",
+            },
+            "patient": {
+                "id": patient.pk,
+                "name": f"{patient.last_name}, {patient.first_name}",
+                "file_number": patient.file_number,
+                "sex": patient.get_sex_display(),
+                "age": patient.age_display,
+                "birthdate": patient.birthdate,
+                "phone_number": patient.phone_number,
+            },
+            "result": None,
+        }
+        if may_read_result and (route.result or filed):
+            data["result"] = {
+                "text": route.result,
+                "title": filed.title if filed else "",
+                "recorded_by": _display_name(route.result_by) if route.result_by else None,
+                "recorded_at": route.result_at,
+                "file_url": file_url,
+                "file_name": filed.file.name.rsplit("/", 1)[-1] if file_url else None,
+            }
+        return Response(data)
+
     @action(detail=True, methods=["post"])
     def cancel(self, request, pk=None):
         """
@@ -932,29 +1068,50 @@ class DashboardView(APIView):
 
     def _alerts_for(self, user, is_admin_dashboard):
         alerts = []
+        # The thresholds are configuration, not constants: an admin sets them
+        # on Administration → Hospital settings and every alert below follows.
+        settings_row = HospitalSettings.load()
         if is_admin_dashboard or user.role in {"pharmacist", "inventory_manager"}:
+            # Where a stock alert lands depends on the workspace it is raised
+            # in. Administration runs inventory from /inventory; the pharmacy
+            # works its own shelf from its own page, and can no longer open
+            # the inventory desk at all — so sending a pharmacist there would
+            # be a link straight into a refusal.
+            stock_href = "/pharmacy?tab=stock" if user.role == "pharmacist" else "/inventory"
             low_stock = sum(1 for item in Item.objects.all() if item.is_low_stock)
-            expiring = Batch.objects.filter(quantity__gt=0, expiry_date__gte=timezone.localdate(), expiry_date__lte=timezone.localdate() + timedelta(days=30)).count()
+            # Counted over stock records, so a lot standing in two locations
+            # is two things to walk to — which is what the alert is for.
+            expiry_days = settings_row.expiry_warning_days
+            expiring = StockRecord.objects.filter(
+                quantity__gt=0,
+                batch__expiry_date__gte=timezone.localdate(),
+                batch__expiry_date__lte=timezone.localdate() + timedelta(days=expiry_days),
+            ).count()
             if low_stock:
-                alerts.append({"label": f"{low_stock} item(s) are below their reorder threshold", "level": "warning", "href": "/inventory"})
+                alerts.append({"label": f"{low_stock} item(s) are below their reorder threshold",
+                               "level": "warning", "href": stock_href})
             if expiring:
-                alerts.append({"label": f"{expiring} batch(es) expire within 30 days", "level": "warning", "href": "/inventory"})
+                alerts.append({"label": f"{expiring} batch(es) expire within {expiry_days} days",
+                               "level": "warning", "href": stock_href})
         if user.role == "nurse":
+            wait_minutes = settings_row.vitals_wait_alert_minutes
             waiting_long = work_routes_for(user).filter(
-                purpose="vitals", status="queued", created_at__lt=timezone.now() - timedelta(minutes=30)
+                purpose="vitals", status="queued",
+                created_at__lt=timezone.now() - timedelta(minutes=wait_minutes),
             ).count()
             if waiting_long:
-                alerts.append({"label": f"{waiting_long} patient(s) have been waiting over 30 minutes for vitals",
+                alerts.append({"label": f"{waiting_long} patient(s) have been waiting over {wait_minutes} minutes for vitals",
                                "level": "warning", "href": "/vitals"})
         if user.role in {"cashier", "accountant"}:
             # A bill raised at the front desk is money this desk has to
             # collect, and the patient is usually walking over right now.
+            hours = settings_row.unpaid_charge_alert_hours
             waiting = Charge.objects.filter(
                 status__in=["unpaid", "partial"],
-                created_at__gte=timezone.now() - timedelta(hours=2),
+                created_at__gte=timezone.now() - timedelta(hours=hours),
             ).count()
             if waiting:
-                alerts.append({"label": f"{waiting} charge(s) raised in the last 2 hours are still unpaid",
+                alerts.append({"label": f"{waiting} charge(s) raised in the last {hours} hours are still unpaid",
                                "level": "warning", "href": "/billing"})
         if is_admin_dashboard:
             occupied = Admission.objects.filter(status="admitted").count()

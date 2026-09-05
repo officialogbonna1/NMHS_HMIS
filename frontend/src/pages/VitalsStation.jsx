@@ -7,6 +7,7 @@ import { readError } from "../api/errors";
 import { useAuth } from "../auth/AuthContext.jsx";
 import { useToast } from "../components/Toaster.jsx";
 import { Button, Page, PageHeader, MetaStat, TabBar, Tab, Badge, waitedFor } from "../components/ui.jsx";
+import { PrintButton } from "../components/printing.jsx";
 import VitalsEntryForm from "../components/VitalsEntryForm.jsx";
 import NursingNoteForm from "../components/NursingNoteForm.jsx";
 
@@ -327,6 +328,7 @@ function Pill({ children, tone = "border-slate-200 bg-slate-50 text-slate-600" }
 function PatientStation({ route, onBack }) {
   const patientId = route.patient_id;
   const queryClient = useQueryClient();
+  const { user } = useAuth();
   const { showToast } = useToast();
   const [savedVitalsId, setSavedVitalsId] = useState(null);
 
@@ -392,6 +394,15 @@ function PatientStation({ route, onBack }) {
         }
         actions={
           <>
+            {/* The nursing document: the readings and the notes written
+                beside them, for the folder or the ward round. Vitals lock on
+                save, so what prints is what was recorded. */}
+            <PrintButton
+              role={user?.role}
+              variant="secondary"
+              documents={["vitals_record"]}
+              context={{ patientId }}
+            />
             {route.status === "queued" && (
               <Button variant="secondary" onClick={() => transition.mutate("start")} disabled={transition.isPending}>
                 Start

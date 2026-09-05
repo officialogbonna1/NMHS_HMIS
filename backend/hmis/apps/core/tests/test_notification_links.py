@@ -18,6 +18,7 @@ from apps.accounts.models import User
 from apps.appointments.models import Appointment
 from apps.core.models import Notification
 from apps.departments.models import Department
+from apps.inventory.testing import stock_the_pharmacy
 from apps.inventory.models import Item, Batch
 from apps.patients.models import Patient
 from rest_framework.test import APIClient
@@ -80,8 +81,7 @@ class NotificationLinkTests(TestCase):
 
     def test_prescribing_and_dispensing_link_somewhere_that_exists(self):
         item = Item.objects.create(name="Paracetamol")
-        Batch.objects.create(item=item, batch_no="B1", quantity=10, cost_price=Decimal("10"),
-                             sale_price=Decimal("20"), expiry_date=timezone.localdate() + timedelta(days=60))
+        stock_the_pharmacy(item=item, quantity=10, actor=self.doctor, expiry_days=60)
         Appointment.objects.create(patient=self.patient, doctor=self.doctor, reason="Fever")
 
         doctor_client = APIClient(); doctor_client.force_authenticate(self.doctor)

@@ -4,6 +4,7 @@ import api from "../api/client";
 import { readError } from "../api/errors";
 import { useToast } from "./Toaster.jsx";
 import LabReportSheet from "./LabReportSheet.jsx";
+import { LabRequestSheet } from "./DepartmentDocuments.jsx";
 
 // Entering laboratory results.
 //
@@ -185,6 +186,7 @@ export default function LabResultEntry({ routeId, patientId, onDone }) {
 
 function OrderHeader({ order, onRefresh }) {
   const [specimen, setSpecimen] = useState(order.specimen_id || "");
+  const [printingRequest, setPrintingRequest] = useState(false);
   const { showToast } = useToast();
 
   const collect = useMutation({
@@ -269,12 +271,27 @@ function OrderHeader({ order, onRefresh }) {
         >
           {order.specimen_collected_at ? "Update sample" : "Log sample collected"}
         </button>
+        {/* The request form, not the report: the sheet that goes with the
+            specimen and gets written on at the bench. It carries no result,
+            so it prints whether or not anything has been entered — which is
+            the whole point of having it before the work starts. */}
+        <button
+          type="button"
+          onClick={() => setPrintingRequest(true)}
+          className="rounded-lg border border-slate-300 px-4 py-2.5 text-sm font-medium text-slate-700 transition hover:border-slate-400 hover:bg-slate-50 sm:py-2"
+        >
+          🖨 Request form
+        </button>
       </div>
       {order.specimen_collected_at && (
         <p className="mt-2 text-sm text-slate-600">
           Collected {new Date(order.specimen_collected_at).toLocaleString()}
           {order.collected_by_name && ` by ${order.collected_by_name}`}
         </p>
+      )}
+
+      {printingRequest && (
+        <LabRequestSheet orderId={order.id} onClose={() => setPrintingRequest(false)} />
       )}
     </section>
   );

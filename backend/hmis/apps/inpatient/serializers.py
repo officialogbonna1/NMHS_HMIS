@@ -22,9 +22,18 @@ class AdmissionSerializer(serializers.ModelSerializer):
     bed_number = serializers.CharField(source="bed.number", read_only=True)
     ward_name = serializers.CharField(source="bed.ward.name", read_only=True)
     attending_doctor_name = serializers.SerializerMethodField()
+    # What an admission slip is made of. The ward prints one at the bedside,
+    # so it must not need a second call to the patient record to say who is
+    # in the bed.
+    patient_sex = serializers.CharField(source="patient.get_sex_display", read_only=True)
+    patient_age = serializers.CharField(source="patient.age_display", read_only=True)
+    admitted_by_name = serializers.SerializerMethodField()
     class Meta: model=Admission; fields="__all__"; read_only_fields=["admitted_by","status","admitted_at","discharged_at"]
     def get_attending_doctor_name(self, obj):
         user = obj.attending_doctor
+        return (user.get_full_name() or user.username) if user else None
+    def get_admitted_by_name(self, obj):
+        user = obj.admitted_by
         return (user.get_full_name() or user.username) if user else None
 class BedTransferSerializer(serializers.ModelSerializer):
     from_bed_number = serializers.CharField(source="from_bed.number", read_only=True)

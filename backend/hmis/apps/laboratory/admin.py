@@ -11,6 +11,8 @@ service exists to prevent. Same rule the billing and vitals admins follow.
 """
 from django.contrib import admin
 
+from apps.core.config import ProtectedConfigAdmin
+
 from .models import (
     LabOrder, LabOrderTest, LabPanel, LabParameter, LabResultAmendment,
     LabResultValue, LabTest,
@@ -26,12 +28,42 @@ class LabParameterInline(admin.TabularInline):
 
 
 @admin.register(LabTest)
-class LabTestAdmin(admin.ModelAdmin):
+class LabTestAdmin(ProtectedConfigAdmin, admin.ModelAdmin):
+    """
+    The orderable test catalogue — the same rows `/lab-catalogue` edits.
+
+    A test any order has ever named is retired (`is_active = False`), never
+    deleted: results point at it, and `LabOrderTest` keeps an order-time
+    snapshot precisely so history does not move (design rule 21).
+    """
     list_display = ["name", "code", "category", "specimen_type", "price", "parameter_count",
                     "is_active"]
-    list_filter = ["category", "is_active"]
+    list_editable = ["price", "is_active"]
+    list_filter = ["category", "is_active", "department"]
     search_fields = ["name", "code", "specimen_type"]
+    ordering = ["category", "display_order", "name"]
+    autocomplete_fields = ["billing_item", "department"]
+    actions = ["activate", "retire"]
+    protected_relations = ("order_items",)
     inlines = [LabParameterInline]
+    fieldsets = [
+        (None, {"fields": ["code", "name", "category", "description", "is_active",
+                           "display_order"]}),
+        ("Specimen", {"fields": ["specimen_type", "container", "turnaround_hours"]}),
+        ("Price", {
+            "fields": ["price", "billing_item", "department"],
+            "description": "When a billing item is linked its price wins, so the cash "
+                           "desk is never quoting a second figure.",
+        }),
+    ]
+
+    @admin.action(description="Activate selected")
+    def activate(self, request, queryset):
+        self.message_user(request, f"{queryset.update(is_active=True)} test(s) activated.")
+
+    @admin.action(description="Retire selected (results keep reading)")
+    def retire(self, request, queryset):
+        self.message_user(request, f"{queryset.update(is_active=False)} test(s) retired.")
 
     @admin.display(description="Parameters")
     def parameter_count(self, obj):
@@ -39,11 +71,30 @@ class LabTestAdmin(admin.ModelAdmin):
 
 
 @admin.register(LabParameter)
-class LabParameterAdmin(admin.ModelAdmin):
-    list_display = ["name", "test", "code", "result_type", "unit", "reference_range",
-                    "is_required", "is_active"]
+class LabParameterAdmin(ProtectedConfigAdmin, admin.ModelAdmin):
+    """One line of a test's result form. Retired, not deleted, once measured."""
+    list_display = ["name", "test", "code", "group", "result_type", "unit",
+                    "reference_range", "is_active"]
+    list_editable = ["is_active"]
     list_filter = ["result_type", "is_required", "is_active", "test__category"]
     search_fields = ["name", "code", "test__name"]
+    ordering = ["test__name", "display_order"]
+    list_select_related = ["test"]
+    autocomplete_fields = ["test"]
+    list_per_page = 100
+    protected_relations = ("results", "amendments")
+    fieldsets = [
+        (None, {"fields": ["test", "code", "name", "group", "display_order", "is_active"]}),
+        ("How it is measured", {"fields": ["result_type", "unit", "options"]}),
+        ("What counts as normal", {
+            "fields": ["reference_range", "ref_low", "ref_high", "normal_value",
+                       "is_required"],
+            "description": "The printed range is free text; the two bounds are what the "
+                           "flagging reads. Leave the bounds unset where the range "
+                           "depends on sex or age — nothing is flagged, which is the "
+                           "safe direction to fail in.",
+        }),
+    ]
 
 
 @admin.register(LabPanel)

@@ -15,7 +15,9 @@ from rest_framework.test import APIClient
 from apps.accounts.models import User
 from apps.billing.models import Charge
 from apps.core.models import Notification
-from apps.inventory.models import Item, Batch, StockMovement
+from apps.inventory.models import PHARMACY, Item, Batch, StockLocation, StockMovement
+from apps.inventory.services import receive_stock
+from apps.inventory.testing import product
 from apps.patients.models import Patient
 from apps.pharmacy.models import Prescription
 
@@ -35,10 +37,18 @@ class BulkPrescribingTests(TestCase):
         self.client = APIClient(); self.client.force_authenticate(self.doctor)
 
     def _stocked(self, name, quantity, sale_price):
-        item = Item.objects.create(name=name, unit="tablet")
-        Batch.objects.create(item=item, batch_no=f"B-{name}", quantity=quantity,
-                             cost_price=Decimal("10"), sale_price=Decimal(sale_price),
-                             expiry_date=timezone.localdate() + timedelta(days=180))
+        """
+        A drug standing on the **pharmacy** shelf, which is the only stock a
+        prescription can be written against — what is in the Main Store is
+        not dispensable until it is transferred.
+        """
+        item = product(name, unit_name="tablet")
+        batch = Batch.objects.create(
+            item=item, batch_no=f"B-{name}", cost_price=Decimal("10"),
+            sale_price=Decimal(sale_price),
+            expiry_date=timezone.localdate() + timedelta(days=180))
+        receive_stock(batch=batch, quantity=quantity, actor=self.pharmacist,
+                      location=StockLocation.objects.get(code=PHARMACY))
         return item
 
     def _send(self, lines, patient=None):
@@ -62,8 +72,8 @@ class BulkPrescribingTests(TestCase):
     def test_writing_the_script_moves_no_stock(self):
         """Prescribing queues a request; dispensing is what deducts."""
         self._send([{"item": self.paracetamol.id, "quantity": 20}])
-        self.assertEqual(Batch.objects.get(item=self.paracetamol).quantity, 100)
-        self.assertFalse(StockMovement.objects.exists())
+        self.assertEqual(Batch.objects.get(item=self.paracetamol).total_quantity, 100)
+        self.assertFalse(StockMovement.objects.exclude(reason="received").exists())
         self.assertFalse(Charge.objects.exists())
 
     def test_one_drug_short_of_stock_takes_the_whole_script_down(self):
@@ -129,11 +139,16 @@ class BulkPrescribingTests(TestCase):
             self.assertEqual(
                 pharmacy.post(f"/api/prescriptions/{prescription['id']}/dispense/").status_code, 200)
 
-        self.assertEqual(Batch.objects.get(item=self.paracetamol).quantity, 80)
-        self.assertEqual(Batch.objects.get(item=self.amoxicillin).quantity, 40)
-        # Every unit that left a batch has an audit row behind it.
-        self.assertEqual(StockMovement.objects.count(), 2)
-        self.assertEqual(sum(m.change for m in StockMovement.objects.all()), -30)
+        self.assertEqual(Batch.objects.get(item=self.paracetamol).total_quantity, 80)
+        self.assertEqual(Batch.objects.get(item=self.amoxicillin).total_quantity, 40)
+        # Every unit that left a batch has an audit row behind it. Filtered to
+        # the dispensing rows: stocking the shelf wrote receipts of its own,
+        # which is the point of the location split.
+        dispensed = StockMovement.objects.filter(reason="prescription")
+        self.assertEqual(dispensed.count(), 2)
+        self.assertEqual(sum(m.change for m in dispensed), -30)
+        # And they came off the pharmacy shelf, not the store.
+        self.assertEqual(set(dispensed.values_list("location__code", flat=True)), {PHARMACY})
 
         charges = Charge.objects.filter(patient=self.patient)
         self.assertEqual(charges.count(), 2)

@@ -8,6 +8,7 @@ import { useAuth } from "../auth/AuthContext.jsx";
 import { useToast } from "../components/Toaster.jsx";
 import { Button, TextLink, Page, PageHeader, MetaStat, Badge, waitedFor } from "../components/ui.jsx";
 import LabResultEntry from "../components/LabResultEntry.jsx";
+import { PrintButton } from "../components/printing.jsx";
 
 // One working page, three units. Laboratory, Ultrasound and the Eye clinic
 // do the same job in the same order — a doctor refers, somebody claims the
@@ -250,6 +251,7 @@ function QueueRow({ route, user, onOpen }) {
 
 function Station({ config, route, onBack }) {
   const queryClient = useQueryClient();
+  const { user } = useAuth();
   const { showToast } = useToast();
   const [result, setResult] = useState(route.result ?? "");
   const [title, setTitle] = useState("");
@@ -334,6 +336,19 @@ function Station({ config, route, onBack }) {
         }
         actions={
           <>
+            {/* This unit's own paperwork, not the patient's registration
+                card: the request form the doctor raised while the work is
+                open, and the report once a finding has been written. The
+                second only appears when there is one — a blank report is not
+                a document. */}
+            <PrintButton
+              role={user?.role}
+              variant="secondary"
+              documents={route.result
+                ? ["referral_report", "referral_request"]
+                : ["referral_request"]}
+              context={{ routeId: route.id }}
+            />
             {route.status === "queued" && (
               <Button variant="secondary" onClick={() => transition.mutate("start")} disabled={transition.isPending}>
                 Start

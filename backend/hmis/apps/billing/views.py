@@ -7,6 +7,7 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 from django_filters.rest_framework import DjangoFilterBackend
 from apps.core.services import audit_event, notify
+from apps.core.config import ProtectedConfigMixin
 from apps.accounts.permissions import BILLING_ROLES, IsAdmin
 from .models import PatientLedger, Charge, Payment, Adjustment, BillingItem
 from .serializers import PatientLedgerSerializer, ChargeSerializer, PaymentSerializer, AdjustmentSerializer, BillingItemSerializer
@@ -34,9 +35,18 @@ PAYMENT_CHANNEL_BY_ROLE = {"pharmacist": "pharmacy", "cashier": "cashier", "acco
 CATALOG_ROLES = ["cashier", "accountant"]
 
 
-class BillingItemViewSet(viewsets.ModelViewSet):
+class BillingItemViewSet(ProtectedConfigMixin, viewsets.ModelViewSet):
+    """
+    The price list. Read by everyone who quotes a price; priced by the desks
+    that find out at the window that a service has none.
+
+    A priced item a laboratory test points at is configuration with history
+    behind it: deactivate it so old orders keep their price, rather than
+    deleting it and leaving them pointing at nothing.
+    """
     queryset = BillingItem.objects.all(); serializer_class = BillingItemSerializer
     filter_backends = [DjangoFilterBackend]; filterset_fields = ["is_active", "category"]
+    protected_relations = ("lab_tests",)
     def get_permissions(self):
         # Everyone signed in can read the price list — reception bills from
         # it, the pharmacy quotes from it.

@@ -2,11 +2,15 @@ from django.db import models
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework import filters, viewsets, permissions
 from rest_framework.decorators import action
-from rest_framework.exceptions import MethodNotAllowed, PermissionDenied
+from rest_framework.exceptions import MethodNotAllowed, PermissionDenied, ValidationError
 from rest_framework.response import Response
 from apps.accounts.permissions import IsAdmin
-from .models import AuditLog, Notification
-from .serializers import AuditLogSerializer, NotificationSerializer
+from .services import audit_event
+from .models import AuditLog, HospitalSettings, Notification, NotificationSetting
+from .serializers import (
+    AuditLogSerializer, HospitalSettingsSerializer, NotificationSerializer,
+    NotificationSettingSerializer,
+)
 
 
 class NotificationViewSet(viewsets.ModelViewSet):
@@ -108,3 +112,73 @@ class AuditLogViewSet(viewsets.ReadOnlyModelViewSet):
     serializer_class = AuditLogSerializer
     permission_classes = [IsAdmin]
     queryset = AuditLog.objects.select_related("actor", "content_type")
+
+
+class HospitalSettingsViewSet(viewsets.ModelViewSet):
+    """
+    The hospital's own settings — one row, everybody reads it, an admin edits it.
+
+    Read by everyone on purpose: the letterhead on a printed document and the
+    hospital's name in the application header come from here, so every signed-in
+    user needs it. Only an admin may change it.
+
+    `GET /hospital-settings/current/` is the shape the frontend asks for — the
+    row itself rather than a list of one.
+    """
+    serializer_class = HospitalSettingsSerializer
+    queryset = HospitalSettings.objects.all()
+    http_method_names = ["get", "put", "patch", "head", "options"]
+
+    def get_permissions(self):
+        if self.request.method in permissions.SAFE_METHODS:
+            return [permissions.IsAuthenticated()]
+        return [IsAdmin()]
+
+    @action(detail=False, methods=["get", "patch"])
+    def current(self, request):
+        """The single row, created with the defaults if it is not there yet."""
+        settings_row = HospitalSettings.load()
+        if request.method == "PATCH":
+            if not IsAdmin().has_permission(request, self):
+                raise PermissionDenied("Only an admin can change the hospital settings.")
+            serializer = self.get_serializer(settings_row, data=request.data, partial=True)
+            serializer.is_valid(raise_exception=True)
+            serializer.save()
+            audit_event(actor=request.user, action="config.hospital_settings_updated",
+                        instance=settings_row, details=request.data, request=request)
+            return Response(serializer.data)
+        return Response(self.get_serializer(settings_row).data)
+
+
+class NotificationSettingViewSet(viewsets.ModelViewSet):
+    """
+    Which categories of notification the hospital sends.
+
+    Read by any signed-in user — a nurse may reasonably want to know why the
+    bell is quiet — and changed by an admin. `clinical` cannot be switched
+    off here or anywhere: `core.services.notify()` ignores a setting that
+    tries to, because a result reaching the doctor who ordered it is not a
+    preference. The API says so rather than silently keeping it on.
+    """
+    serializer_class = NotificationSettingSerializer
+    queryset = NotificationSetting.objects.all()
+    http_method_names = ["get", "patch", "head", "options"]
+
+    def get_permissions(self):
+        if self.request.method in permissions.SAFE_METHODS:
+            return [permissions.IsAuthenticated()]
+        return [IsAdmin()]
+
+    def perform_update(self, serializer):
+        from .services import ALWAYS_ON
+
+        instance = serializer.instance
+        if instance.category in ALWAYS_ON and serializer.validated_data.get("is_enabled") is False:
+            raise ValidationError({
+                "is_enabled": f"{instance.get_category_display()} notifications cannot be "
+                              f"switched off — a result has to reach the clinician who asked."})
+        setting = serializer.save()
+        audit_event(actor=self.request.user, action="config.notifications_updated",
+                    instance=setting,
+                    details={"category": setting.category, "enabled": setting.is_enabled},
+                    request=self.request)

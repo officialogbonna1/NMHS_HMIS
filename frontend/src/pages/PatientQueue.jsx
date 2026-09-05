@@ -28,9 +28,16 @@ const STATUS_LABEL = { queued: "Waiting", in_progress: "In progress", completed:
 
 // Front desk creates a Visit + routes it to a department; the destination
 // department's queue is scoped server-side (see workflow.views.work_routes_for).
+//
+// **Reception's list is the work reception raised, not the hospital's.** A
+// doctor's laboratory referral and a nurse's hand-off carry clinical notes —
+// one clinician writing to another — and the front desk has no business in
+// them. The server draws that line; the wording here matches it, so the page
+// does not promise a view it will not show.
 export default function PatientQueue() {
   const { user } = useAuth();
   const canRoute = ["reception", "admin", "hospital_admin"].includes(user?.role);
+  const isFrontDesk = user?.role === "reception";
 
   const { data: routes, isLoading, isError, refetch, isFetching } = useQuery({
     queryKey: ["patient-routes"],
@@ -61,8 +68,10 @@ export default function PatientQueue() {
     <Page width="wide">
       <PageHeader
         icon="queue"
-        title="My queue"
-        subtitle="Patients routed to you, and the work each one is waiting on."
+        title={isFrontDesk ? "Front desk queue" : "My queue"}
+        subtitle={isFrontDesk
+          ? "Patients you have sent through, and what each one is waiting on. Referrals between clinicians stay on the chart."
+          : "Patients routed to you, and the work each one is waiting on."}
         meta={
           <>
             <MetaStat value={counts.waiting} label="waiting" />

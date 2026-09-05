@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useParams, useNavigate, Routes, Route, useLocation } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import api from "../api/client";
-import { PatientCardSheet } from "../components/PrintDocuments.jsx";
+import { PrintButton, chartDocuments } from "../components/printing.jsx";
 import HealthRecordTile from "../components/HealthRecordTile.jsx";
 import GenericTileModal from "../components/GenericTileModal.jsx";
 import { TILE_CONFIGS } from "../components/tileConfig.js";
@@ -33,7 +33,6 @@ const TILES = [
 // Mirrors the manual's Health Record screen: tabs for Health Record /
 // Medical Notes / Vitals, with the nine tiles (Allergies, Medications, etc).
 export default function PatientDetail() {
-  const [showCard, setShowCard] = useState(false);
   const { id } = useParams();
   const navigate = useNavigate();
   const location = useLocation();
@@ -125,11 +124,19 @@ export default function PatientDetail() {
               </div>
             </div>
             <div className="flex shrink-0 flex-wrap gap-2">
-              {/* Cards get lost. Anyone at the desk can reprint one. */}
-              <Button variant="secondary" onClick={() => setShowCard(true)}>
-                <Icon name="print" className="h-4 w-4" aria-hidden="true" />
-                Patient card
-              </Button>
+              {/* Print means something different in every department, so the
+                  button asks `components/printing.jsx` what this role, on
+                  this tab, would actually want on paper: the card at the
+                  front desk, the clinical summary in a consulting room, the
+                  observation record at the vitals station, the dispensing
+                  note at the pharmacy, the bill at the counter. Anything else
+                  the role may print is behind the caret — never a second
+                  button that prints the same card. */}
+              <PrintButton
+                role={role}
+                documents={chartDocuments({ role, tab, context: { patientId: id, patient } })}
+                context={{ patientId: id, patient }}
+              />
               {canPrescribe && (
                 <Button onClick={() => navigate(`/patients/${id}/prescribe`)}>
                   <Icon name="plus" className="h-4 w-4" aria-hidden="true" />
@@ -150,8 +157,6 @@ export default function PatientDetail() {
           </div>
         </div>
       )}
-
-      {showCard && patient && <PatientCardSheet patient={patient} onClose={() => setShowCard(false)} />}
 
       {(isClinical || canSeeVitals || canBill || canSeePharmacy) && <TabBar label="Chart sections">
         {isClinical && <TabLink to={`/patients/${id}`} active={tab === "overview"}>Overview</TabLink>}

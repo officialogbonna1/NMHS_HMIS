@@ -2,12 +2,12 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, NavLink, Outlet, useLocation } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import api from "../api/client";
-import { HOSPITAL } from "./PrintSheet.jsx";
+import { HospitalProvider, useHospital } from "./PrintSheet.jsx";
 import { useAuth } from "../auth/AuthContext.jsx";
 // The nav and the route guards read from the same groups, so a link can
 // never appear for a role that RequireAuth will then turn away.
 import {
-  ADMIN_ROLES, BILLING_ROLES, PATIENT_LOOKUP_ROLES, QUEUE_ROLES, STOCK_ROLES,
+  ADMIN_ROLES, BILLING_ROLES, PATIENT_LOOKUP_ROLES, QUEUE_ROLES,
   WARD_ROLES, hasRole,
 } from "../auth/roles.js";
 import { Icon } from "./icons.jsx";
@@ -45,17 +45,38 @@ const NAV_ITEMS = [
   ["/transactions", "Transaction History", "receipt", BILLING_ROLES, "Finance"],
   ["/billing-items", "Billing Catalog", "price", ["cashier", "accountant"], "Finance"],
 
-  ["/pharmacy", "Pharmacy", "pill", PHARMACY_ROLES, "Supplies"],
-  ["/inventory", "Inventory", "box", STOCK_ROLES, "Supplies"],
+  // **Pharmacy is pharmacy work.** Prescriptions, dispensing, the money the
+  // counter takes, and the stock on its own shelf — all inside /pharmacy.
+  // Configuring the catalogue and running the Main Store are Administration's;
+  // a pharmacist has no Administration or Inventory item at all.
+  ["/pharmacy", "Pharmacy", "pill", PHARMACY_ROLES, "Pharmacy"],
 
+  // **Administration configures inventory.** /inventory is the hospital-wide
+  // stock desk — receipts into the store, transfers between locations, counts
+  // anywhere, the whole movement ledger — so it lives here with the rest of
+  // the setup, for admin and the inventory manager who keeps the store.
+  ["/admin", "Administration", "shield", ADMIN_ROLES, "Administration"],
+  ["/inventory", "Inventory", "box", ["inventory_manager"], "Administration"],
   ["/departments", "Departments", "building", ADMIN_ROLES, "Administration"],
   ["/users", "Users", "shield", ADMIN_ROLES, "Administration"],
 ];
 
-const GROUP_ORDER = ["Workspace", "Clinical", "Departments", "Finance", "Supplies", "Administration"];
+const GROUP_ORDER = ["Workspace", "Clinical", "Departments", "Finance", "Pharmacy", "Administration"];
 
 export default function AppShell() {
+  // The hospital's own details come from `core.HospitalSettings`, so a
+  // rename is a form, not a deployment. Loaded once here and shared with
+  // every page and printed document below.
+  return (
+    <HospitalProvider>
+      <Shell />
+    </HospitalProvider>
+  );
+}
+
+function Shell() {
   const { user, logout } = useAuth();
+  const HOSPITAL = useHospital();
   const location = useLocation();
   // Two states, because a drawer that animates open and vanishes shut is worse
   // than one that does neither. `menuOpen` is "in the DOM"; `menuShown` is

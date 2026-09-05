@@ -1,8 +1,15 @@
 import { useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import api from "../api/client";
-import { Button, Page, PageHeader, TabBar, Tab } from "../components/ui.jsx";
+import { Alert, Button, MetaStat, Page, PageHeader, TabBar, Tab } from "../components/ui.jsx";
+import {
+  MovementLog, PhysicalCount, StockOnHand, TransferStock, useLocations,
+} from "../components/StockPanels.jsx";
 import { useToast } from "../components/Toaster.jsx";
+import { useAuth } from "../auth/AuthContext.jsx";
+import { PrintButton } from "../components/printing.jsx";
+import { ReceiptSheet } from "../components/PrintDocuments.jsx";
 
 // The pharmacy counter. Prescriptions arrive here from doctors as requests;
 // dispensing is what actually deducts stock (FEFO, server-side) and raises
@@ -15,26 +22,72 @@ const STATUS_TONE = {
   cancelled: "bg-slate-100 text-slate-400 line-through",
 };
 
+const TABS = ["queue", "dispensed", "payments", "stock", "transfer", "count", "movements"];
+
 export default function Pharmacy() {
-  const [tab, setTab] = useState("queue");
+  // The tab is in the URL so the dashboard's stock alert can land on the
+  // shelf it is warning about rather than on the dispensing queue.
+  const [params, setParams] = useSearchParams();
+  const requested = params.get("tab");
+  const tab = TABS.includes(requested) ? requested : "queue";
+  const setTab = (key) => setParams(key === "queue" ? {} : { tab: key }, { replace: true });
+  const { data: locations } = useLocations();
+  // The pharmacy's own shelf. Everything on the stock tabs below is pinned to
+  // it: this workspace operates pharmacy stock, and configuring the catalogue
+  // or running the Main Store is Administration's (see StockPanels.jsx).
+  const counter = locations?.find((l) => l.is_dispensing_point);
+  const store = locations?.find((l) => l.is_default_receiving);
 
   return (
     <Page width="wide">
       <PageHeader
         icon="pill"
         title="Pharmacy"
-        subtitle="Process prescriptions, dispensing and pharmacy transactions."
+        subtitle="Prescriptions, dispensing, and the stock standing on the pharmacy shelf."
+        meta={
+          counter ? <MetaStat value={counter.total_units} label="units on the shelf" tone="brand" />
+                  : null
+        }
       />
 
       <TabBar label="Pharmacy sections">
         <Tab active={tab === "queue"} onClick={() => setTab("queue")}>Dispensing queue</Tab>
         <Tab active={tab === "dispensed"} onClick={() => setTab("dispensed")}>Dispensed &amp; payment</Tab>
         <Tab active={tab === "payments"} onClick={() => setTab("payments")}>Pharmacy payments</Tab>
+        <Tab active={tab === "stock"} onClick={() => setTab("stock")}>Pharmacy stock</Tab>
+        <Tab active={tab === "transfer"} onClick={() => setTab("transfer")}>Request from store</Tab>
+        <Tab active={tab === "count"} onClick={() => setTab("count")}>Physical count</Tab>
+        <Tab active={tab === "movements"} onClick={() => setTab("movements")}>Movement history</Tab>
       </TabBar>
 
       {tab === "queue" && <DispensingQueue />}
       {tab === "dispensed" && <DispensedList />}
       {tab === "payments" && <PharmacyPayments />}
+
+      {/* The same panels Administration → Inventory renders, pinned to the
+          dispensing shelf. One implementation, two workspaces: a pharmacist
+          counting "the shelf" cannot post the count against the Main Store,
+          and a transfer here can only be stock coming *in*. */}
+      {tab === "stock" && (
+        <StockOnHand locations={locations} lockedLocation={counter} />
+      )}
+      {tab === "transfer" && (
+        <>
+          <Alert tone="info" className="mb-4">
+            Stock reaches the counter from the {store?.name ?? "Main Store"} by transfer — that is
+            what makes it dispensable. The store's own stock and supplier deliveries are
+            Administration's.
+          </Alert>
+          <TransferStock locations={locations} store={store} counter={counter}
+                         lockedLocation={counter} />
+        </>
+      )}
+      {tab === "count" && (
+        <PhysicalCount locations={locations} store={store} lockedLocation={counter} />
+      )}
+      {tab === "movements" && (
+        <MovementLog locations={locations} lockedLocation={counter} />
+      )}
     </Page>
   );
 }
@@ -151,8 +204,12 @@ function DispensedList() {
 function PatientCounterCard({ group }) {
   const queryClient = useQueryClient();
   const { showToast } = useToast();
+  const { user } = useAuth();
   const [amount, setAmount] = useState("");
   const [method, setMethod] = useState("cash");
+  // The receipt is printed the moment the money is taken — the patient is
+  // still standing at the counter, which is the only time it is any use.
+  const [receipt, setReceipt] = useState(null);
 
   const { data: ledgerResults } = useQuery({
     queryKey: ["ledger", group.patient],
@@ -167,6 +224,7 @@ function PatientCounterCard({ group }) {
       queryClient.invalidateQueries({ queryKey: ["ledger", group.patient] });
       queryClient.invalidateQueries({ queryKey: ["payments"] });
       setAmount("");
+      setReceipt(response.data);
       showToast({ title: "Payment received", message: `${group.name} — ${currency(response.data.amount)}` });
     },
     onError: (error) => showToast({
@@ -190,9 +248,22 @@ function PatientCounterCard({ group }) {
             ))}
           </ul>
         </div>
-        <div className="text-right shrink-0">
+        <div className="shrink-0 text-right">
           <p className="text-xs text-slate-600">Outstanding</p>
           <p className={`text-lg font-bold ${outstanding > 0 ? "text-red-700" : "text-emerald-700"}`}>{currency(outstanding)}</p>
+          {/* The pharmacy's own document: what left the shelf, at what price,
+              released by whom — with the script behind the caret for a
+              patient who has lost theirs. Not the registration card. */}
+          <PrintButton
+            role={user?.role}
+            size="sm"
+            className="mt-2"
+            documents={["dispensing_note", "prescription", "invoice"]}
+            context={{
+              patientId: group.patient,
+              prescriptionIds: group.lines.map((line) => line.id),
+            }}
+          />
         </div>
       </div>
 
@@ -225,8 +296,29 @@ function PatientCounterCard({ group }) {
           </button>
         </form>
       )}
+
+      {receipt && (
+        <ReceiptSheet
+          patient={patientOf(group)}
+          payment={receipt}
+          balanceAfter={Math.max(outstanding - Number(receipt.amount ?? 0), 0)}
+          onClose={() => setReceipt(null)}
+        />
+      )}
     </div>
   );
+}
+
+// The identity for the counter's paperwork, read off the prescription rows
+// the counter is already holding rather than fetched again per patient.
+function patientOf(group) {
+  const line = group.lines[0] ?? {};
+  return {
+    name: group.name,
+    file_number: line.patient_file_number,
+    sex: line.patient_sex,
+    age: line.patient_age,
+  };
 }
 
 function PharmacyPayments() {

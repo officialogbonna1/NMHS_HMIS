@@ -3,6 +3,8 @@ import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import api from "../api/client";
 import { TextLink, Page, PageHeader } from "../components/ui.jsx";
+import { useAuth } from "../auth/AuthContext.jsx";
+import { PrintButton } from "../components/printing.jsx";
 import PatientPicker from "../components/PatientPicker.jsx";
 
 // A patient's full financial statement: every charge, payment, discount,
@@ -80,6 +82,7 @@ function ChooseWhoseHistory({ patient, onPick, onClear }) {
 }
 
 function Statement({ patient }) {
+  const { user } = useAuth();
   const [filter, setFilter] = useState("all");
 
   const ledgerQuery = useQuery({
@@ -132,16 +135,27 @@ function Statement({ patient }) {
       <section className="overflow-hidden rounded-xl border bg-white">
         <div className="flex flex-wrap items-center justify-between gap-3 border-b px-5 py-4">
           <h2 className="font-semibold">Statement</h2>
-          <div className="flex overflow-hidden rounded-lg border text-sm">
-            {FILTERS.map(([value, label]) => (
-              <button
-                key={value}
-                onClick={() => setFilter(value)}
-                className={`px-3 py-1.5 ${filter === value ? "bg-brand-600 text-white" : "hover:bg-slate-50"}`}
-              >
-                {label}
-              </button>
-            ))}
+          <div className="flex flex-wrap items-center gap-2">
+            {/* The account on paper: the whole statement here, and the
+                invoice — what is still owed — behind the caret, because a
+                patient asking "what do I owe?" wants the second one. */}
+            <PrintButton
+              role={user?.role}
+              size="sm"
+              documents={["statement", "invoice"]}
+              context={{ patientId: patient.id, patient }}
+            />
+            <div className="flex overflow-hidden rounded-lg border text-sm">
+              {FILTERS.map(([value, label]) => (
+                <button
+                  key={value}
+                  onClick={() => setFilter(value)}
+                  className={`px-3 py-1.5 ${filter === value ? "bg-brand-600 text-white" : "hover:bg-slate-50"}`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
           </div>
         </div>
 

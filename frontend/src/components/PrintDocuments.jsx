@@ -1,4 +1,6 @@
-import PrintSheet, { SheetHeader, PatientBlock, SheetFooter, Field, money, HOSPITAL }
+import { useQuery } from "@tanstack/react-query";
+import api from "../api/client";
+import PrintSheet, { SheetHeader, PatientBlock, SheetFooter, SheetStatus, Field, money, HOSPITAL }
   from "./PrintSheet.jsx";
 
 // The three things the front desk hands a patient: the card they bring
@@ -117,6 +119,49 @@ export function BillSheet({ patient, charges, onClose, title = "Invoice" }) {
         note={due > 0 ? "Please settle the balance at the cash desk." : "Nothing further is owed on this invoice."}
       />
     </PrintSheet>
+  );
+}
+
+/**
+ * The bill, fetched rather than handed in — for the places that print one
+ * without already holding the charges: the chart's Billing tab header and
+ * the print menu behind it.
+ *
+ * `mode` is the difference between the two money documents the desk uses.
+ * An **invoice** is what is still owed, so it lists the open charges only; a
+ * **statement** is the whole account, settled rows included. Printing an
+ * invoice that lists last month's paid charges is how a patient is asked to
+ * pay twice.
+ */
+export function PatientBillSheet({ patientId, mode = "invoice", onClose }) {
+  const patientQuery = useQuery({
+    queryKey: ["patient", String(patientId)],
+    queryFn: () => api.get(`/patients/${patientId}/`).then((r) => r.data),
+  });
+  const chargesQuery = useQuery({
+    queryKey: ["charges", "patient", patientId],
+    queryFn: () => api.get("/charges/", { params: { patient: patientId, page_size: 200 } })
+      .then((r) => r.data.results ?? r.data),
+  });
+
+  const title = mode === "statement" ? "Statement" : "Invoice";
+  if (patientQuery.isLoading || chargesQuery.isLoading || patientQuery.isError || chargesQuery.isError) {
+    return (
+      <SheetStatus
+        title={title}
+        isError={patientQuery.isError || chargesQuery.isError}
+        onClose={onClose}
+      />
+    );
+  }
+
+  const all = chargesQuery.data ?? [];
+  const rows = mode === "statement"
+    ? all
+    : all.filter((charge) => ["unpaid", "partial"].includes(charge.status));
+
+  return (
+    <BillSheet patient={patientQuery.data} charges={rows} title={title} onClose={onClose} />
   );
 }
 

@@ -1,14 +1,29 @@
 from django.contrib import admin
 
+from apps.core.config import ProtectedConfigAdmin
+
 from .models import BillingItem, PatientLedger, Charge, Payment, Adjustment, PaymentDeferral
 
 
 @admin.register(BillingItem)
-class BillingItemAdmin(admin.ModelAdmin):
+class BillingItemAdmin(ProtectedConfigAdmin, admin.ModelAdmin):
     """The price list the counter bills from."""
     list_display = ["name", "category", "price", "is_active"]
+    list_editable = ["price", "is_active"]
     list_filter = ["category", "is_active"]
     search_fields = ["name"]
+    ordering = ["category", "name"]
+    actions = ["activate", "deactivate"]
+    # A laboratory test priced from this item keeps pointing at it.
+    protected_relations = ("lab_tests",)
+
+    @admin.action(description="Activate selected")
+    def activate(self, request, queryset):
+        self.message_user(request, f"{queryset.update(is_active=True)} priced item(s) activated.")
+
+    @admin.action(description="Deactivate selected (old charges keep their price)")
+    def deactivate(self, request, queryset):
+        self.message_user(request, f"{queryset.update(is_active=False)} priced item(s) deactivated.")
     ordering = ["category", "name"]
 
 

@@ -54,6 +54,23 @@ WORKLIST_ROLES = ["laboratory", "doctor", "reception", "cashier", "accountant"]
 ORDERING_ROLES = ["doctor", "laboratory", "reception"]
 
 
+def _display(user):
+    return (user.get_full_name() or user.username) if user else None
+
+
+def _patient_block(patient):
+    """The patient identity every printed laboratory document opens with."""
+    return {
+        "id": patient.pk,
+        "name": f"{patient.last_name}, {patient.first_name}",
+        "file_number": patient.file_number,
+        "age": patient.age_display,
+        "sex": patient.get_sex_display(),
+        "birthdate": patient.birthdate,
+        "phone_number": patient.phone_number,
+    }
+
+
 class LabTestViewSet(viewsets.ModelViewSet):
     """The test catalogue. Configuration, editable without a deployment."""
     queryset = LabTest.objects.prefetch_related("parameters").select_related("billing_item")
@@ -225,9 +242,12 @@ class LabOrderViewSet(viewsets.ModelViewSet):
             # must be able to do it, and the bench may add one the clinician
             # did not think of. Both are billed identically.
             return [RoleRequired(ORDERING_ROLES)]
-        if self.action in {"list", "worklist"}:
+        if self.action in {"list", "worklist", "request_form"}:
             # The summary serializer answers these — order number, patient,
-            # status, what was asked for. No values.
+            # status, what was asked for. No values. The request form is in
+            # this group rather than with the report for exactly that reason:
+            # it is the sheet that travels with the sample, and it carries
+            # nothing the desk may not read.
             return [RoleRequired(WORKLIST_ROLES)]
         if self.action in {"retrieve", "report"}:
             return [RoleRequired(RESULT_ROLES)]
@@ -610,6 +630,64 @@ class LabOrderViewSet(viewsets.ModelViewSet):
                     details={"reason": request.data.get("reason", "")}, request=request)
         return Response(self.get_serializer(order).data)
 
+    @action(detail=True, methods=["get"], url_path="request-form")
+    def request_form(self, request, pk=None):
+        """
+        The laboratory request form — what was asked for, for whom, and on
+        what specimen. **Never a result value.**
+
+        This is the sheet that goes with the sample and gets pinned to the
+        bench's worksheet, so it is deliberately in the worklist's permission
+        group rather than the report's: the front desk and the cash desk can
+        print and file it without ever seeing a figure. Everything on it is
+        read from the order-time snapshot, so a re-priced catalogue does not
+        rewrite the form the patient was handed.
+
+        **The clinical detail is not for the desk.** "Query malaria, please
+        run FBC" is the doctor writing to the bench; it is why the test was
+        ordered, which is the chart. The desk needs to know a sample is due
+        and what it costs, so it gets the form without that line — the same
+        boundary the front desk's queue draws.
+        """
+        order = self.get_object()
+        doctor = order.requested_by
+        items = [item for item in order.items.all() if item.status != "cancelled"]
+        may_read_clinical = self._may_read_values()
+        return Response({
+            "order": {
+                "id": order.pk,
+                "order_number": order.order_number,
+                "status": order.get_status_display(),
+                "priority": order.get_priority_display(),
+                "clinical_notes": order.clinical_notes if may_read_clinical else "",
+                "specimen_id": order.specimen_id,
+                "specimen_collected_at": order.specimen_collected_at,
+                "collected_by": _display(order.collected_by),
+                "requested_by": _display(doctor),
+                "report_to": _display(order.report_to or doctor),
+                "created_at": order.created_at,
+                "visit": order.visit_id,
+            },
+            "patient": _patient_block(order.patient),
+            "tests": [
+                {
+                    "id": item.pk,
+                    "name": item.name,
+                    "category": dict(TEST_CATEGORIES).get(item.test_category, ""),
+                    "specimen_type": item.specimen_type,
+                    "container": item.container,
+                    "status": item.get_status_display(),
+                    "source": item.get_source_display(),
+                    # What it cost when it was ordered, and where that stands.
+                    # The bench reads it; the bench never acts on it.
+                    "price": f"{item.unit_price:.2f}",
+                    "billing": LabOrderTestSerializer().get_billing(item),
+                }
+                for item in items
+            ],
+            "billing": LabOrderSerializer().get_billing(order),
+        })
+
     @action(detail=True, methods=["get"])
     def report(self, request, pk=None):
         """
@@ -675,14 +753,6 @@ class LabOrderViewSet(viewsets.ModelViewSet):
                 "requested_by": (doctor.get_full_name() or doctor.username) if doctor else None,
                 "visit": order.visit_id,
             },
-            "patient": {
-                "id": patient.pk,
-                "name": f"{patient.last_name}, {patient.first_name}",
-                "file_number": patient.file_number,
-                "age": patient.age_display,
-                "sex": patient.get_sex_display(),
-                "birthdate": patient.birthdate,
-                "phone_number": patient.phone_number,
-            },
+            "patient": _patient_block(patient),
             "sections": sections,
         })

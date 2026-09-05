@@ -4,8 +4,14 @@ from .models import Prescription
 
 class PrescriptionSerializer(serializers.ModelSerializer):
     patient_name = serializers.CharField(source="patient.__str__", read_only=True)
+    # On the row because the pharmacy's own paperwork needs it — a dispensing
+    # label identifies the patient by file number, and refetching the patient
+    # for every line of a script is a request per drug.
+    patient_file_number = serializers.CharField(source="patient.file_number", read_only=True)
+    patient_age = serializers.CharField(source="patient.age_display", read_only=True)
+    patient_sex = serializers.CharField(source="patient.get_sex_display", read_only=True)
     item_name = serializers.CharField(source="item.name", read_only=True)
-    item_unit = serializers.CharField(source="item.unit", read_only=True)
+    item_unit = serializers.CharField(source="item.unit_label", read_only=True)
     doctor_name = serializers.SerializerMethodField()
     dispensed_by_name = serializers.SerializerMethodField()
 

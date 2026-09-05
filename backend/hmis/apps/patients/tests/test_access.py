@@ -7,6 +7,7 @@ from rest_framework.test import APIClient
 from apps.accounts.models import User
 from apps.billing.models import PatientLedger
 from apps.billing.services import add_charge, record_payment
+from apps.inventory.testing import product, stock_the_pharmacy
 from apps.inventory.models import Batch, Item
 from apps.patients.access import patient_queryset_for
 from apps.patients.models import Patient
@@ -54,10 +55,9 @@ class PharmacistPatientListTests(TestCase):
         self.pharmacist = User.objects.create_user(username="ph", password="t", role="pharmacist")
         self.patient = Patient.objects.create(first_name="Ada", last_name="Obi", sex="F",
                                               created_by=self.reception)
-        self.item = Item.objects.create(name="Paracetamol 500mg", unit="tablet")
-        Batch.objects.create(item=self.item, batch_no="B1", quantity=100,
-                             expiry_date=date.today() + timedelta(days=365),
-                             cost_price=Decimal("10"), sale_price=Decimal("20"))
+        self.item = product("Paracetamol 500mg", unit_name="tablet")
+        stock_the_pharmacy(item=self.item, quantity=100, actor=self.pharmacist,
+                           expiry_days=365)
 
     def _sees(self):
         return set(patient_queryset_for(self.pharmacist))

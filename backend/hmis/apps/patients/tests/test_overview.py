@@ -6,6 +6,7 @@ from rest_framework.test import APIClient
 from apps.accounts.models import User
 from apps.appointments.models import Appointment
 from apps.clinical.models import Vitals, ConsultationNote, NursingNote
+from apps.inventory.testing import stock_the_pharmacy
 from apps.inventory.models import Item, Batch
 from apps.patients.models import Patient, Allergy, MedicalCondition, Medication
 from apps.pharmacy.services import create_prescription
@@ -33,8 +34,10 @@ class PatientOverviewTests(TestCase):
             reason_for_visit="Fever", diagnosis="Malaria",
         )
         self.item = Item.objects.create(name="Artemether")
-        Batch.objects.create(item=self.item, batch_no="B1", quantity=20, cost_price=Decimal("10"),
-                             sale_price=Decimal("25"), expiry_date=timezone.localdate() + timedelta(days=90))
+        # On the pharmacy shelf: a prescription can only be written against
+        # stock the counter can actually hand over.
+        stock_the_pharmacy(item=self.item, quantity=20, actor=self.doctor,
+                           sale_price="25", expiry_days=90)
         create_prescription(patient=self.patient, doctor=self.doctor, item=self.item, quantity=6)
         Appointment.objects.create(patient=self.patient, doctor=self.doctor, reason="Fever")
 

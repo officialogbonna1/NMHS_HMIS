@@ -3,6 +3,8 @@ import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import api from "../api/client";
 import { Button, TextLink } from "../components/ui.jsx";
+import { useAuth } from "../auth/AuthContext.jsx";
+import { PrintButton } from "../components/printing.jsx";
 
 // Ultrasound, the eye clinic and procedures, on the chart.
 //
@@ -49,6 +51,7 @@ const STATUS_TONE = {
 
 export default function ReferralResultsTab({ patientId, kind }) {
   const config = REFERRAL_TABS[kind];
+  const { user } = useAuth();
 
   const { data, isLoading, isError } = useQuery({
     queryKey: ["patient-overview", String(patientId)],
@@ -117,10 +120,23 @@ export default function ReferralResultsTab({ patientId, kind }) {
                 {route.priority !== "routine" && ` · ${route.priority}`}
               </p>
             </div>
-            <span className={`shrink-0 rounded-full px-2.5 py-1 text-xs font-semibold ring-1 ring-inset ${
-              STATUS_TONE[route.status] ?? "bg-slate-100 text-slate-600 ring-slate-200"}`}>
-              {route.status.replaceAll("_", " ")}
-            </span>
+            <div className="flex shrink-0 items-center gap-2">
+              <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ring-1 ring-inset ${
+                STATUS_TONE[route.status] ?? "bg-slate-100 text-slate-600 ring-slate-200"}`}>
+                {route.status.replaceAll("_", " ")}
+              </span>
+              {/* Per referral, because a header button would have to guess
+                  which scan you meant. The report once the unit has written
+                  one; the request form until then. */}
+              <PrintButton
+                role={user?.role}
+                size="sm"
+                documents={route.result
+                  ? ["referral_report", "referral_request"]
+                  : ["referral_request"]}
+                context={{ routeId: route.id }}
+              />
+            </div>
           </div>
 
           {route.notes && (

@@ -4,18 +4,27 @@ Prescribing and dispensing.
 The two are deliberately separate steps: a doctor writes the prescription,
 and a pharmacist fills it. Stock only ever moves inside
 `dispense_prescription()` — it holds the whole deduction in one
-`transaction.atomic` block with `select_for_update()` on the batches, so two
-pharmacists filling the last units at the same time can't both succeed, and
-every unit that leaves a batch has a matching StockMovement audit row.
+`transaction.atomic` block with `select_for_update()` on the stock records,
+so two pharmacists filling the last units at the same time can't both
+succeed, and every unit that leaves a batch has a matching StockMovement
+audit row.
 
-Nothing outside this module should write to Batch.quantity for a
+**A patient can only be given what is standing in the Pharmacy.** Stock in
+the Main Store is the hospital's, not the counter's: it reaches the
+dispensing shelf by transfer (`inventory.services.transfer_stock`) and only
+then can it be handed to anybody. Every query below is scoped to
+`dispensing_location()` for that reason — an order that "there are 500 in
+the building" must never fill a prescription at a counter holding none.
+
+Nothing outside this module should write to a StockRecord for a
 prescription; add a function here instead of routing around these.
 """
 from django.db import transaction
 from django.core.exceptions import ValidationError
 from django.utils import timezone
 
-from apps.inventory.models import Batch, StockMovement
+from apps.inventory.models import StockRecord, dispensing_location
+from apps.inventory.services import apply_stock_change, quantity_on_hand
 from apps.pharmacy.models import Prescription
 from apps.billing.services import add_charge
 
@@ -28,11 +37,16 @@ class AlreadyDispensedError(ValidationError):
     pass
 
 
-def available_quantity(item):
-    """Units on the shelf that haven't expired."""
-    return sum(
-        b.quantity for b in Batch.objects.filter(item=item, quantity__gt=0).exclude(expiry_date__lt=_today())
-    )
+def available_quantity(item, location=None):
+    """
+    Units the pharmacy can actually hand over: on the dispensing shelf, not
+    expired.
+
+    Deliberately *not* the hospital total. What is in the Main Store cannot
+    be given to a patient until somebody transfers it, so counting it here
+    would promise a doctor a drug the counter has none of.
+    """
+    return quantity_on_hand(item=item, location=location or dispensing_location())
 
 
 @transaction.atomic
@@ -47,7 +61,8 @@ def create_prescription(*, patient, doctor, item, quantity, dosage_instructions=
     available = available_quantity(item)
     if available < quantity:
         raise OutOfStockError(
-            f"Only {available} unit(s) of {item.name} in stock — cannot prescribe {quantity}."
+            f"Only {available} unit(s) of {item.name} on the pharmacy shelf — "
+            f"cannot prescribe {quantity}."
         )
     return Prescription.objects.create(
         patient=patient, doctor=doctor, item=item, quantity=quantity,
@@ -100,33 +115,42 @@ def dispense_prescription(*, prescription, pharmacist):
             f"This prescription is already {prescription.get_status_display().lower()}."
         )
 
-    batches = (
-        Batch.objects.select_for_update()
-        .filter(item=prescription.item, quantity__gt=0)
-        .exclude(expiry_date__lt=_today())
-        .order_by("expiry_date")
+    counter = dispensing_location()
+    if counter is None:
+        raise ValidationError("No dispensing location is configured.")
+
+    # The pharmacy's own shelf, earliest expiry first. Stock in the Main
+    # Store is not on this list: it has to be transferred to the counter
+    # before it can be given to anybody.
+    records = list(
+        StockRecord.objects.select_for_update()
+        .select_related("batch")
+        .filter(batch__item=prescription.item, location=counter, quantity__gt=0)
+        .exclude(batch__expiry_date__lt=_today())
+        .order_by("batch__expiry_date", "batch_id")
     )
 
-    available = sum(b.quantity for b in batches)
+    available = sum(record.quantity for record in records)
     if available < prescription.quantity:
         raise OutOfStockError(
-            f"Only {available} unit(s) of {prescription.item.name} available — "
-            f"cannot dispense {prescription.quantity}."
+            f"Only {available} unit(s) of {prescription.item.name} on the pharmacy shelf — "
+            f"cannot dispense {prescription.quantity}. "
+            f"Transfer more from the store first."
         )
 
     remaining = prescription.quantity
     dispensed_value = 0
-    for batch in batches:
+    for record in records:
         if remaining <= 0:
             break
-        take = min(batch.quantity, remaining)
-        batch.quantity -= take
-        batch.save(update_fields=["quantity"])
-        StockMovement.objects.create(
-            batch=batch, change=-take, reason="prescription",
-            performed_by=pharmacist, reference=f"prescription:{prescription.id}",
+        take = min(record.quantity, remaining)
+        # Through the inventory service, so the deduction and its movement
+        # land together and the movement says which shelf it came off.
+        apply_stock_change(
+            record, -take, reason="prescription", actor=pharmacist,
+            reference=f"prescription:{prescription.id}",
         )
-        dispensed_value += take * batch.sale_price
+        dispensed_value += take * record.batch.sale_price
         remaining -= take
 
     prescription.status = "dispensed"

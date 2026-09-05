@@ -127,7 +127,7 @@ class PrescriptionViewSet(viewsets.ModelViewSet):
         notify(
             recipient=prescription.doctor,
             title=f"Dispensed: {prescription.item.name} for {prescription.patient}",
-            message=f"{prescription.quantity} {prescription.item.unit}(s) handed over by the pharmacy.",
+            message=f"{prescription.quantity} {prescription.item.unit_label}(s) handed over by the pharmacy.",
             category="pharmacy",
             action_url=f"/patients/{prescription.patient_id}",
         )
@@ -183,7 +183,7 @@ def _notify_pharmacy(prescription):
         notify(
             recipient=pharmacist,
             title=f"New prescription: {prescription.item.name}",
-            message=f"{prescription.quantity} {prescription.item.unit}(s) for {prescription.patient}",
+            message=f"{prescription.quantity} {prescription.item.unit_label}(s) for {prescription.patient}",
             category="pharmacy",
             action_url="/pharmacy",
         )

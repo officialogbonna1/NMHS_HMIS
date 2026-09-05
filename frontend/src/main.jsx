@@ -9,7 +9,7 @@ import { AuthProvider } from "./auth/AuthContext.jsx";
 import RequireAuth from "./auth/RequireAuth.jsx";
 import {
   BILLING_ROLES, CHART_ROLES, CLINICAL_ROLES, PATIENT_LOOKUP_ROLES,
-  QUEUE_ROLES, STOCK_ROLES, WARD_ROLES,
+  QUEUE_ROLES, WARD_ROLES,
 } from "./auth/roles.js";
 import Login from "./pages/Login.jsx";
 import NotFound from "./pages/NotFound.jsx";
@@ -36,6 +36,10 @@ import Outstanding from "./pages/Outstanding.jsx";
 import Waivers from "./pages/Waivers.jsx";
 import BillingItemsAdmin from "./pages/BillingItemsAdmin.jsx";
 import Appointments from "./pages/Appointments.jsx";
+import AdminHome from "./pages/admin/AdminHome.jsx";
+import ConfigResource from "./pages/admin/ConfigResource.jsx";
+import HospitalSettingsPage, { NotificationSettingsPage }
+  from "./pages/admin/HospitalSettingsPage.jsx";
 import AppShell from "./components/AppShell.jsx";
 import { ToastProvider } from "./components/Toaster.jsx";
 
@@ -153,8 +157,11 @@ ReactDOM.createRoot(document.getElementById("root")).render(
 
             <Route
               path="/inventory"
+              // Administration's stock desk: every location, receipts into the
+              // store, the whole ledger. A pharmacist works their own shelf
+              // from /pharmacy instead.
               element={
-                <RequireAuth roles={STOCK_ROLES}>
+                <RequireAuth roles={["inventory_manager"]}>
                   <InventoryDashboard />
                 </RequireAuth>
               }
@@ -315,6 +322,46 @@ ReactDOM.createRoot(document.getElementById("root")).render(
               element={
                 <RequireAuth roles={["admin"]}>
                   <UsersAdmin />
+                </RequireAuth>
+              }
+            />
+
+            {/* Administration: the hospital's own setup, editing the same
+                Django models Django admin edits.
+
+                Admin only — configuring the catalogue is not pharmacy work,
+                and the API says the same thing (writes on products,
+                categories and units are admin-only), so removing the link is
+                housekeeping rather than the control. */}
+            <Route
+              path="/admin"
+              element={
+                <RequireAuth roles={["admin"]}>
+                  <AdminHome />
+                </RequireAuth>
+              }
+            />
+            <Route
+              path="/admin/settings"
+              element={
+                <RequireAuth roles={["admin"]}>
+                  <HospitalSettingsPage />
+                </RequireAuth>
+              }
+            />
+            <Route
+              path="/admin/notifications"
+              element={
+                <RequireAuth roles={["admin"]}>
+                  <NotificationSettingsPage />
+                </RequireAuth>
+              }
+            />
+            <Route
+              path="/admin/:resource"
+              element={
+                <RequireAuth roles={["admin"]}>
+                  <ConfigResource />
                 </RequireAuth>
               }
             />

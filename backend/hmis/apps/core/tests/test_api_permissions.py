@@ -57,6 +57,11 @@ REACHABLE = {
     "/api/departments/": EVERYONE,
     "/api/services/": EVERYONE,
     "/api/billing-items/": EVERYONE,                # the price list, quoted from everywhere
+    # Configuration everyone reads and an admin writes: the letterhead on
+    # every printed document, and whether a category of notification is sent.
+    "/api/hospital-settings/": EVERYONE,
+    "/api/hospital-settings/current/": EVERYONE,
+    "/api/notification-settings/": EVERYONE,
 
     # --- patient identity ------------------------------------------------
     # A name and a file number, not a chart. Reception gets demographics only.
@@ -109,6 +114,20 @@ REACHABLE = {
     "/api/items/": [D, PH, INV],        # doctors get availability, not counts
     "/api/batches/": [PH, INV],
     "/api/stock-movements/": [PH, INV],
+    # Stock is product + batch + location. The locations are configuration —
+    # readable by whoever works stock, writable by admin only, because the
+    # receiving/dispensing flags decide where every delivery lands and where
+    # every prescription draws from.
+    # The catalogue's own configuration — product categories and units of
+    # measure. STOCK_ROLES, the same as the products they describe: an
+    # inventory manager who cannot add a category types it into the name.
+    "/api/item-categories/": [PH, INV],
+    "/api/units/": [PH, INV],
+    "/api/stock-locations/": [PH, INV],
+    "/api/stock-records/": [PH, INV],   # read-only: quantities move via services
+    "/api/stock-transfers/": [PH, INV],
+    "/api/stock-counts/": [PH, INV],
+    "/api/stock-counts/sheet/": [PH, INV],
 
     # --- laboratory ------------------------------------------------------
     # The catalogue is a price list, so the desk reads it; a *result* is

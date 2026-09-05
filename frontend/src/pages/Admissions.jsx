@@ -3,6 +3,8 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import api from "../api/client";
 import { Icon } from "../components/icons.jsx";
 import { Page, PageHeader, MetaStat, TabBar, Tab, Button } from "../components/ui.jsx";
+import { useAuth } from "../auth/AuthContext.jsx";
+import { PrintButton } from "../components/printing.jsx";
 import { readError } from "../api/errors";
 import PatientPicker, { patientLabel } from "../components/PatientPicker.jsx";
 import { useToast } from "../components/Toaster.jsx";
@@ -152,6 +154,7 @@ function OnTheWard({ admissions, beds, loading }) {
 function AdmissionRow({ admission, beds }) {
   const queryClient = useQueryClient();
   const { showToast } = useToast();
+  const { user } = useAuth();
   const [panel, setPanel] = useState(null);          // "move" | "discharge" | null
   const [toBed, setToBed] = useState("");
   const [reason, setReason] = useState("");
@@ -203,7 +206,16 @@ function AdmissionRow({ admission, beds }) {
           </p>
           {admission.diagnosis && <p className="mt-1 text-sm text-slate-800">{admission.diagnosis}</p>}
         </div>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
+          {/* The ward's document: the slip that goes to the bedside with the
+              ward and bed on it, printed from the row it belongs to so it
+              can never name the wrong bed. */}
+          <PrintButton
+            role={user?.role}
+            size="sm"
+            documents={["admission_slip"]}
+            context={{ admission, patientId: admission.patient }}
+          />
           <button
             onClick={() => setPanel(panel === "move" ? null : "move")}
             className="rounded-full border px-3 py-1.5 text-sm font-medium hover:bg-slate-50"

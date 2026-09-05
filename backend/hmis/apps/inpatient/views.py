@@ -13,23 +13,37 @@ from rest_framework import viewsets
 from rest_framework.exceptions import ValidationError
 from django_filters.rest_framework import DjangoFilterBackend
 from apps.accounts.permissions import ReadOnlyForRoles, WardStaff, WARD_ROLES
+from apps.core.config import ProtectedConfigMixin
 from apps.core.services import audit_event
 from .models import Ward, Bed, Admission, BedTransfer, DischargeSummary
 from .serializers import WardSerializer, BedSerializer, AdmissionSerializer, BedTransferSerializer, DischargeSummarySerializer
 
 
-class WardViewSet(viewsets.ModelViewSet):
-    queryset = Ward.objects.all()
+class WardViewSet(ProtectedConfigMixin, viewsets.ModelViewSet):
+    """
+    Wards: read by the ward, configured by an admin (`ReadOnlyForRoles`), and
+    deactivated rather than deleted once beds hang off them.
+    """
+    queryset = Ward.objects.select_related("department")
     serializer_class = WardSerializer
+    filter_backends = [DjangoFilterBackend]
+    filterset_fields = ["is_active", "department"]
+    protected_relations = ("beds",)
 
     def get_permissions(self): return [ReadOnlyForRoles(WARD_ROLES)]
 
 
-class BedViewSet(viewsets.ModelViewSet):
+class BedViewSet(ProtectedConfigMixin, viewsets.ModelViewSet):
+    """
+    Beds. A bed somebody has been admitted to is part of the record — the
+    stay says which bed — so it is deactivated, never deleted; an empty bed
+    added by mistake can go.
+    """
     queryset = Bed.objects.select_related("ward")
     serializer_class = BedSerializer
     filter_backends = [DjangoFilterBackend]
     filterset_fields = ["ward", "is_active"]
+    protected_relations = ("admissions", "transfers_out", "transfers_in")
 
     def get_permissions(self): return [ReadOnlyForRoles(WARD_ROLES)]
 
