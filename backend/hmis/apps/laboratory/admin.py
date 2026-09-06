@@ -124,7 +124,7 @@ class LabOrderAdmin(admin.ModelAdmin):
                     "entered_by", "verified_by", "created_at"]
     list_filter = ["status", "priority"]
     search_fields = ["order_number", "specimen_id", "patient__last_name",
-                     "patient__first_name", "patient__file_number"]
+                     "patient__first_name", "patient__patient_number"]
     readonly_fields = ["order_number", "entered_by", "entered_at", "verified_by",
                        "verified_at", "collected_by", "specimen_collected_at"]
     inlines = [LabOrderTestInline]

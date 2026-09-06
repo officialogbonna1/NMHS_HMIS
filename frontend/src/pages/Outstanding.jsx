@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import api from "../api/client";
+import { patientNumber } from "../components/patientIdentity.js";
 import { Page, PageHeader, MetaStat, Button, SearchInput } from "../components/ui.jsx";
 
 // Who owes money, biggest first. The list is filtered in the database
@@ -80,7 +81,7 @@ export default function Outstanding() {
                 {ledger.patient_name}
               </Link>
               <p className="text-sm text-slate-700">
-                {ledger.patient_file_number}
+                {patientNumber(ledger)}
                 {/* The list is worked by phone — the number has to be on it. */}
                 {ledger.patient_phone && ` · ${ledger.patient_phone}`}
               </p>

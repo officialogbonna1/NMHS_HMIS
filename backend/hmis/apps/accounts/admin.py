@@ -21,6 +21,12 @@ class HMISUserAdmin(UserAdmin):
     """
 
     fieldsets = UserAdmin.fieldsets + (
+        ("Staff number", {
+            "fields": ("staff_number",),
+            "description": "Issued once, on the first save that gives this account a role. "
+                           "It is what a staff profile and a report identify the person by, "
+                           "and it never moves.",
+        }),
         ("HMIS role", {
             "fields": ("role", "department", "sensitive_record_access", "must_change_password"),
             "description": "Role decides what this account can reach in the app.",
@@ -45,9 +51,10 @@ class HMISUserAdmin(UserAdmin):
         }),
     )
 
-    list_display = ["username", "full_name", "role", "department", "is_active", "set_password_link"]
+    list_display = ["staff_number", "username", "full_name", "role", "department", "is_active", "set_password_link"]
     list_filter = ["role", "is_active", "is_staff", "must_change_password"]
-    search_fields = ["username", "first_name", "last_name", "email"]
+    search_fields = ["staff_number", "username", "first_name", "last_name", "email"]
+    readonly_fields = ["staff_number"]
     ordering = ["last_name", "first_name", "username"]
     list_per_page = 50
     actions = ["require_password_change", "deactivate_accounts", "activate_accounts"]

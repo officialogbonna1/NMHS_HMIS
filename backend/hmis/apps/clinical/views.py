@@ -168,7 +168,8 @@ class VitalsViewSet(viewsets.ModelViewSet):
                 "recorded_by": _name(reading.recorded_by),
                 "patient_id": reading.patient_id,
                 "patient_name": str(reading.patient),
-                "patient_file_number": reading.patient.file_number,
+                "patient_number": reading.patient.patient_number,
+                "patient_file_number": reading.patient.patient_number,
                 "readings": _readings(reading),
                 "note": None if not note else {
                     "id": note.id, "complaint": note.complaint, "observation": note.observation,

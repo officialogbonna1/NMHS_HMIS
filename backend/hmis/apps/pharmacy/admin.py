@@ -13,7 +13,7 @@ class PrescriptionAdmin(admin.ModelAdmin):
     """
     list_display = ["created_at", "patient", "item", "quantity", "status", "doctor", "dispensed_by"]
     list_filter = ["status", "created_at"]
-    search_fields = ["patient__first_name", "patient__last_name", "patient__file_number", "item__name"]
+    search_fields = ["patient__first_name", "patient__last_name", "patient__patient_number", "item__name"]
     list_select_related = ["patient", "item", "doctor", "dispensed_by"]
     autocomplete_fields = ["patient", "item", "doctor", "dispensed_by"]
     date_hierarchy = "created_at"

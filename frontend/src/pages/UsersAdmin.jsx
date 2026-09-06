@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import api from "../api/client";
-import { Badge, Page, PageHeader } from "../components/ui.jsx";
+import { Badge, Page, PageHeader, SearchInput } from "../components/ui.jsx";
 
 const ROLES = [
   ["admin", "Super Admin"], ["hospital_admin", "Hospital Admin"], ["doctor", "Doctor"], ["nurse", "Nurse"],
@@ -18,10 +18,13 @@ export default function UsersAdmin() {
   const queryClient = useQueryClient();
   const [form, setForm] = useState(emptyForm);
   const [resetTarget, setResetTarget] = useState(null);
+  const [search, setSearch] = useState("");
 
   const { data: users, isLoading } = useQuery({
-    queryKey: ["users"],
-    queryFn: () => api.get("/users/").then((r) => r.data.results ?? r.data),
+    // Searched on the server, over the same fields the API declares: staff
+    // number, name, username, email. `NMHS-S000001` finds one person.
+    queryKey: ["users", search],
+    queryFn: () => api.get("/users/", { params: search ? { search } : {} }).then((r) => r.data.results ?? r.data),
   });
 
   const save = useMutation({
@@ -54,6 +57,15 @@ export default function UsersAdmin() {
         icon="shield"
         title="Users"
         subtitle="Staff accounts and the role each one signs in with."
+        toolbar={
+          <SearchInput
+            value={search}
+            onChange={setSearch}
+            label="Search staff"
+            placeholder="Staff no., name, username or email…"
+            className="sm:max-w-sm"
+          />
+        }
       />
 
       <form
@@ -123,6 +135,11 @@ export default function UsersAdmin() {
             <div className="min-w-0">
               <p className="font-medium text-slate-900">{u.first_name || u.username} {u.last_name}</p>
               <p className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-slate-600">
+                {u.staff_number && (
+                  <span className="rounded-full bg-brand-50 px-2 py-0.5 text-xs font-medium text-brand-700 ring-1 ring-inset ring-brand-200">
+                    Staff No. {u.staff_number}
+                  </span>
+                )}
                 <span>@{u.username}</span>
                 <span aria-hidden="true" className="text-slate-400">·</span>
                 <span className="capitalize">{u.role.replaceAll("_", " ")}</span>

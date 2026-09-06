@@ -7,7 +7,8 @@ class PatientLedgerSerializer(serializers.ModelSerializer):
     patient_name = serializers.CharField(source="patient.__str__", read_only=True)
     # The debtors list is worked by phone, so it needs the number to call and
     # the file number to quote — not just a name.
-    patient_file_number = serializers.CharField(source="patient.file_number", read_only=True)
+    patient_number = serializers.CharField(source="patient.patient_number", read_only=True)
+    patient_file_number = serializers.CharField(source="patient.patient_number", read_only=True)
     patient_phone = serializers.CharField(source="patient.phone_number", read_only=True)
     class Meta: model = PatientLedger; fields = "__all__"
 class ChargeSerializer(serializers.ModelSerializer):

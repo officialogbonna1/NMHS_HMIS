@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import api from "../api/client";
+import { patientNumber } from "../components/patientIdentity.js";
 import PatientPicker from "../components/PatientPicker.jsx";
 import { readError } from "../api/errors";
 import { useAuth } from "../auth/AuthContext.jsx";
@@ -174,9 +175,9 @@ function RouteRow({ route, canRoute, canWork }) {
         {/* The identifying line: who they are on paper, where they were sent,
             and how long they have been standing there. */}
         <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-slate-600">
-          {route.patient_file_number && (
+          {patientNumber(route) && (
             <>
-              <span className="tabular-nums">{route.patient_file_number}</span>
+              <span className="tabular-nums">{patientNumber(route)}</span>
               <span aria-hidden="true" className="text-slate-400">·</span>
             </>
           )}

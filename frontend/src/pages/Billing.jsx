@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import api from "../api/client";
+import { patientNumber } from "../components/patientIdentity.js";
 import { Icon } from "../components/icons.jsx";
 import { Button, Page, PageHeader } from "../components/ui.jsx";
 import { readError } from "../api/errors";
@@ -119,7 +120,7 @@ function PatientCounter({ patient, onClear, canWaive }) {
       <div className="flex flex-wrap items-center justify-between gap-3 border-b px-5 py-4">
         <div>
           <p className="font-semibold">{patient.last_name}, {patient.first_name}</p>
-          <p className="text-xs text-slate-600">{patient.file_number}</p>
+          <p className="text-xs text-slate-600">{patientNumber(patient)}</p>
         </div>
         <div className="flex items-center gap-4">
           <div className="text-right">
@@ -943,7 +944,7 @@ function OutstandingList({ onPick }) {
         {owing.slice(0, 15).map((l) => (
           <button
             key={l.id}
-            onClick={() => onPick({ id: l.patient, last_name: l.patient_name?.split(",")[0] ?? "", first_name: (l.patient_name?.split(",")[1] ?? "").trim(), file_number: "" })}
+            onClick={() => onPick({ id: l.patient, last_name: l.patient_name?.split(",")[0] ?? "", first_name: (l.patient_name?.split(",")[1] ?? "").trim(), patient_number: l.patient_number })}
             className="flex w-full items-center justify-between px-5 py-3 text-left text-sm hover:bg-slate-50"
           >
             <span className="font-medium">{l.patient_name}</span>

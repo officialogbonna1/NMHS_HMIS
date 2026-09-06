@@ -1,5 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import api from "../api/client";
+import { patientNumber } from "./patientIdentity.js";
 import PrintSheet, { SheetHeader, PatientBlock, SheetFooter, SheetStatus, Field, money, HOSPITAL }
   from "./PrintSheet.jsx";
 
@@ -9,8 +10,8 @@ import PrintSheet, { SheetHeader, PatientBlock, SheetFooter, SheetStatus, Field,
 
 export function PatientCardSheet({ patient, onClose }) {
   return (
-    <PrintSheet title={`Patient card — ${patient.file_number}`} onClose={onClose}>
-      <SheetHeader documentTitle="Patient Registration" reference={patient.file_number}
+    <PrintSheet title={`Patient card — ${patientNumber(patient)}`} onClose={onClose}>
+      <SheetHeader documentTitle="Patient Registration" reference={patientNumber(patient)}
                    date={patient.created_at ? new Date(patient.created_at).toLocaleString() : undefined} />
 
       {/* The file number is the whole point of the slip, so it is the
@@ -18,7 +19,7 @@ export function PatientCardSheet({ patient, onClose }) {
           should not have to hunt. */}
       <div className="mb-6 rounded-lg border-2 border-slate-800 px-6 py-4 text-center">
         <p className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-700">File number</p>
-        <p className="mt-1 text-3xl font-bold tracking-widest text-slate-900">{patient.file_number}</p>
+        <p className="mt-1 text-3xl font-bold tracking-widest text-slate-900">{patientNumber(patient)}</p>
       </div>
 
       <PatientBlock patient={patient} />
@@ -65,8 +66,8 @@ export function BillSheet({ patient, charges, onClose, title = "Invoice" }) {
   const due = total - paid - discounted;
 
   return (
-    <PrintSheet title={`${title} — ${patient.file_number}`} onClose={onClose}>
-      <SheetHeader documentTitle={title} reference={patient.file_number} />
+    <PrintSheet title={`${title} — ${patientNumber(patient)}`} onClose={onClose}>
+      <SheetHeader documentTitle={title} reference={patientNumber(patient)} />
       <PatientBlock patient={patient} />
 
       <table className="mb-4 w-full text-sm">
@@ -167,7 +168,7 @@ export function PatientBillSheet({ patientId, mode = "invoice", onClose }) {
 
 export function ReceiptSheet({ patient, payment, balanceAfter, onClose }) {
   return (
-    <PrintSheet title={`Receipt — ${patient.file_number}`} onClose={onClose}>
+    <PrintSheet title={`Receipt — ${patientNumber(patient)}`} onClose={onClose}>
       <SheetHeader documentTitle="Receipt" reference={payment?.id ? `R-${String(payment.id).padStart(6, "0")}` : undefined}
                    date={payment?.created_at ? new Date(payment.created_at).toLocaleString() : undefined} />
       <PatientBlock patient={patient} />

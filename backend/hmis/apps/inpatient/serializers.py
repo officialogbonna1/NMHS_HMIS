@@ -18,7 +18,8 @@ class BedSerializer(serializers.ModelSerializer):
         return str(admission.patient) if admission else None
 class AdmissionSerializer(serializers.ModelSerializer):
     patient_name = serializers.CharField(source="patient.__str__", read_only=True)
-    patient_file_number = serializers.CharField(source="patient.file_number", read_only=True)
+    patient_number = serializers.CharField(source="patient.patient_number", read_only=True)
+    patient_file_number = serializers.CharField(source="patient.patient_number", read_only=True)
     bed_number = serializers.CharField(source="bed.number", read_only=True)
     ward_name = serializers.CharField(source="bed.ward.name", read_only=True)
     attending_doctor_name = serializers.SerializerMethodField()

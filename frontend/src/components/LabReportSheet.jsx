@@ -1,6 +1,7 @@
 import { Fragment } from "react";
 import { useQuery } from "@tanstack/react-query";
 import api from "../api/client";
+import { patientNumber } from "./patientIdentity.js";
 import PrintSheet, { SheetHeader, Field } from "./PrintSheet.jsx";
 
 // The laboratory report, printed the way every other document here is —
@@ -49,7 +50,7 @@ export default function LabReportSheet({ orderId, onClose }) {
 
       <section className="mb-5 grid grid-cols-2 gap-x-8 gap-y-1 text-sm">
         <Field label="Patient" value={patient.name} strong />
-        <Field label="Patient ID" value={patient.file_number} strong />
+        <Field label="Patient No." value={patientNumber(patient)} strong />
         <Field label="Age" value={patient.age || "—"} />
         <Field label="Sex" value={patient.sex || "—"} />
         <Field label="Encounter" value={order.visit ? `Visit #${order.visit}` : "—"} />

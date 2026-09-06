@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import api from "../api/client";
+import { patientNumber } from "../components/patientIdentity.js";
 import { Icon } from "../components/icons.jsx";
 import { Button } from "../components/ui.jsx";
 import LabReportSheet from "../components/LabReportSheet.jsx";
@@ -74,7 +75,7 @@ export default function PatientOverview({ patientId }) {
 
       <section className="grid gap-4 md:grid-cols-3">
         <Card title="Patient">
-          <Row label="File number" value={patient.file_number} />
+          <Row label="Patient No." value={patientNumber(patient)} />
           <Row label="Sex" value={patient.sex} />
           <Row label="Age" value={ageLabel(patient)} />
           <Row label="Phone" value={patient.phone_number} />

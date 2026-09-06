@@ -6,6 +6,10 @@ from .models import (
 
 
 class PatientSerializer(serializers.ModelSerializer):
+    # `NMHS-P000001` under its old name. `patient_number` is the field; this
+    # alias is what every existing consumer — print sheets, nested rows, the
+    # frontend — already reads, and it carries the same value.
+    file_number = serializers.CharField(read_only=True)
     # "Male", not "M" — this is printed on the patient's card.
     sex_display = serializers.CharField(source="get_sex_display", read_only=True)
     # "3 days" / "7 months" / "42 yrs" — worked out from the birthdate where
@@ -20,6 +24,7 @@ class PatientSerializer(serializers.ModelSerializer):
 
 class PatientDemographicsSerializer(serializers.ModelSerializer):
     """Reception-safe representation: no clinical or sensitive registration notes."""
+    file_number = serializers.CharField(read_only=True)
     sex_display = serializers.CharField(source="get_sex_display", read_only=True)
     age_display = serializers.CharField(read_only=True)
 
@@ -28,7 +33,7 @@ class PatientDemographicsSerializer(serializers.ModelSerializer):
         # street_address is here because reception typed it in at
         # registration and it goes back onto the printed card; the
         # clinical note deliberately stays out.
-        fields = ["id", "file_number", "first_name", "middle_name", "last_name", "sex",
+        fields = ["id", "uuid", "patient_number", "file_number", "first_name", "middle_name", "last_name", "sex",
                   "sex_display", "birthdate", "age_value", "age_unit", "age_display", "phone_number", "email",
                   "street_address", "city", "state", "country",
                   # Reception takes these at registration and is who gets

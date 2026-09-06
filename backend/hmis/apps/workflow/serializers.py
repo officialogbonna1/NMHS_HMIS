@@ -6,7 +6,8 @@ class VisitSerializer(serializers.ModelSerializer):
 class PatientRouteSerializer(serializers.ModelSerializer):
     patient_id = serializers.IntegerField(source="visit.patient_id", read_only=True)
     patient_name = serializers.CharField(source="visit.patient.__str__", read_only=True)
-    patient_file_number = serializers.CharField(source="visit.patient.file_number", read_only=True)
+    patient_number = serializers.CharField(source="visit.patient.patient_number", read_only=True)
+    patient_file_number = serializers.CharField(source="visit.patient.patient_number", read_only=True)
     department_name = serializers.CharField(source="department.name", read_only=True)
     assigned_to_name = serializers.SerializerMethodField()
     assigned_to_role = serializers.CharField(source="assigned_to.role", read_only=True)

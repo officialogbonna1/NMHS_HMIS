@@ -1,14 +1,26 @@
+import uuid as uuid_module
 from datetime import date
 
 from django.db import models
 from django.conf import settings
+from apps.core import identifiers
 from apps.core.mixins import TimeStampedModel
 
 
 class Patient(TimeStampedModel):
     SEX_CHOICES = [("M", "Male"), ("F", "Female")]
 
-    file_number = models.CharField(max_length=20, unique=True, blank=True, editable=False)
+    # Two identifiers, and they are not interchangeable — see
+    # `apps/core/identifiers.py`. `uuid` is the technical identity the API
+    # addresses a patient by; `patient_number` is what a person reads.
+    #
+    # The integer primary key stays where it is: every clinical, billing,
+    # pharmacy, laboratory and ward table holds a `patient_id` pointing at it,
+    # and rebuilding all of them to change the column type would risk the one
+    # thing a hospital record must not lose. New callers use the UUID.
+    uuid = models.UUIDField(default=uuid_module.uuid4, unique=True, editable=False)
+
+    patient_number = models.CharField(max_length=20, unique=True, blank=True, editable=False)
 
     first_name = models.CharField(max_length=100)
     middle_name = models.CharField(max_length=100, blank=True)
@@ -79,14 +91,26 @@ class Patient(TimeStampedModel):
         label = "yrs" if unit == "years" else unit.rstrip("s") + ("s" if self.age_value != 1 else "")
         return f"{self.age_value} {label}"
 
+    @property
+    def file_number(self):
+        """
+        What `patient_number` was called before staff had numbers of their
+        own. Kept as a read-only alias because it is the key every existing
+        API consumer, print sheet and nested serializer reads; it carries the
+        same value, in the new format.
+        """
+        return self.patient_number
+
     def save(self, *args, **kwargs):
         is_new = self._state.adding
         super().save(*args, **kwargs)
-        if is_new and not self.file_number:
-            # Derived from the DB's own PK sequence — unique and ordered by
-            # registration for free, no separate counter to race on.
-            self.file_number = f"NMHS-{self.pk:06d}"
-            super().save(update_fields=["file_number"])
+        if is_new and not self.patient_number:
+            # Issued from the DB's own PK sequence — unique and ordered by
+            # registration for free, no separate counter to race on, and never
+            # reused after a deletion. Deliberately not derived from the UUID:
+            # a number that gets read out at a counter has to be short.
+            self.patient_number = identifiers.format_number(identifiers.PATIENT, self.pk)
+            super().save(update_fields=["patient_number"])
 
 
 # --- Health record tiles (mirrors the 9 sections in the reference manual) ---

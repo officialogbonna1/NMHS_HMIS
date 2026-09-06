@@ -1,5 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import api from "../api/client";
+import { patientNumber } from "./patientIdentity.js";
 import PrintSheet, {
   SheetHeader, PatientBlock, SheetSection, SheetFooter, SheetStatus,
   Stamp, WriteInLines, Field, money,
@@ -183,7 +184,7 @@ export function ReferralDocumentSheet({ routeId, variant = "request", onClose })
   const documentTitle = isReport ? titles.report : titles.request;
 
   return (
-    <PrintSheet title={`${documentTitle} — ${patient.file_number}`} onClose={onClose}>
+    <PrintSheet title={`${documentTitle} — ${patientNumber(patient)}`} onClose={onClose}>
       <SheetHeader
         documentTitle={documentTitle}
         reference={route.reference}
@@ -279,10 +280,10 @@ export function PrescriptionSheet({ patientId, prescriptionIds, onClose }) {
   const pending = lines.filter((line) => line.status === "pending");
 
   return (
-    <PrintSheet title={`Prescription — ${patient?.file_number ?? ""}`} onClose={onClose}>
+    <PrintSheet title={`Prescription — ${patientNumber(patient)}`} onClose={onClose}>
       <SheetHeader
         documentTitle="Prescription"
-        reference={patient?.file_number}
+        reference={patientNumber(patient)}
         date={dateTime(first?.created_at)}
       />
       {pending.length > 0 && lines.length === pending.length && (
@@ -347,10 +348,10 @@ export function DispensingSheet({ patientId, prescriptionIds, onClose }) {
   const last = lines[0];
 
   return (
-    <PrintSheet title={`Dispensing note — ${patient?.file_number ?? ""}`} onClose={onClose}>
+    <PrintSheet title={`Dispensing note — ${patientNumber(patient)}`} onClose={onClose}>
       <SheetHeader
         documentTitle="Dispensing Note"
-        reference={patient?.file_number}
+        reference={patientNumber(patient)}
         date={dateTime(last?.dispensed_at)}
       />
       <PatientBlock patient={patient} />
@@ -418,7 +419,7 @@ export function DispensingSheet({ patientId, prescriptionIds, onClose }) {
 function patientFromPrescription(line) {
   return {
     name: line.patient_name,
-    file_number: line.patient_file_number,
+    patient_number: line.patient_number,
     sex: line.patient_sex,
     age: line.patient_age,
   };
@@ -458,14 +459,14 @@ export function AdmissionSheet({ admission, patientId, onClose }) {
 
   const patient = {
     name: record.patient_name,
-    file_number: record.patient_file_number,
+    patient_number: record.patient_number,
     sex: record.patient_sex,
     age: record.patient_age,
   };
   const discharged = record.status === "discharged";
 
   return (
-    <PrintSheet title={`Admission slip — ${record.patient_file_number}`} onClose={onClose}>
+    <PrintSheet title={`Admission slip — ${patientNumber(record)}`} onClose={onClose}>
       <SheetHeader
         documentTitle={discharged ? "Discharge Record" : "Admission Slip"}
         reference={`ADM-${String(record.id).padStart(6, "0")}`}
@@ -563,8 +564,8 @@ export function VitalsRecordSheet({ patientId, onClose }) {
   const columns = VITAL_COLUMNS.filter(([, read]) => readings.some((r) => read(r) != null));
 
   return (
-    <PrintSheet title={`Observation record — ${patient?.file_number}`} onClose={onClose}>
-      <SheetHeader documentTitle="Nursing Observation Record" reference={patient?.file_number} />
+    <PrintSheet title={`Observation record — ${patientNumber(patient)}`} onClose={onClose}>
+      <SheetHeader documentTitle="Nursing Observation Record" reference={patientNumber(patient)} />
       <PatientBlock patient={patient} />
 
       <SheetSection title="Vital signs">
@@ -648,8 +649,8 @@ export function ClinicalSummarySheet({ patientId, onClose }) {
     .filter((route) => route.result);
 
   return (
-    <PrintSheet title={`Clinical summary — ${patient.file_number}`} onClose={onClose}>
-      <SheetHeader documentTitle="Clinical Summary" reference={patient.file_number} />
+    <PrintSheet title={`Clinical summary — ${patientNumber(patient)}`} onClose={onClose}>
+      <SheetHeader documentTitle="Clinical Summary" reference={patientNumber(patient)} />
       <PatientBlock patient={patient} />
 
       {/* Allergies lead, as they do on the chart: they change what the

@@ -315,7 +315,7 @@ function patientOf(group) {
   const line = group.lines[0] ?? {};
   return {
     name: group.name,
-    file_number: line.patient_file_number,
+    patient_number: line.patient_number,
     sex: line.patient_sex,
     age: line.patient_age,
   };

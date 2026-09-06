@@ -10,6 +10,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated
 from django_filters.rest_framework import DjangoFilterBackend
+from rest_framework.filters import SearchFilter
 
 from apps.core.services import audit_event
 from .models import User
@@ -80,8 +81,12 @@ class UserViewSet(viewsets.ModelViewSet):
     minimal fields, never the admin view's email/department/activity."""
 
     queryset = User.objects.all().order_by("username")
-    filter_backends = [DjangoFilterBackend]
+    filter_backends = [DjangoFilterBackend, SearchFilter]
     filterset_fields = ["role"]
+    # Found by the number on the badge (`NMHS-S000001`) as readily as by name,
+    # username or email. Searching narrows the directory; what each role is
+    # then shown of a row is still the serializer's decision.
+    search_fields = ["staff_number", "first_name", "last_name", "username", "email"]
 
     def get_permissions(self):
         if self.action in ("list", "retrieve"):

@@ -21,7 +21,7 @@ class InvestigationResultInline(admin.StackedInline):
 class InvestigationOrderAdmin(admin.ModelAdmin):
     list_display = ["created_at", "patient", "investigation", "status", "requested_by", "performed_by"]
     list_filter = ["status", "created_at", "investigation__kind"]
-    search_fields = ["patient__first_name", "patient__last_name", "patient__file_number",
+    search_fields = ["patient__first_name", "patient__last_name", "patient__patient_number",
                      "investigation__name"]
     list_select_related = ["patient", "investigation", "requested_by", "performed_by"]
     autocomplete_fields = ["patient", "requested_by", "performed_by"]

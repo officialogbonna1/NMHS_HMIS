@@ -63,7 +63,7 @@ class LedgerViewSet(viewsets.ReadOnlyModelViewSet):
     serializer_class = PatientLedgerSerializer
     filter_backends = [DjangoFilterBackend, filters.SearchFilter]
     filterset_fields = ["patient"]
-    search_fields = ["patient__first_name", "patient__last_name", "patient__file_number"]
+    search_fields = ["patient__first_name", "patient__last_name", "patient__patient_number"]
 
     def get_permissions(self): return [RoleRequired(COLLECTING_ROLES)]
 
@@ -208,7 +208,7 @@ class AdjustmentViewSet(viewsets.ModelViewSet):
     queryset = Adjustment.objects.select_related("patient", "charge", "approved_by"); serializer_class = AdjustmentSerializer
     filter_backends = [DjangoFilterBackend, filters.SearchFilter]
     filterset_fields = ["patient", "kind"]
-    search_fields = ["patient__first_name", "patient__last_name", "patient__file_number", "reason"]
+    search_fields = ["patient__first_name", "patient__last_name", "patient__patient_number", "reason"]
     ordering = ["-created_at"]
     def get_permissions(self):
         # Granting a discount or waiver stays with cashier/accountant, but the

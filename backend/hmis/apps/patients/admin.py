@@ -43,22 +43,24 @@ class MedicalTestInline(_RecordInline):
 
 @admin.register(Patient)
 class PatientAdmin(admin.ModelAdmin):
-    list_display = ["file_number", "last_name", "first_name", "sex", "age_display", "phone_number", "created_at"]
-    list_display_links = ["file_number", "last_name", "first_name"]
+    list_display = ["patient_number", "last_name", "first_name", "sex", "age_display", "phone_number", "created_at"]
+    list_display_links = ["patient_number", "last_name", "first_name"]
     list_filter = ["sex", "city", "state", "country", "created_at"]
-    search_fields = ["file_number", "first_name", "middle_name", "last_name", "phone_number",
+    search_fields = ["patient_number", "first_name", "middle_name", "last_name", "phone_number",
                      "email", "emergency_contact_name", "emergency_contact_phone"]
     ordering = ["last_name", "first_name"]
     date_hierarchy = "created_at"
     list_per_page = 50
     # Derived from the PK on first save; editing it by hand breaks the one
     # identifier the whole hospital refers to a patient by.
-    readonly_fields = ["file_number", "created_at", "updated_at"]
+    readonly_fields = ["patient_number", "uuid", "created_at", "updated_at"]
     autocomplete_fields = ["created_by"]
     inlines = [AllergyInline, ConditionInline, MedicationInline, VaccinationInline, MedicalTestInline]
 
     fieldsets = (
-        ("Identity", {"fields": ("file_number", ("first_name", "middle_name", "last_name"), "sex")}),
+        ("Identity", {"fields": ("patient_number", "uuid", ("first_name", "middle_name", "last_name"), "sex"),
+                      "description": "The number is what people read; the UUID is what the API "
+                                     "addresses the patient by. Neither is typed in."}),
         ("Age", {"fields": ("birthdate", ("age_value", "age_unit")),
                  "description": "The value and unit are the fallback when a birthdate is not "
                                 "known — days and weeks matter for newborns."}),
@@ -81,7 +83,7 @@ class _TileAdmin(admin.ModelAdmin):
     """Each tile is also listed on its own, for finding every patient with
     one — everybody on a given drug, everybody due a vaccination."""
     list_select_related = ["patient"]
-    search_fields = ["patient__first_name", "patient__last_name", "patient__file_number"]
+    search_fields = ["patient__first_name", "patient__last_name", "patient__patient_number"]
     autocomplete_fields = ["patient"]
     list_per_page = 50
 

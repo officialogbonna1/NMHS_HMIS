@@ -29,7 +29,7 @@ class VitalsAdmin(LockedRecordAdmin):
     list_display = ["patient", "visit_time", "temperature_c", "heart_rate", "blood_pressure",
                     "sao2", "recorded_by"]
     list_filter = ["visit_time", "recorded_by"]
-    search_fields = ["patient__first_name", "patient__last_name", "patient__file_number"]
+    search_fields = ["patient__first_name", "patient__last_name", "patient__patient_number"]
     list_select_related = ["patient", "recorded_by"]
     date_hierarchy = "visit_time"
 

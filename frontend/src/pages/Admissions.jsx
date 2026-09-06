@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import api from "../api/client";
+import { patientNumber } from "../components/patientIdentity.js";
 import { Icon } from "../components/icons.jsx";
 import { Page, PageHeader, MetaStat, TabBar, Tab, Button } from "../components/ui.jsx";
 import { useAuth } from "../auth/AuthContext.jsx";
@@ -198,7 +199,7 @@ function AdmissionRow({ admission, beds }) {
         <div>
           <p className="font-medium text-slate-800">{admission.patient_name}</p>
           <p className="text-sm text-slate-700">
-            {admission.patient_file_number} · {admission.ward_name} bed {admission.bed_number}
+            {patientNumber(admission)} · {admission.ward_name} bed {admission.bed_number}
             {admission.attending_doctor_name && ` · Dr. ${admission.attending_doctor_name}`}
           </p>
           <p className="text-sm text-slate-600">

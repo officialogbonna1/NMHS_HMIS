@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import api from "../api/client";
+import { patientNumber } from "../components/patientIdentity.js";
 import { Icon } from "../components/icons.jsx";
 import { readError } from "../api/errors";
 import { useAuth } from "../auth/AuthContext.jsx";
@@ -97,7 +98,7 @@ export default function DepartmentStation({ station }) {
     const term = search.trim().toLowerCase();
     return mine
       .filter((r) => (filter === "all" ? true : r.status === filter))
-      .filter((r) => !term || `${r.patient_name} ${r.patient_file_number ?? ""}`.toLowerCase().includes(term))
+      .filter((r) => !term || `${r.patient_name} ${patientNumber(r)}`.toLowerCase().includes(term))
       .sort((a, b) => {
         const byPriority = (PRIORITY_ORDER[a.priority] ?? 9) - (PRIORITY_ORDER[b.priority] ?? 9);
         return byPriority !== 0 ? byPriority : new Date(a.created_at) - new Date(b.created_at);
@@ -214,7 +215,7 @@ function QueueRow({ route, user, onOpen }) {
       <button onClick={() => onOpen()} className="min-w-0 flex-1 text-left">
         <div className="flex flex-wrap items-center gap-2">
           <span className="font-medium text-slate-800">{route.patient_name}</span>
-          <span className="text-sm text-slate-600">{route.patient_file_number}</span>
+          <span className="text-sm text-slate-600">{patientNumber(route)}</span>
           {isMine
             ? <Pill tone="border-brand-300 bg-brand-50 text-brand-700">Yours</Pill>
             : route.assigned_to
@@ -329,7 +330,7 @@ function Station({ config, route, onBack }) {
             <Badge tone={route.status === "in_progress" ? "brand" : "neutral"}>
               {route.status === "in_progress" ? "In progress" : "Waiting"}
             </Badge>
-            <MetaStat value={route.patient_file_number} label="file number" />
+            <MetaStat value={patientNumber(route)} label="patient no." />
             <MetaStat value={route.purpose_label ?? config.title} label="requested" />
             <MetaStat value={waitedFor(route.created_at)} label="waiting" />
           </>

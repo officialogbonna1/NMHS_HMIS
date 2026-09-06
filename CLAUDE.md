@@ -467,6 +467,46 @@ person explicitly asks for something different.
    off from either interface — a result reaching the clinician who ordered it
    is not a preference. Never add a setting nothing reads.
 
+32. **Two identifiers per person, and they are not interchangeable.**
+   `apps/core/identifiers.py` holds the format once.
+
+   - **A record is addressed by an id.** `Patient.uuid` is that identifier for
+     the API: `GET /api/patients/<uuid>/` works on every route and action,
+     including `overview/`. The integer primary key is still there and still
+     answers, because every clinical, billing, pharmacy, laboratory, ward and
+     routing table holds a `patient_id` pointing at it and every nested
+     `?patient=` filter passes it — `PatientViewSet.get_object()` accepts
+     either and 404s on anything else. **Do not swap that primary key for the
+     UUID**: it would mean rebuilding those tables, which is the one migration
+     a hospital record cannot afford to get wrong. New callers use the UUID.
+   - **A person is identified by a hospital number.** `NMHS-P000001` for a
+     patient (`Patient.patient_number`, which is what `file_number` was
+     renamed to), `NMHS-S000001` for a member of staff (`User.staff_number`).
+     The letter names the register, so the two can never be confused on a form.
+     Both are `editable=False`, absent from every writable serializer, and
+     issued by the model on first save from the row's own primary key —
+     sequential, never reused after a deletion, and never derived from the
+     UUID, because a number that gets read down a phone line has to be short.
+     A number already held never moves: `identifiers.adopt_number` prefers it.
+   - **Only staff are numbered.** `User.is_hospital_staff` is a role or the
+     superuser flag; an account with neither reaches nothing in the
+     application and stays without a number rather than joining the payroll
+     list. `staff_number` is nullable for exactly that reason.
+   - **`file_number` is an alias, not a second field.** It is a read-only
+     property on `Patient` and a read-only serializer field carrying the same
+     string, because it is the key ~40 existing call sites already read —
+     nested rows still send `patient_file_number` too. On the frontend
+     `patientNumber()` in `components/patientIdentity.js` is the one place
+     that decides which key to look in; never read `file_number` directly and
+     never print an id or a UUID at a person.
+   - **Neither identifier is an authorisation.** The UUID is unguessable and
+     the number is not, but both come out of `patient_queryset_for` either
+     way, so knowing one gets a clinician with no claim on the patient the
+     same 404 as knowing nothing. `apps/patients/tests/test_identifiers.py`
+     and `apps/accounts/tests/test_staff_number.py` hold all of it, including
+     that boundary.
+
+
 ## Django admin
 
 Every app has an `admin.py` and every model is registered — `Patients` is
@@ -903,7 +943,7 @@ Done:
   location and kind, showing the transfer reference on both halves). Every
   quantity change goes through `inventory/services.py`, leaves a
   StockMovement, and cannot be made any other way.
-- Tests: 540 passing (`./venv/bin/python manage.py test` — the venv is at
+- Tests: 595 passing (`./venv/bin/python manage.py test` — the venv is at
   `backend/hmis/venv`; a bare `python` has no Django and fails misleadingly) — pharmacy dispensing +
   payment flow, charge settlement (full / half / later, oldest-first
   allocation), percentage discounts and their permission boundary, reception's boundaries on appointments and routes,

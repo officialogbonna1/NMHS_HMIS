@@ -1,6 +1,7 @@
 import { createContext, useContext, useEffect, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import api from "../api/client";
+import { patientNumber } from "./patientIdentity.js";
 
 // A printable document, shown on screen as a preview and sent to the
 // printer as-is. Browser printing rather than a generated PDF: it needs no
@@ -127,7 +128,7 @@ export function SheetHeader({ documentTitle, reference, date }) {
  *
  * Deliberately shape-tolerant. Reception's documents pass the full patient
  * record from `/patients/<id>/`; a department's pass the compact identity
- * its own endpoint returns (`{name, file_number, sex, age}`) rather than
+ * its own endpoint returns (`{name, patient_number, sex, age}`) rather than
  * refetching the patient to print one line. Both read the same here, which
  * is what stops the name being formatted two ways on two sheets.
  *
@@ -149,7 +150,7 @@ export function PatientBlock({ patient }) {
   return (
     <section className="mb-6 grid grid-cols-2 gap-x-8 gap-y-1 text-sm">
       <Field label="Patient" value={name} strong />
-      <Field label="File number" value={patient.file_number} strong />
+      <Field label="Patient No." value={patientNumber(patient)} strong />
       <Field label="Sex" value={patient.sex_display ?? patient.sex ?? "—"} />
       {/* Age as well as the date: a card for a newborn is read at a glance. */}
       <Field

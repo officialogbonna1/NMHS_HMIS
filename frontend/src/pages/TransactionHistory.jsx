@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import api from "../api/client";
+import { patientNumber } from "../components/patientIdentity.js";
 import { TextLink, Page, PageHeader } from "../components/ui.jsx";
 import { useAuth } from "../auth/AuthContext.jsx";
 import { PrintButton } from "../components/printing.jsx";
@@ -58,7 +59,7 @@ function ChooseWhoseHistory({ patient, onPick, onClear }) {
       <section className="flex flex-wrap items-center justify-between gap-3 rounded-xl border bg-white px-5 py-4">
         <div>
           <p className="font-semibold text-slate-800">{patient.last_name}, {patient.first_name}</p>
-          <p className="text-sm text-slate-600">{patient.file_number}</p>
+          <p className="text-sm text-slate-600">{patientNumber(patient)}</p>
         </div>
         <button onClick={onClear} className="rounded-lg border px-3 py-2 text-sm hover:bg-slate-50">
           Different patient
@@ -284,9 +285,10 @@ function RecentlyBilled({ onPick }) {
   );
 }
 
-// Ledger rows carry "Last, First" and the patient id — enough to drive the
-// statement without a second lookup.
+// Ledger rows carry "Last, First", the patient id and the hospital number —
+// enough to drive the statement without a second lookup.
 function patientFromLedger(ledger) {
   const [last = "", first = ""] = (ledger.patient_name ?? "").split(",");
-  return { id: ledger.patient, last_name: last.trim(), first_name: first.trim(), file_number: "" };
+  return { id: ledger.patient, last_name: last.trim(), first_name: first.trim(),
+           patient_number: ledger.patient_number };
 }

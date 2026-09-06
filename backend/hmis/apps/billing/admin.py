@@ -35,7 +35,7 @@ class _MoneyAdmin(admin.ModelAdmin):
     """
     list_per_page = 50
     list_select_related = ["patient"]
-    search_fields = ["patient__first_name", "patient__last_name", "patient__file_number"]
+    search_fields = ["patient__first_name", "patient__last_name", "patient__patient_number"]
     date_hierarchy = "created_at"
 
     def has_change_permission(self, request, obj=None):
@@ -82,7 +82,7 @@ class PaymentDeferralAdmin(_MoneyAdmin):
     list_display = ["created_at", "patient", "charge", "amount_deferred", "approved_by",
                     "released_at"]
     list_filter = ["created_at", "released_at"]
-    search_fields = ["patient__last_name", "patient__first_name", "patient__file_number",
+    search_fields = ["patient__last_name", "patient__first_name", "patient__patient_number",
                      "charge__description"]
 
 

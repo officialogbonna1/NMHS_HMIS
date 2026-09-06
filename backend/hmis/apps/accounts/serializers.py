@@ -5,7 +5,7 @@ from .models import User
 class UserSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
-        fields = ["id", "username", "first_name", "last_name", "email", "role", "department", "must_change_password", "sensitive_record_access", "last_login"]
+        fields = ["id", "staff_number", "username", "first_name", "last_name", "email", "role", "department", "must_change_password", "sensitive_record_access", "last_login"]
 
 
 class UserDirectorySerializer(serializers.ModelSerializer):
@@ -13,7 +13,7 @@ class UserDirectorySerializer(serializers.ModelSerializer):
     doctor when booking an appointment) — no email/department/activity."""
     class Meta:
         model = User
-        fields = ["id", "first_name", "last_name", "role"]
+        fields = ["id", "staff_number", "first_name", "last_name", "role"]
 
 
 class UserAdminSerializer(serializers.ModelSerializer):
@@ -23,9 +23,12 @@ class UserAdminSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = User
-        fields = ["id", "username", "first_name", "last_name", "email", "role", "department",
+        fields = ["id", "staff_number", "username", "first_name", "last_name", "email", "role", "department",
                   "is_active", "must_change_password", "sensitive_record_access", "last_login", "password"]
-        read_only_fields = ["last_login"]
+        # `staff_number` is issued by the model on the first save that makes the
+        # account staff (see `apps/core/identifiers.py`) — an identifier a form
+        # can retype is not one, so admin reads it and never writes it.
+        read_only_fields = ["last_login", "staff_number"]
 
     def create(self, validated_data):
         password = validated_data.pop("password", None)

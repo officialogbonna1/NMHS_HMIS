@@ -70,7 +70,11 @@ def build_overview(*, patient, user):
     overview = {
         "patient": {
             "id": patient.id,
-            "file_number": patient.file_number,
+            "uuid": str(patient.uuid),
+            # Both names, same value: `patient_number` is the field,
+            # `file_number` is what the chart already reads.
+            "patient_number": patient.patient_number,
+            "file_number": patient.patient_number,
             "name": f"{patient.last_name}, {patient.first_name}",
             "sex": patient.get_sex_display(),
             "birthdate": patient.birthdate,

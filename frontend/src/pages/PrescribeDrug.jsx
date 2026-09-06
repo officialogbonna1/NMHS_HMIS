@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import api from "../api/client";
+import { patientNumber } from "../components/patientIdentity.js";
 import { Button, Page, PageHeader, Breadcrumb } from "../components/ui.jsx";
 import { readError } from "../api/errors";
 import { useToast } from "../components/Toaster.jsx";
@@ -102,7 +103,7 @@ export default function PrescribeDrug() {
         }
         subtitle={
           patient
-            ? `For ${patient.last_name}, ${patient.first_name} · ${patient.file_number}`
+            ? `For ${patient.last_name}, ${patient.first_name} · ${patientNumber(patient)}`
             : "Loading patient…"
         }
       />

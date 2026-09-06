@@ -195,7 +195,8 @@ class LabOrderTestSerializer(serializers.ModelSerializer):
 
 class LabOrderSerializer(serializers.ModelSerializer):
     patient_name = serializers.CharField(source="patient.__str__", read_only=True)
-    patient_file_number = serializers.CharField(source="patient.file_number", read_only=True)
+    patient_number = serializers.CharField(source="patient.patient_number", read_only=True)
+    patient_file_number = serializers.CharField(source="patient.patient_number", read_only=True)
     patient_age = serializers.CharField(source="patient.age_display", read_only=True)
     patient_sex = serializers.CharField(source="patient.get_sex_display", read_only=True)
     items = LabOrderTestSerializer(many=True, read_only=True)
@@ -210,7 +211,7 @@ class LabOrderSerializer(serializers.ModelSerializer):
     class Meta:
         model = LabOrder
         fields = [
-            "id", "order_number", "patient", "patient_name", "patient_file_number",
+            "id", "order_number", "patient", "patient_name", "patient_number", "patient_file_number",
             "patient_age", "patient_sex", "visit", "route", "requested_by",
             "requested_by_name", "priority", "status", "status_label", "clinical_notes",
             "specimen_id", "specimen_collected_at", "collected_by", "collected_by_name",
@@ -277,7 +278,8 @@ class LabOrderSerializer(serializers.ModelSerializer):
 class LabOrderSummarySerializer(serializers.ModelSerializer):
     """The worklist row — no parameters, no values."""
     patient_name = serializers.CharField(source="patient.__str__", read_only=True)
-    patient_file_number = serializers.CharField(source="patient.file_number", read_only=True)
+    patient_number = serializers.CharField(source="patient.patient_number", read_only=True)
+    patient_file_number = serializers.CharField(source="patient.patient_number", read_only=True)
     status_label = serializers.CharField(source="get_status_display", read_only=True)
     test_names = serializers.SerializerMethodField()
     requested_by_name = serializers.SerializerMethodField()
@@ -286,7 +288,7 @@ class LabOrderSummarySerializer(serializers.ModelSerializer):
 
     class Meta:
         model = LabOrder
-        fields = ["id", "order_number", "patient", "patient_name", "patient_file_number",
+        fields = ["id", "order_number", "patient", "patient_name", "patient_number", "patient_file_number",
                   "status", "status_label", "priority", "test_names", "requested_by_name",
                   "specimen_id", "billing", "created_at", "verified_at"]
 

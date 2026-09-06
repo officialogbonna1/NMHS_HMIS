@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Link } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import api from "../api/client";
+import { patientNumber } from "../components/patientIdentity.js";
 import PatientPicker, { patientLabel } from "../components/PatientPicker.jsx";
 import { readError } from "../api/errors";
 import { useToast } from "../components/Toaster.jsx";
@@ -125,7 +126,7 @@ export default function SendToConsultation() {
           <div className="mt-3 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-brand-200 bg-brand-50/60 p-3">
             <div>
               <p className="font-medium">{patientLabel(patient)}</p>
-              <p className="text-xs text-slate-600">{patient.file_number}</p>
+              <p className="text-xs text-slate-600">{patientNumber(patient)}</p>
             </div>
             <Button variant="link" size="xs" onClick={() => setPatient(null)}>
               Choose someone else
@@ -142,14 +143,14 @@ export default function SendToConsultation() {
                       key={route.id}
                       onClick={() => setPatient({
                         id: route.patient_id,
-                        file_number: route.patient_file_number,
+                        patient_number: route.patient_number,
                         display: route.patient_name,
                       })}
                       className="flex items-center justify-between gap-3 rounded-lg border p-3 text-left hover:border-brand-300 hover:bg-brand-50/50"
                     >
                       <span>
                         <span className="font-medium">{route.patient_name}</span>
-                        <span className="ml-2 text-xs text-slate-600">{route.patient_file_number}</span>
+                        <span className="ml-2 text-xs text-slate-600">{patientNumber(route)}</span>
                       </span>
                       <span className={`rounded-full border px-2 py-0.5 text-xs font-medium ${PRIORITY_TONE[route.priority]}`}>
                         {route.priority}

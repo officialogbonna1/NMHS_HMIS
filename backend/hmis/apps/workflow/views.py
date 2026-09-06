@@ -810,8 +810,10 @@ class PatientRouteViewSet(viewsets.ModelViewSet):
             },
             "patient": {
                 "id": patient.pk,
+                "uuid": str(patient.uuid),
                 "name": f"{patient.last_name}, {patient.first_name}",
-                "file_number": patient.file_number,
+                "patient_number": patient.patient_number,
+                "file_number": patient.patient_number,
                 "sex": patient.get_sex_display(),
                 "age": patient.age_display,
                 "birthdate": patient.birthdate,

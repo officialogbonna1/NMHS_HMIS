@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useParams, useNavigate, Routes, Route, useLocation } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import api from "../api/client";
+import { patientNumber } from "../components/patientIdentity.js";
 import { PrintButton, chartDocuments } from "../components/printing.jsx";
 import HealthRecordTile from "../components/HealthRecordTile.jsx";
 import GenericTileModal from "../components/GenericTileModal.jsx";
@@ -108,9 +109,9 @@ export default function PatientDetail() {
                   {patient.last_name}, {patient.first_name}
                 </h1>
                 <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-slate-600">
-                  {patient.file_number && (
+                  {patientNumber(patient) && (
                     <span className="rounded-full bg-brand-50 px-2 py-0.5 text-xs font-medium text-brand-700 ring-1 ring-inset ring-brand-200">
-                      {patient.file_number}
+                      Patient No. {patientNumber(patient)}
                     </span>
                   )}
                   <span>{patient.sex === "M" ? "Male" : patient.sex === "F" ? "Female" : patient.sex}</span>

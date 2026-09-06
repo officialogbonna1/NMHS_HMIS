@@ -62,8 +62,10 @@ def _patient_block(patient):
     """The patient identity every printed laboratory document opens with."""
     return {
         "id": patient.pk,
+        "uuid": str(patient.uuid),
         "name": f"{patient.last_name}, {patient.first_name}",
-        "file_number": patient.file_number,
+        "patient_number": patient.patient_number,
+        "file_number": patient.patient_number,
         "age": patient.age_display,
         "sex": patient.get_sex_display(),
         "birthdate": patient.birthdate,
@@ -234,7 +236,7 @@ class LabOrderViewSet(viewsets.ModelViewSet):
     filter_backends = [DjangoFilterBackend, filters.SearchFilter]
     filterset_fields = ["patient", "visit", "status", "priority", "route"]
     search_fields = ["order_number", "specimen_id", "patient__last_name",
-                     "patient__first_name", "patient__file_number"]
+                     "patient__first_name", "patient__patient_number"]
 
     def get_permissions(self):
         if self.action in {"create", "for_route", "add_tests", "remove_test"}:

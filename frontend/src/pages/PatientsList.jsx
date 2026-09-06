@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useQuery, keepPreviousData } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import api from "../api/client";
+import { patientNumber } from "../components/patientIdentity.js";
 import { useAuth } from "../auth/AuthContext.jsx";
 import { EmptyState, Page, PageHeader, SearchInput, Skeleton, Button, MetaStat } from "../components/ui.jsx";
 import { Icon } from "../components/icons.jsx";
@@ -150,9 +151,9 @@ function PatientRow({ patient: p }) {
       <span className="min-w-0 flex-1">
         <span className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
           <span className="truncate font-medium text-slate-900">{p.last_name}, {p.first_name}</span>
-          {p.file_number && (
+          {patientNumber(p) && (
             <span className="shrink-0 rounded-full bg-brand-50 px-2 py-0.5 text-xs font-medium text-brand-700 ring-1 ring-inset ring-brand-200">
-              {p.file_number}
+              {patientNumber(p)}
             </span>
           )}
         </span>

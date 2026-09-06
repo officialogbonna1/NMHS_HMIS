@@ -2,17 +2,21 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import api from "../api/client";
 import { Button } from "./ui.jsx";
+import { patientNumber } from "./patientIdentity.js";
 
 // One patient picker for every screen that has to find a patient.
 //
 // It is a combobox, not a search box: clicking it opens the list you are
 // allowed to see, so somebody who does not know how the name is spelled can
-// scroll to it, and typing filters that same list by name or file number.
+// scroll to it, and typing filters that same list by name, hospital number
+// or phone number.
 // A plain search input showed nothing until you had already guessed right.
 //
 // The list is whatever `/patients/` returns for the signed-in role — the
 // backend scopes it (patients.access.patient_queryset_for), so reception
 // browses everyone while a nurse browses only the patients routed to them.
+
+export { patientNumber };
 
 export function patientLabel(p) {
   if (!p) return "";
@@ -93,7 +97,7 @@ export default function PatientPicker({
       }`}>
         <span className="min-w-0">
           <span className="font-medium text-slate-800">{patientLabel(value)}</span>
-          {value.file_number && <span className="ml-2 text-sm text-slate-600">{value.file_number}</span>}
+          {patientNumber(value) && <span className="ml-2 text-sm text-slate-600">{patientNumber(value)}</span>}
         </span>
         {!disabled && (
           <Button
@@ -163,7 +167,7 @@ export default function PatientPicker({
               }`}
             >
               <span className="font-medium text-slate-800">{patientLabel(p)}</span>
-              <span className="ml-2 text-slate-600">{p.file_number}</span>
+              <span className="ml-2 text-slate-600">{patientNumber(p)}</span>
               {p.phone_number && <span className="ml-2 text-slate-600">· {p.phone_number}</span>}
             </button>
           ))}

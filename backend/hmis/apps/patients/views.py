@@ -1,4 +1,8 @@
 
+import uuid as uuid_module
+
+from django.http import Http404
+from django.shortcuts import get_object_or_404
 from rest_framework import viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import PermissionDenied
@@ -23,10 +27,38 @@ class PatientViewSet(viewsets.ModelViewSet):
     serializer_class = serializers.PatientSerializer
     permission_classes = [RoleRequired]
     filter_backends = [SearchFilter]
-    search_fields = ["first_name", "last_name", "file_number"]
+    # A patient is looked up by whichever of the three the desk has to hand:
+    # the number on the card (`NMHS-P000001`), the name, or the phone number
+    # somebody just read out.
+    search_fields = ["first_name", "last_name", "patient_number", "phone_number"]
 
     def get_queryset(self):
         return patient_queryset_for(self.request.user)
+
+    def get_object(self):
+        """
+        A patient is addressed by their UUID — the technical identity, which
+        tells a reader nothing and cannot be walked by incrementing it — or by
+        the legacy integer pk, which every nested `?patient=` filter and every
+        existing client still holds.
+
+        Either way the row comes out of `get_queryset()`, so it is still the
+        role's own assignment filter that decides whether this caller may see
+        this patient. Neither identifier is permission to read a chart.
+        """
+        queryset = self.filter_queryset(self.get_queryset())
+        value = str(self.kwargs[self.lookup_url_kwarg or self.lookup_field])
+        try:
+            lookup = {"uuid": uuid_module.UUID(value)}
+        except ValueError:
+            # Not a UUID, so it can only be the numeric pk. Anything else is a
+            # 404 rather than the 500 a non-integer pk lookup would raise.
+            if not value.isdigit():
+                raise Http404
+            lookup = {"pk": int(value)}
+        obj = get_object_or_404(queryset, **lookup)
+        self.check_object_permissions(self.request, obj)
+        return obj
 
     def get_permissions(self):
         if self.action in {"create", "update", "partial_update", "destroy"}:

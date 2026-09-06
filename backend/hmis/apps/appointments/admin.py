@@ -11,7 +11,7 @@ class AppointmentAdmin(admin.ModelAdmin):
     """
     list_display = ["created_at", "patient", "doctor", "reason", "status", "start_time", "end_time"]
     list_filter = ["status", "created_at", "doctor"]
-    search_fields = ["patient__first_name", "patient__last_name", "patient__file_number", "reason"]
+    search_fields = ["patient__first_name", "patient__last_name", "patient__patient_number", "reason"]
     list_select_related = ["patient", "doctor"]
     autocomplete_fields = ["patient", "doctor"]
     date_hierarchy = "created_at"

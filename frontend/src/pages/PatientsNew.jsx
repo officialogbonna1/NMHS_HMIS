@@ -2,6 +2,7 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import api from "../api/client";
+import { patientNumber } from "../components/patientIdentity.js";
 import { PatientCardSheet } from "../components/PrintDocuments.jsx";
 import { COUNTRIES, RELATIONSHIPS, statesFor, statesKnownFor } from "../data/geography.js";
 import {
@@ -191,7 +192,7 @@ export default function PatientsNew() {
             {registered.last_name}, {registered.first_name} is registered
           </h1>
           <p className="mt-2 text-sm text-emerald-800">
-            File number <strong className="text-base tracking-wider">{registered.file_number}</strong> —
+            Patient No. <strong className="text-base tracking-wider">{patientNumber(registered)}</strong> —
             print the card and give it to them.
           </p>
         </div>

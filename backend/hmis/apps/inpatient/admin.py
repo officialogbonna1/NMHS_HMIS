@@ -71,7 +71,7 @@ class BedTransferInline(admin.TabularInline):
 class AdmissionAdmin(admin.ModelAdmin):
     list_display = ["patient", "bed", "status", "attending_doctor", "admitted_at", "discharged_at"]
     list_filter = ["status", "admitted_at", "bed__ward"]
-    search_fields = ["patient__first_name", "patient__last_name", "patient__file_number"]
+    search_fields = ["patient__first_name", "patient__last_name", "patient__patient_number"]
     list_select_related = ["patient", "bed__ward", "attending_doctor"]
     autocomplete_fields = ["patient", "attending_doctor", "admitted_by"]
     date_hierarchy = "admitted_at"
