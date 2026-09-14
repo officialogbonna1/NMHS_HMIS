@@ -31,6 +31,17 @@ class User(AbstractUser):
     department = models.CharField(max_length=100, blank=True)
     must_change_password = models.BooleanField(default=False)
     sensitive_record_access = models.BooleanField(default=False)
+    # A second way onto the POS discount — for one named person, granted by an
+    # administrator — beside POS_DISCOUNT_ROLES, which stays exactly as it is.
+    # It lets its holder *give* a discount within the hospital's configured
+    # limits and nothing more: approving one above the limit is still
+    # POS_DISCOUNT_APPROVAL_ROLES alone (`sales/discount_policy.approver_for`),
+    # so nobody authorised here can clear their own over-limit discount.
+    pos_discount_authorized = models.BooleanField(
+        "POS discount authorized", default=False,
+        help_text="Allows this staff member to apply pharmacy POS discounts within the "
+                  "existing configured limits. This does not grant discount approval "
+                  "authority. It only has effect for someone who works the POS till.")
 
     # `NMHS-S000001` — the staff half of the hospital's register, the mirror of
     # `Patient.patient_number`. Nullable rather than blank because not every

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { allowsType, judge, judgeCart, offeredTypes, readPolicy } from "./posDiscountPolicy.js";
+import { allowsType, canDiscount, judge, judgeCart, offeredTypes, readPolicy } from "./posDiscountPolicy.js";
 
 // The till's own reading of the discount policy. It refuses early and decides
 // nothing — `sales/discount_policy.py` re-judges every one of these on the
@@ -156,5 +156,27 @@ describe("judgeCart", () => {
                        lines: [{ type: null, amount: 0, base: 4000 }],
                        saleDiscount: null, saleBase: 4000 }))
       .toMatchObject({ refused: null, needsApproval: false });
+  });
+});
+
+// Mirrors `sales/services.can_discount`. The server asks the same question on
+// every sale; this only decides whether the till shows the Discount action.
+describe("who may give a discount", () => {
+  it("keeps the discount roles, and administrators, exactly as they were", () => {
+    for (const role of ["cashier", "accountant", "admin", "hospital_admin"]) {
+      expect(canDiscount({ role })).toBe(true);
+      expect(canDiscount({ role, pos_discount_authorized: false })).toBe(true);
+    }
+  });
+
+  it("lets in a pharmacist only when an administrator has authorised them", () => {
+    expect(canDiscount({ role: "pharmacist" })).toBe(false);
+    expect(canDiscount({ role: "pharmacist", pos_discount_authorized: false })).toBe(false);
+    expect(canDiscount({ role: "pharmacist", pos_discount_authorized: true })).toBe(true);
+  });
+
+  it("reads only a real true, and nobody signed out", () => {
+    expect(canDiscount({ role: "pharmacist", pos_discount_authorized: "true" })).toBe(false);
+    expect(canDiscount(null)).toBe(false);
   });
 });

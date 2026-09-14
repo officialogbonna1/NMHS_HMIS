@@ -1,4 +1,8 @@
+from django import forms
 from django.contrib import admin, messages
+from rest_framework import serializers
+
+from .serializers import HospitalSettingsSerializer
 
 from .models import AuditLog, HospitalSettings, Notification, NotificationSetting
 
@@ -74,15 +78,50 @@ class NotificationAdmin(admin.ModelAdmin):
         self.message_user(request, f"{queryset.restore()} restored.")
 
 
+class HospitalSettingsForm(forms.ModelForm):
+    """
+    Held to the same rule the HMIS screen is — a cashier's discount limit can
+    never sit above the maximum anybody may give. The rule is the serializer's
+    own `validate`, called here rather than written a second time.
+    """
+
+    class Meta:
+        model = HospitalSettings
+        fields = "__all__"
+        # Labels only — the columns and their help text are the model's own.
+        labels = {
+            "pos_discounts_enabled": "POS discounts enabled",
+            "pos_discount_types": "Allowed discount types",
+            "pos_discount_limit_percent": "Percentage limit (without approval)",
+            "pos_discount_limit_amount": "Fixed amount limit (without approval)",
+            "pos_max_discount_percent": "Maximum percentage (with approval)",
+            "pos_max_discount_amount": "Maximum fixed amount (with approval)",
+            "pos_discount_presets": "Percentage presets",
+            "pos_discount_reasons": "Discount reasons",
+        }
+
+    def clean(self):
+        cleaned = super().clean()
+        try:
+            HospitalSettingsSerializer(instance=self.instance).validate(cleaned)
+        except serializers.ValidationError as exc:
+            for field, problems in exc.detail.items():
+                self.add_error(field if field in self.fields else None, problems)
+        return cleaned
+
+
 @admin.register(HospitalSettings)
 class HospitalSettingsAdmin(admin.ModelAdmin):
     """
-    The hospital's identity and the numbers the dashboards alert on — one
-    row, the same one the HMIS administration screen edits.
+    The hospital's identity, the numbers the dashboards alert on and the
+    pharmacy till's discount policy — one row, the same one the HMIS
+    administration screen edits and `sales/discount_policy.py` reads on every
+    sale.
 
     Add is refused once the row exists: two answers to "what is this hospital
     called" is one too many, and the letterhead reads whichever came first.
     """
+    form = HospitalSettingsForm
     list_display = ["full_name", "name", "phone", "expiry_warning_days",
                     "vitals_wait_alert_minutes", "unpaid_charge_alert_hours", "updated_at"]
     readonly_fields = ["created_at", "updated_at"]
@@ -97,6 +136,18 @@ class HospitalSettingsAdmin(admin.ModelAdmin):
                        "unpaid_charge_alert_hours"],
             "description": "Each of these drives a real alert. Expiry warning also "
                            "drives the nightly stock task.",
+        }),
+        ("POS discount configuration", {
+            "fields": ["pos_discounts_enabled", "pos_discount_types",
+                       "pos_discount_limit_percent", "pos_discount_limit_amount",
+                       "pos_max_discount_percent", "pos_max_discount_amount",
+                       "pos_discount_presets", "pos_discount_reasons"],
+            "description": "What the pharmacy till may take off. A <em>limit</em> is what "
+                           "somebody allowed to discount may give on their own; above it an "
+                           "accountant or an administrator has to approve. A <em>maximum</em> "
+                           "is what nobody passes, approved or not. Who may discount at all is "
+                           "set per person under Users → Pharmacy POS, on top of the cashier, "
+                           "accountant and administrator roles.",
         }),
         ("Record", {"fields": ["created_at", "updated_at"], "classes": ["collapse"]}),
     ]

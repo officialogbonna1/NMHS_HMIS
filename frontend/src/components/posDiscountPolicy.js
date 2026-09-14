@@ -14,7 +14,18 @@
  * be more different at a counter.
  */
 
+import { POS_DISCOUNT_ROLES, hasRole } from "../auth/roles.js";
+
 const HUNDRED = 100;
+
+/**
+ * Whether this person may *give* a POS discount — the mirror of
+ * `sales/services.can_discount`: the discount roles (admins pass), or somebody
+ * an administrator authorised by name. It never makes anybody an approver.
+ */
+export function canDiscount(user) {
+  return hasRole(user, POS_DISCOUNT_ROLES) || user?.pos_discount_authorized === true;
+}
 
 /** The policy the server sent, with the defaults the backend also uses. */
 export function readPolicy(settings) {

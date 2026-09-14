@@ -1131,6 +1131,20 @@ person explicitly asks for something different.
    dialog pre-filled, and Remove restores its own price, which was never
    overwritten.
 
+   **Giving a discount can be granted to one person; approving one cannot.**
+   `User.pos_discount_authorized` (default False, ticked in Django admin under
+   Users → Pharmacy POS) is a second way past `sales.services.can_discount`,
+   beside `POS_DISCOUNT_ROLES`, which is unchanged — so an administrator can
+   let a named pharmacist discount within the configured limits. It is never
+   read by `discount_policy.approver_for`: approval stays
+   `POS_DISCOUNT_APPROVAL_ROLES` alone, so the holder cannot clear their own
+   over-limit discount, and the flag opens no till to a role outside
+   `POS_ROLES`. `/auth/me/` carries it read-only and `posDiscountPolicy.js`'s
+   `canDiscount` mirrors the check. The limits themselves are editable in
+   Django admin too (Hospital settings → POS discount configuration), through
+   the same serializer validation as the HMIS screen. Held by
+   `apps/sales/tests/test_pos_discount_authorization.py`.
+
    The frontend mirror is `components/posDiscountPolicy.js` (the pure-module
    pattern `refundPolicy.js` set), and it refuses early only to spare a round
    trip. `/sales/summary/`'s `discounts` block reports the same figure split by
@@ -1625,7 +1639,7 @@ Done:
   hospital number, never a pk), department, service, due, discount, waiver,
   paid, balance, method and settlement status. The dashboards' money cards
   open it on the period they count.
-- Tests: 1,070 passing, 1 skipped (backend; frontend `npm test`: 174) — the PostgreSQL-only two-thread race in
+- Tests: 1,105 passing, 1 skipped (backend; frontend `npm test`: 178) — the PostgreSQL-only two-thread race in
   `test_cancel_and_refund_hardening.py` (`./venv/bin/python manage.py test` — the venv is at
   `backend/hmis/venv`; a bare `python` has no Django and fails misleadingly) — pharmacy dispensing +
   payment flow, charge settlement (full / half / later, oldest-first

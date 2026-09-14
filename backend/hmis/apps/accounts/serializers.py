@@ -5,7 +5,10 @@ from .models import User
 class UserSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
-        fields = ["id", "staff_number", "username", "first_name", "last_name", "email", "role", "department", "must_change_password", "sensitive_record_access", "last_login"]
+        fields = ["id", "staff_number", "username", "first_name", "last_name", "email", "role", "department", "must_change_password", "sensitive_record_access", "pos_discount_authorized", "last_login"]
+        # Read by the till to show the Discount action; granted in Django admin
+        # only, never by the person it describes.
+        read_only_fields = ["pos_discount_authorized"]
 
 
 class UserDirectorySerializer(serializers.ModelSerializer):

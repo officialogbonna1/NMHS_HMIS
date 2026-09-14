@@ -359,6 +359,27 @@ describe("the Discount button in the cart", () => {
     expect(await screen.findByText(/Discounts are given by a cashier/)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^Discount/ })).not.toBeInTheDocument();
   });
+
+  it("gives a pharmacist an administrator authorised the same Discount action a cashier has", async () => {
+    const user = userEvent.setup();
+    mockApi();
+    const mary = { id: 9, role: "pharmacist", pos_discount_authorized: true };
+    const post = vi.spyOn(api, "post").mockResolvedValue({ data: {} });
+    renderWithApp(<Till register={REGISTER} summary={{}} user={mary} />, { user: mary });
+    await addToCart(user, "Paracetamol 500mg");
+
+    expect(screen.queryByText(/Discounts are given by a cashier/)).not.toBeInTheDocument();
+    // The same walk a cashier takes, through the same dialog.
+    await user.click(await screen.findByLabelText("Select Paracetamol 500mg"));
+    await user.click(await screen.findByRole("button", { name: "Discount 1 item" }));
+    await user.type(await screen.findByLabelText("Percentage off"), "10");
+    await user.type(screen.getByPlaceholderText(/Staff purchase/), "Loyal customer");
+    await user.click(screen.getByRole("button", { name: "Apply discount" }));
+
+    expect(await within(screen.getByLabelText("Cart")).findByText("₦900")).toBeInTheDocument();
+    // Nothing is sent until the sale is completed, where the server decides again.
+    expect(post).not.toHaveBeenCalled();
+  });
 });
 
 describe("the brief's acceptance walk", () => {

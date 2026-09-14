@@ -3,12 +3,11 @@ import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tansta
 import api from "../api/client";
 import { readError } from "../api/errors";
 import { useAuth } from "../auth/AuthContext.jsx";
-import { POS_DISCOUNT_ROLES, hasRole } from "../auth/roles.js";
 import PatientPicker from "../components/PatientPicker.jsx";
 import { PosReceiptSheet } from "../components/DepartmentDocuments.jsx";
 import PosRegisterSummary from "../components/PosRegisterSummary.jsx";
 import { productLabel } from "../components/prescriptionDirections.js";
-import { judge, judgeCart, offeredTypes, readPolicy } from "../components/posDiscountPolicy.js";
+import { canDiscount, judge, judgeCart, offeredTypes, readPolicy } from "../components/posDiscountPolicy.js";
 import { useToast } from "../components/Toaster.jsx";
 import { Icon } from "../components/icons.jsx";
 import {
@@ -185,7 +184,7 @@ export function Till({ register, summary, user }) {
   // server completes the sale once.
   const [token, setToken] = useState(newToken);
 
-  const mayDiscount = hasRole(user, POS_DISCOUNT_ROLES);
+  const mayDiscount = canDiscount(user);
   // The same query key `HospitalProvider` uses: the policy comes back with the
   // hospital's own settings, which the shell has already fetched, so the till
   // pays nothing for it. The server enforces every one of these rules again.
@@ -741,7 +740,8 @@ export function Till({ register, summary, user }) {
               )}
               {!mayDiscount && cart.length > 0 && (
                 <p className="col-span-2 -mt-1 text-xs text-slate-600">
-                  Discounts are given by a cashier, an accountant or an administrator.
+                  Discounts are given by a cashier, an accountant, an administrator or staff
+                  authorised for POS discounts.
                 </p>
               )}
               <Button variant="ghost" disabled={!cart.length} onClick={reset}

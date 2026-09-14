@@ -31,6 +31,16 @@ class HMISUserAdmin(UserAdmin):
             "fields": ("role", "department", "sensitive_record_access", "must_change_password"),
             "description": "Role decides what this account can reach in the app.",
         }),
+        ("Pharmacy POS", {
+            "fields": ("pos_discount_authorized",),
+            "description": "Cashiers, accountants and administrators can already discount at the "
+                           "pharmacy till. Tick this to let one more person — a pharmacist, say — "
+                           "apply discounts too, within the limits set under Hospital settings → "
+                           "POS discount configuration. It does <strong>not</strong> let them "
+                           "approve a discount above those limits; that still needs an "
+                           "accountant or an administrator. Untick it to take the permission "
+                           "away — the till refuses their next discount.",
+        }),
     )
     # Django's default add form asks only for username and password. A staff
     # account is useless without a role, so it is asked for up front.
@@ -52,7 +62,7 @@ class HMISUserAdmin(UserAdmin):
     )
 
     list_display = ["staff_number", "username", "full_name", "role", "department", "is_active", "set_password_link"]
-    list_filter = ["role", "is_active", "is_staff", "must_change_password"]
+    list_filter = ["role", "is_active", "is_staff", "must_change_password", "pos_discount_authorized"]
     search_fields = ["staff_number", "username", "first_name", "last_name", "email"]
     readonly_fields = ["staff_number"]
     ordering = ["last_name", "first_name", "username"]

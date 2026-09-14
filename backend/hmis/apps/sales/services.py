@@ -74,7 +74,18 @@ def can_operate_till(user):
 
 
 def can_discount(user):
-    return has_any_role(user, POS_DISCOUNT_ROLES)
+    """
+    POS_DISCOUNT_ROLES (admins pass, as everywhere), or a person an
+    administrator has authorised by name (`User.pos_discount_authorized`).
+
+    Giving a discount only. Approving one above the limit is
+    `discount_policy.approver_for`, which reads POS_DISCOUNT_APPROVAL_ROLES and
+    never this flag.
+    """
+    if has_any_role(user, POS_DISCOUNT_ROLES):
+        return True
+    return bool(getattr(user, "is_authenticated", False)
+                and getattr(user, "pos_discount_authorized", False))
 
 
 def can_take_return(user):
@@ -557,7 +568,8 @@ def _complete(*, operator, lines, customer_type, patient, customer_name, custome
     if order is not None or any(asked is not None for _, _, asked in cart):
         if not can_discount(operator):
             raise PermissionDenied(
-                "Only a cashier, an accountant or an administrator can apply a POS discount.")
+                "Only a cashier, an accountant, an administrator or staff authorised for POS "
+                "discounts can apply a POS discount.")
         if not reason:
             raise ValidationError("A discount needs a reason.")
         # Authenticated here, from credentials — never taken as a user id from
