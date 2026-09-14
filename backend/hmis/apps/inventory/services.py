@@ -36,7 +36,16 @@ class InsufficientStockError(ValidationError):
 
 
 def _today():
-    return timezone.now().date()
+    """
+    Today, in the hospital's own timezone.
+
+    `timezone.now().date()` is the **UTC** date. With `TIME_ZONE` set to
+    Africa/Lagos (UTC+1) the two disagree between local midnight and 01:00 —
+    UTC is still on yesterday — so a lot that expired yesterday read as
+    unexpired and `write_off_expired` refused to clear it. `localdate()` is
+    the clock the batch's `expiry_date` was entered against.
+    """
+    return timezone.localdate()
 
 
 def location_by_code(code):
@@ -298,7 +307,7 @@ def count_sheet(*, location, item=None, include_empty=False):
 
 
 @transaction.atomic
-def post_stock_count(*, location, lines, actor, note=""):
+def post_stock_count(*, location, lines, actor, note="", reason="adjustment", reference_prefix=""):
     """
     Post a whole physical inventory of one location.
 
@@ -308,6 +317,10 @@ def post_stock_count(*, location, lines, actor, note=""):
     line that differs. Lines that match are still recorded on the sheet: "we
     counted it and it was right" is a fact worth keeping, and it is the
     difference between a partial count and a complete one.
+
+    `reason` and `reference_prefix` let the CSV count (`inventory/count_csv.py`)
+    label its movements "Physical stock count" and name the import they came
+    from; the count sheet on screen keeps posting plain adjustments.
     """
     if location is None:
         raise ValidationError("Which location was counted?")
@@ -315,6 +328,7 @@ def post_stock_count(*, location, lines, actor, note=""):
         raise ValidationError("A count needs at least one line.")
 
     count = StockCount.objects.create(location=location, note=note[:255], counted_by=actor)
+    prefix = f"{reference_prefix} · " if reference_prefix else ""
 
     seen = set()
     for line in lines:
@@ -338,11 +352,68 @@ def post_stock_count(*, location, lines, actor, note=""):
         )
         delta = counted - record.quantity
         if delta:
-            apply_stock_change(record, delta, reason="adjustment", actor=actor,
-                               reference=f"{count.reference}: {batch.batch_no}",
+            apply_stock_change(record, delta, reason=reason, actor=actor,
+                               reference=f"{prefix}{count.reference}: {batch.batch_no}",
                                stock_count=count)
 
     return count
+
+
+# ------------------------------------------------------------- the POS till
+
+
+@transaction.atomic
+def consume_fefo(*, item, quantity, location, actor, reason, reference=""):
+    """
+    Take `quantity` units of a product off one location, earliest expiry
+    first, and say which batches they came off: `[{"batch", "quantity"}, …]`.
+
+    **Not a second FEFO rule.** The records are `_available_records` — the
+    query `fefo_lines_for` already orders by expiry then batch, expired lots
+    excluded, the same order `dispense_prescription` takes from — read here
+    under `select_for_update`, so two tills selling the last strip cannot both
+    succeed. Every unit leaves through `apply_stock_change`, so each batch
+    touched gets its `StockMovement`.
+    """
+    if quantity < 1:
+        raise ValidationError("Quantity must be at least 1.")
+    if location is None:
+        raise ValidationError("No location to take the stock from.")
+    records = list(_available_records(item=item, location=location).select_for_update())
+    available = sum(record.quantity for record in records)
+    if available < quantity:
+        raise InsufficientStockError(
+            f"Only {available} unit(s) of {item.name} on the {location.name} shelf — "
+            f"cannot sell {quantity}.")
+
+    pieces, remaining = [], quantity
+    for record in records:
+        if remaining <= 0:
+            break
+        take = min(record.quantity, remaining)
+        apply_stock_change(record, -take, reason=reason, actor=actor, reference=reference)
+        pieces.append({"batch": record.batch, "quantity": take})
+        remaining -= take
+    return pieces
+
+
+@transaction.atomic
+def quarantine_return(*, batch, quantity, actor, reference=""):
+    """
+    Medicine a customer brought back, received into the returns quarantine —
+    never onto the dispensing shelf. It stays unsellable until somebody moves
+    it with a transfer (fit to sell) or a count (destroyed).
+    """
+    from .models import quarantine_location
+
+    if quantity < 1:
+        raise ValidationError("A return has to be at least one unit.")
+    location = quarantine_location()
+    if location is None:
+        raise ValidationError("No returns quarantine location is configured.")
+    record = _record(batch, location, lock=True)
+    return apply_stock_change(record, quantity, reason="returned", actor=actor,
+                              reference=reference)
 
 
 # ------------------------------------------------------------------ write-off

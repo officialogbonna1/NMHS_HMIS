@@ -146,7 +146,7 @@ class LabResultTests(TestCase):
         self.assertIn("Chidi Eze", note.message)
         # Straight to the chart's Lab tab, not its front page: the doctor is
         # being told a result exists, so the link should be the result.
-        self.assertEqual(note.action_url, f"/patients/{self.patient.id}/lab")
+        self.assertEqual(note.action_url, f"/patients/{self.patient.uuid}/lab")
 
     def test_the_doctor_can_read_the_result_and_open_the_report(self):
         route_id = self._refer()

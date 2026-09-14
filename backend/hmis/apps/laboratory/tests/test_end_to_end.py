@@ -29,7 +29,7 @@ class LabWorkflowTests(TestCase):
         self.cashier = User.objects.create_user(username="cash", password="t", role="cashier")
         self.patient = Patient.objects.create(first_name="Ada", last_name="Obi", sex="F",
                                               created_by=self.reception)
-        self.department = Department.objects.create(code="lab", name="Laboratory")
+        self.department = Department.objects.get(code="laboratory")
         self.visit = Visit.objects.create(patient=self.patient, opened_by=self.reception,
                                           attending_doctor=self.doctor)
         self.client = APIClient()

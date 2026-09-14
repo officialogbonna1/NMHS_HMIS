@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import api from "../api/client";
-import { patientNumber } from "../components/patientIdentity.js";
+import { patientNumber, patientUuidOf } from "../components/patientIdentity.js";
 import { Icon } from "../components/icons.jsx";
 import { readError } from "../api/errors";
 import { useAuth } from "../auth/AuthContext.jsx";
@@ -209,7 +209,7 @@ function RecordedToday() {
         <article key={row.id} className="rounded-xl border bg-white p-4">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div className="min-w-0">
-              <Link to={`/patients/${row.patient_id}`} className="font-medium text-slate-800 hover:text-brand-600">
+              <Link to={`/patients/${patientUuidOf(row)}`} className="font-medium text-slate-800 hover:text-brand-600">
                 {row.patient_name}
               </Link>
               <p className="mt-0.5 text-xs text-slate-500">

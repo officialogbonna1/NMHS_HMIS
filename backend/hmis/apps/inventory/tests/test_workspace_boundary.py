@@ -107,7 +107,10 @@ class ConfigurationIsAdministrationsTests(WorkspaceBoundaryTests):
             "name": "Paracetamol 500mg", "category": self.category.pk, "unit": self.unit.pk,
         }, format="json")
         self.assertEqual(created.status_code, 201, created.data)
-        for endpoint, payload in [("/api/item-categories/", {"name": "Antibiotics"}),
+        # "Oncology" rather than "Antibiotics": the seeded catalogue
+        # (`inventory/0008`) already has the latter, and this case is about who
+        # may configure, not about which names exist.
+        for endpoint, payload in [("/api/item-categories/", {"name": "Oncology"}),
                                   ("/api/units/", {"name": "Bottle"}),
                                   ("/api/stock-locations/", {"code": "theatre",
                                                              "name": "Theatre Store"})]:

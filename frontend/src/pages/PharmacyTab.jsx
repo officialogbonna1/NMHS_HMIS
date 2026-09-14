@@ -1,3 +1,4 @@
+import { directionsOf } from "../components/prescriptionDirections.js";
 import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
@@ -11,7 +12,7 @@ import { Button } from "../components/ui.jsx";
 // different statement depending on whether the pharmacy ever filled it — so
 // the two are separated here rather than listed together as "medications".
 //
-// Read-only. Prescribing is `/patients/<id>/prescribe`, dispensing is the
+// Read-only. Prescribing is `/patients/<uuid>/prescribe`, dispensing is the
 // pharmacy counter, and both move stock through `pharmacy/services.py`.
 
 const STATUS_TONE = {
@@ -20,7 +21,7 @@ const STATUS_TONE = {
   cancelled: "bg-slate-100 text-slate-500 ring-slate-200",
 };
 
-export default function PharmacyTab({ patientId, canPrescribe }) {
+export default function PharmacyTab({ patientId, patientUuid, canPrescribe }) {
   const [showCancelled, setShowCancelled] = useState(false);
 
   const { data, isLoading, isError } = useQuery({
@@ -50,7 +51,7 @@ export default function PharmacyTab({ patientId, canPrescribe }) {
         <p className="mt-2 font-medium text-slate-800">Nothing prescribed for this patient</p>
         {canPrescribe && (
           <Link
-            to={`/patients/${patientId}/prescribe`}
+            to={`/patients/${patientUuid}/prescribe`}
             className="mt-3 inline-block rounded-lg bg-brand-600 px-5 py-2 text-sm font-semibold text-white hover:bg-brand-700"
           >
             + Prescribe
@@ -71,7 +72,7 @@ export default function PharmacyTab({ patientId, canPrescribe }) {
         </p>
         {canPrescribe && (
           <Link
-            to={`/patients/${patientId}/prescribe`}
+            to={`/patients/${patientUuid}/prescribe`}
             className="rounded-lg bg-brand-600 px-4 py-2 text-sm font-semibold text-white hover:bg-brand-700"
           >
             + Prescribe
@@ -144,7 +145,10 @@ function Section({ title, subtitle, rows, empty }) {
                   <td className="py-2 pr-3 text-slate-800">
                     {p.quantity}{p.item_unit ? ` ${p.item_unit}` : ""}
                   </td>
-                  <td className="py-2 pr-3 text-slate-700">{p.dosage_instructions || "—"}</td>
+                  <td className="py-2 pr-3 text-slate-700">
+                    {directionsOf(p) || "—"}
+                    {p.notes && <span className="block text-xs text-slate-600">{p.notes}</span>}
+                  </td>
                   <td className="py-2 pr-3 text-slate-700">
                     {new Date(p.created_at).toLocaleDateString()}
                     {p.doctor_name && <span className="block text-xs text-slate-600">{p.doctor_name}</span>}

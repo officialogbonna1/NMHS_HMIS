@@ -16,11 +16,25 @@ class Prescription(TimeStampedModel):
         ("dispensed", "Dispensed"),
         ("cancelled", "Cancelled"),
     ]
+    ROUTE_CHOICES = [
+        ("oral", "Oral"), ("sublingual", "Sublingual"), ("iv", "Intravenous (IV)"),
+        ("im", "Intramuscular (IM)"), ("sc", "Subcutaneous (SC)"), ("topical", "Topical"),
+        ("inhaled", "Inhaled"), ("nasal", "Nasal"), ("ophthalmic", "Eye (ophthalmic)"),
+        ("otic", "Ear (otic)"), ("rectal", "Rectal"), ("vaginal", "Vaginal"), ("other", "Other"),
+    ]
     patient = models.ForeignKey(Patient, on_delete=models.CASCADE, related_name="prescriptions")
     doctor = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="prescriptions_written")
     item = models.ForeignKey(Item, on_delete=models.PROTECT)
     quantity = models.PositiveIntegerField()
+    # The dose itself ("1 tablet"). Frequency, duration, route and notes sit
+    # beside it rather than inside one free-text line, so the pharmacy label
+    # and the chart can print each part. All optional: an existing script with
+    # only `dosage_instructions` still reads exactly as it did.
     dosage_instructions = models.CharField(max_length=255, blank=True)
+    frequency = models.CharField(max_length=60, blank=True)
+    duration = models.CharField(max_length=60, blank=True)
+    route = models.CharField(max_length=20, choices=ROUTE_CHOICES, blank=True)
+    notes = models.TextField(blank=True)
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="pending")
 
     dispensed_by = models.ForeignKey(

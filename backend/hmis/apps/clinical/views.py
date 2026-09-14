@@ -67,7 +67,7 @@ def _tell_the_doctors(vitals, nurse):
             title=f"New vitals: {vitals.patient}",
             message=f"{summary or 'A new reading'} — recorded by {_name(nurse)}.",
             category="clinical",
-            action_url=f"/patients/{vitals.patient_id}/vitals",
+            action_url=f"/patients/{vitals.patient.uuid}/vitals",
         )
 
 
@@ -167,6 +167,9 @@ class VitalsViewSet(viewsets.ModelViewSet):
                 "created_at": reading.created_at,
                 "recorded_by": _name(reading.recorded_by),
                 "patient_id": reading.patient_id,
+                # What the station links to; `patient_id` stays for the
+                # `?patient=` filters the tabs still use.
+                "patient_uuid": str(reading.patient.uuid),
                 "patient_name": str(reading.patient),
                 "patient_number": reading.patient.patient_number,
                 "patient_file_number": reading.patient.patient_number,

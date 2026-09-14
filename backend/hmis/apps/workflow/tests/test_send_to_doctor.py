@@ -65,7 +65,7 @@ class SendToDoctorTests(TestCase):
         note = Notification.objects.filter(recipient=self.doctor, category="routing").first()
         self.assertIsNotNone(note)
         self.assertIn("Queued for consultation", note.title)
-        self.assertEqual(note.action_url, f"/patients/{self.patient.id}")
+        self.assertEqual(note.action_url, f"/patients/{self.patient.uuid}")
 
     def test_it_works_after_the_nurse_has_already_closed_their_route(self):
         """The gap `forward` cannot reach: the vitals route is already done."""

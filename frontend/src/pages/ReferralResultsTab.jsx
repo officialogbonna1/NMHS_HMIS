@@ -49,13 +49,15 @@ const STATUS_TONE = {
   cancelled: "bg-slate-100 text-slate-500 ring-slate-200",
 };
 
-export default function ReferralResultsTab({ patientId, kind }) {
+export default function ReferralResultsTab({ patientId, patientUuid, kind }) {
   const config = REFERRAL_TABS[kind];
   const { user } = useAuth();
 
   const { data, isLoading, isError } = useQuery({
+    // Shares the chart's cache entry (keyed on the pk) and the chart's
+    // request address (the UUID).
     queryKey: ["patient-overview", String(patientId)],
-    queryFn: () => api.get(`/patients/${patientId}/overview/`).then((r) => r.data),
+    queryFn: () => api.get(`/patients/${patientUuid}/overview/`).then((r) => r.data),
   });
 
   // Flattened out of the visits, newest first, and tagged with which visit
@@ -158,7 +160,7 @@ export default function ReferralResultsTab({ patientId, kind }) {
               {/* The uploaded report itself lives on the Health Record's
                   Tests & Diagnostics tile, filed there so it survives the
                   visit closing. */}
-              <Button variant="link" size="xs" to={`/patients/${patientId}/record`} className="mt-1">
+              <Button variant="link" size="xs" to={`/patients/${patientUuid}/record`} className="mt-1">
                 Any uploaded report is on the Health Record →
               </Button>
             </div>

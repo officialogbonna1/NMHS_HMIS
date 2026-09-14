@@ -26,7 +26,12 @@ const PATHS = {
   cash: <><rect x="2.5" y="6" width="19" height="12" rx="2" /><circle cx="12" cy="12" r="2.6" /><path d="M6 10v4" /><path d="M18 10v4" /></>,
   clock: <><circle cx="12" cy="12" r="8.5" /><path d="M12 7.5V12l3 1.8" /></>,
   tag: <><path d="M11 3.5H4.5A1.5 1.5 0 0 0 3 5v6.2a2 2 0 0 0 .6 1.4l7.5 7.5a1.7 1.7 0 0 0 2.4 0l6.1-6.1a1.7 1.7 0 0 0 0-2.4L12 3.9" /><circle cx="7.5" cy="7.5" r="1.3" fill="currentColor" stroke="none" /></>,
+  // Money coming back: a return arrow curving out of a note.
+  refund: <><rect x="2.5" y="13" width="19" height="8" rx="2" /><path d="M12 17h.01" /><path d="M7 8.5h8.5a4 4 0 0 1 0 8H15" /><path d="m9.5 5.5-2.5 3 2.5 3" /></>,
   receipt: <><path d="M5 3.5h14v17l-2.3-1.5-2.4 1.5-2.3-1.5-2.4 1.5L7.3 19 5 20.5Z" /><path d="M8.5 8h7" /><path d="M8.5 12h7" /></>,
+  // A bill struck out: the receipt outline with a cross where its lines were.
+  // Service Cancellations — the obligation ends, no arrow of money moves.
+  receiptX: <><path d="M5 3.5h14v17l-2.3-1.5-2.4 1.5-2.3-1.5-2.4 1.5L7.3 19 5 20.5Z" /><path d="m9.5 8 5 5" /><path d="m14.5 8-5 5" /></>,
   price: <><rect x="3" y="5.5" width="18" height="13" rx="2" /><path d="M7 9.5h4" /><path d="M7 13h6" /><path d="M16.5 9.5v5" /></>,
   pill: <><rect x="2.8" y="8.4" width="18.4" height="7.2" rx="3.6" transform="rotate(-45 12 12)" /><path d="m9.2 9.2 5.6 5.6" /></>,
   box: <><path d="M3.5 7.5 12 3.5l8.5 4v9L12 20.5l-8.5-4Z" /><path d="M3.5 7.5 12 11.5l8.5-4" /><path d="M12 11.5v9" /></>,
@@ -42,6 +47,8 @@ const PATHS = {
   chevronRight: <path d="m9.5 6 6 6-6 6" />,
   print: <><path d="M7 8.5V3.5h10v5" /><rect x="3.5" y="8.5" width="17" height="8" rx="2" /><path d="M7 13.5h10v7H7Z" /></>,
   check: <path d="m5 12.5 5 5L19 7" />,
+  // A lidded box: out of the way, still kept.
+  archive: <><rect x="3" y="4" width="18" height="4.5" rx="1" /><path d="M5 8.5V19a1.5 1.5 0 0 0 1.5 1.5h11A1.5 1.5 0 0 0 19 19V8.5" /><path d="M10 12.5h4" /></>,
   paperclip: <path d="M20 11.5 12.3 19.2a4.6 4.6 0 0 1-6.5-6.5l7.7-7.7a3.1 3.1 0 0 1 4.4 4.4l-7.7 7.7a1.5 1.5 0 0 1-2.2-2.2l7.1-7.1" />,
   alert: <><path d="M12 4 2.8 20h18.4Z" /><path d="M12 10v4.5" /><circle cx="12" cy="17.4" r="1" fill="currentColor" stroke="none" /></>,
 };

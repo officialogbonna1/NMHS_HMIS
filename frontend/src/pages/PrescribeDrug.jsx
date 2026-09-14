@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useParams, useNavigate } from "react-router-dom";
+import { useParams, useNavigate, useLocation } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import api from "../api/client";
-import { patientNumber } from "../components/patientIdentity.js";
+import { looksLikeUuid, patientNumber } from "../components/patientIdentity.js";
 import { Button, Page, PageHeader, Breadcrumb } from "../components/ui.jsx";
 import { readError } from "../api/errors";
 import { useToast } from "../components/Toaster.jsx";
+import { FREQUENCIES, ROUTES, productLabel } from "../components/prescriptionDirections.js";
 
 // The doctor writes a whole script here, not one drug at a time: add each
 // drug with its quantity and directions, then send the lot to the pharmacy
@@ -19,8 +20,12 @@ import { useToast } from "../components/Toaster.jsx";
 // `available: true/false` for doctors (ItemForPrescribingSerializer).
 
 export default function PrescribeDrug() {
-  const { id: patientId } = useParams();
+  // The same three identifiers the chart resolves — see PatientDetail. The
+  // script is written against the integer pk (that is what `/prescriptions/`
+  // takes), and the page is addressed by the UUID.
+  const { patientUuid: routeParam } = useParams();
   const navigate = useNavigate();
+  const location = useLocation();
   const queryClient = useQueryClient();
   const { showToast } = useToast();
 
@@ -28,14 +33,28 @@ export default function PrescribeDrug() {
   const [error, setError] = useState(null);
 
   const { data: patient } = useQuery({
-    queryKey: ["patient", patientId],
-    queryFn: () => api.get(`/patients/${patientId}/`).then((r) => r.data),
+    queryKey: ["patient", routeParam],
+    queryFn: () => api.get(`/patients/${routeParam}/`).then((r) => r.data),
   });
 
+  const patientId = patient?.id;
+  const patientUuid = patient?.uuid ?? routeParam;
+
+  // An older link to `/patients/13/prescribe` still opens, then canonicalises.
+  useEffect(() => {
+    if (!patient?.uuid || looksLikeUuid(routeParam)) return;
+    navigate(location.pathname.replace(`/patients/${routeParam}`,
+                                       `/patients/${patient.uuid}`),
+             { replace: true });
+  }, [patient?.uuid, routeParam, location.pathname, navigate]);
+
   const { data: existing } = useQuery({
-    queryKey: ["prescriptions", patientId],
+    // Keyed as a string so it is the same cache entry PharmacyTab reads and
+    // this page invalidates, whichever of the two put it there.
+    queryKey: ["prescriptions", String(patientId)],
     queryFn: () => api.get("/prescriptions/", { params: { patient: patientId, page_size: 100 } })
       .then((r) => r.data.results ?? r.data),
+    enabled: Boolean(patientId),
   });
 
   const send = useMutation({
@@ -45,17 +64,21 @@ export default function PrescribeDrug() {
         item: l.item.id,
         quantity: l.quantity,
         dosage_instructions: l.instructions,
+        frequency: l.frequency,
+        duration: l.duration,
+        route: l.route,
+        notes: l.notes,
       })),
     }),
     onSuccess: (response) => {
-      queryClient.invalidateQueries({ queryKey: ["prescriptions", patientId] });
+      queryClient.invalidateQueries({ queryKey: ["prescriptions", String(patientId)] });
       queryClient.invalidateQueries({ queryKey: ["patient-overview", String(patientId)] });
       const count = response.data.length;
       showToast({
         title: "Sent to pharmacy",
         message: `${count} drug${count === 1 ? "" : "s"} queued. The pharmacy dispenses and takes payment.`,
       });
-      navigate(`/patients/${patientId}`);
+      navigate(`/patients/${patientUuid}`);
     },
     // The whole script is rejected together, so the message names the drug
     // that stopped it and nothing has been queued.
@@ -68,7 +91,7 @@ export default function PrescribeDrug() {
     setError(null);
     setLines((current) => current.some((l) => l.item.id === item.id)
       ? current
-      : [...current, { item, quantity: 1, instructions: "" }]);
+      : [...current, { item, quantity: 1, instructions: "", frequency: "", duration: "", route: "", notes: "" }]);
   }
 
   function updateLine(itemId, patch) {
@@ -80,7 +103,9 @@ export default function PrescribeDrug() {
   }
 
   const incomplete = lines.filter((l) => !l.quantity || l.quantity < 1);
-  const canSend = lines.length > 0 && incomplete.length === 0 && !send.isPending;
+  // `patientId` too: the script is posted against the integer pk, so it
+  // cannot be sent in the moment before the URL has resolved to a patient.
+  const canSend = Boolean(patientId) && lines.length > 0 && incomplete.length === 0 && !send.isPending;
 
   return (
     <Page width="narrow" className="space-y-6">
@@ -95,7 +120,7 @@ export default function PrescribeDrug() {
               { label: "Patients", to: "/patients" },
               {
                 label: patient ? `${patient.last_name}, ${patient.first_name}` : "Patient",
-                to: `/patients/${patientId}`,
+                to: `/patients/${patientUuid}`,
               },
               { label: "Prescribe" },
             ]}
@@ -146,7 +171,7 @@ export default function PrescribeDrug() {
               <div key={line.item.id} className="rounded-lg border border-slate-200 p-4">
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div>
-                    <p className="font-medium text-slate-800">{line.item.name}</p>
+                    <p className="font-medium text-slate-800">{productLabel(line.item)}</p>
                     <p className="text-sm text-slate-700">
                       {line.item.category || "Drug"}
                       {line.item.unit && ` · per ${line.item.unit}`}
@@ -175,15 +200,74 @@ export default function PrescribeDrug() {
                     />
                   </div>
                   <div>
-                    <label className="mb-1 block text-sm font-medium text-slate-700">Directions</label>
+                    <label htmlFor={`dose-${line.item.id}`} className="mb-1 block text-sm font-medium text-slate-700">
+                      Dose
+                    </label>
                     <input
+                      id={`dose-${line.item.id}`}
                       value={line.instructions}
                       onChange={(e) => updateLine(line.item.id, { instructions: e.target.value })}
-                      placeholder="e.g. 1 tablet three times daily after meals"
+                      placeholder="e.g. 1 tablet after meals"
                       className="w-full rounded-md border border-slate-300 px-3 py-2"
                       list="dosage-suggestions"
                     />
                   </div>
+                </div>
+
+                <div className="mt-3 grid gap-3 sm:grid-cols-3">
+                  <div>
+                    <label htmlFor={`frequency-${line.item.id}`} className="mb-1 block text-sm font-medium text-slate-700">
+                      Frequency
+                    </label>
+                    <input
+                      id={`frequency-${line.item.id}`}
+                      value={line.frequency}
+                      onChange={(e) => updateLine(line.item.id, { frequency: e.target.value })}
+                      placeholder="e.g. Three times daily"
+                      className="w-full rounded-md border border-slate-300 px-3 py-2"
+                      list="frequency-suggestions"
+                    />
+                  </div>
+                  <div>
+                    <label htmlFor={`duration-${line.item.id}`} className="mb-1 block text-sm font-medium text-slate-700">
+                      Duration
+                    </label>
+                    <input
+                      id={`duration-${line.item.id}`}
+                      value={line.duration}
+                      onChange={(e) => updateLine(line.item.id, { duration: e.target.value })}
+                      placeholder="e.g. 5 days"
+                      className="w-full rounded-md border border-slate-300 px-3 py-2"
+                    />
+                  </div>
+                  <div>
+                    <label htmlFor={`route-${line.item.id}`} className="mb-1 block text-sm font-medium text-slate-700">
+                      Route
+                    </label>
+                    <select
+                      id={`route-${line.item.id}`}
+                      value={line.route}
+                      onChange={(e) => updateLine(line.item.id, { route: e.target.value })}
+                      className="w-full rounded-md border border-slate-300 bg-white px-3 py-2"
+                    >
+                      <option value="">Not specified</option>
+                      {ROUTES.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+                    </select>
+                  </div>
+                </div>
+
+                <div className="mt-3">
+                  <label htmlFor={`notes-${line.item.id}`} className="mb-1 block text-sm font-medium text-slate-700">
+                    Notes for the pharmacy and patient
+                  </label>
+                  <textarea
+                    id={`notes-${line.item.id}`}
+                    rows={2}
+                    value={line.notes}
+                    onChange={(e) => updateLine(line.item.id, { notes: e.target.value })}
+                    placeholder="e.g. Complete the course. Avoid alcohol."
+                    className="w-full rounded-md border border-slate-300 px-3 py-2"
+                  />
                 </div>
               </div>
             ))}
@@ -191,6 +275,9 @@ export default function PrescribeDrug() {
               {["Once daily", "Twice daily", "Three times daily", "Four times daily",
                 "1 tablet three times daily after meals", "At night", "As needed for pain"]
                 .map((o) => <option key={o} value={o} />)}
+            </datalist>
+            <datalist id="frequency-suggestions">
+              {FREQUENCIES.map((o) => <option key={o} value={o} />)}
             </datalist>
           </div>
         )}
@@ -216,7 +303,7 @@ export default function PrescribeDrug() {
             : `Send ${lines.length || ""} to pharmacy`.replace("  ", " ")}
         </button>
         <button
-          onClick={() => navigate(`/patients/${patientId}`)}
+          onClick={() => navigate(`/patients/${patientUuid}`)}
           className="rounded-md border border-slate-300 px-4 py-2.5 text-sm font-medium"
         >
           Cancel
@@ -339,7 +426,7 @@ function DrugPicker({ onPick, chosenIds }) {
                 } ${!item.available || already ? "opacity-60" : ""}`}
               >
                 <span>
-                  <span className="font-medium text-slate-800">{item.name}</span>
+                  <span className="font-medium text-slate-800">{productLabel(item)}</span>
                   {item.category && <span className="ml-2 text-slate-700">{item.category}</span>}
                 </span>
                 <span className={`shrink-0 rounded-full px-2 py-0.5 text-xs font-medium ${

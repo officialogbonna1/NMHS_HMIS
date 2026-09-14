@@ -454,6 +454,7 @@ person explicitly asks for something different.
    reach every product, and `Item.unit_label` is what a prescription and a
    dispensing label print. `apps/inventory/testing.py`'s `product()` is how a
    test makes one; `Item.objects.create(unit="tablet")` is now a `ValueError`.
+   See rule 41 for what reads the category.
 
    **Settings are only settings if they do something.** `core.HospitalSettings`
    is a singleton holding the hospital's identity — which lived in a
@@ -471,14 +472,36 @@ person explicitly asks for something different.
    `apps/core/identifiers.py` holds the format once.
 
    - **A record is addressed by an id.** `Patient.uuid` is that identifier for
-     the API: `GET /api/patients/<uuid>/` works on every route and action,
-     including `overview/`. The integer primary key is still there and still
-     answers, because every clinical, billing, pharmacy, laboratory, ward and
+     the API *and for the browser*: `/patients/<uuid>` is the chart's URL and
+     `GET /api/patients/<uuid>/` works on every route and action, including
+     `overview/`. The integer primary key is still there and still answers,
+     because every clinical, billing, pharmacy, laboratory, ward and
      routing table holds a `patient_id` pointing at it and every nested
      `?patient=` filter passes it — `PatientViewSet.get_object()` accepts
      either and 404s on anything else. **Do not swap that primary key for the
      UUID**: it would mean rebuilding those tables, which is the one migration
-     a hospital record cannot afford to get wrong. New callers use the UUID.
+     a hospital record cannot afford to get wrong.
+
+     **Where each of the three goes, on the frontend.** `PatientDetail` and
+     `PrescribeDrug` read the route parameter (`:patientUuid`), fetch the
+     patient once, and hand each child the identifier it actually needs — the
+     UUID for links and `/patients/<…>/` reads, the integer pk for `?patient=`
+     filters, FK write bodies **and every TanStack query key**. The keys stay on
+     the pk deliberately: `ReferPatient`, `DepartmentStation`, `LabResultEntry`
+     and `GenericTileModal` all invalidate `["patient-overview", <pk>]` from
+     outside the chart, so a key moved to the UUID would silently stop a
+     doctor's chart refreshing after a referral. `components/patientIdentity.js`
+     is the one place that decides which key holds which — `patientNumber()`
+     for the printed identity, `patientUuidOf()` for the routing one — and the
+     print sheets in `printing.jsx` keep the pk on purpose, because they build
+     no link and every list they print filters on it.
+
+     A chart URL we raise ourselves carries the UUID too (notification
+     `action_url`s, dashboard task hrefs). Rows written before the move keep
+     their integer, so `PatientDetail` opens either and then rewrites a legacy
+     `/patients/13` to the UUID form with `replace: true` — which is also what
+     keeps old bookmarks working. Both link tests normalise a UUID segment as
+     well as an integer one for that reason.
    - **A person is identified by a hospital number.** `NMHS-P000001` for a
      patient (`Patient.patient_number`, which is what `file_number` was
      renamed to), `NMHS-S000001` for a member of staff (`User.staff_number`).
@@ -506,6 +529,618 @@ person explicitly asks for something different.
      and `apps/accounts/tests/test_staff_number.py` hold all of it, including
      that boundary.
 
+33. **Revenue is money received. A write-off is not revenue.**
+   `apps/billing/reporting.py` is the one place the hospital's money is
+   aggregated, and it reports a period **two ways, never blended**, because
+   they answer different questions and only one of them reconciles.
+
+   - **Collections (cash basis)** — `Payment` rows between the two dates.
+     This is Total Revenue. A discount is not revenue and a waiver is not
+     revenue: nobody handed anything over. A **part payment is** revenue —
+     the money is real — and is counted again separately as "money taken on a
+     bill still owing", which is what `Charge.status in (unpaid, partial)`
+     means.
+   - **Charges (cohort basis)** — the bills *raised* between the two dates and
+     what has become of them since. This is the only basis the identity closes
+     on, per department and down the Total row alike:
+
+         gross − discounts − waivers             = net due
+         net due − collected against those bills = outstanding
+
+   Mixing them — this month's bills against this month's cash — is how a
+   reconciliation ends up short with nobody able to say why. The API keeps
+   them in separate blocks and the page labels each one; never subtract across
+   the two.
+
+   **A payment records which charge it settled.** `PaymentAllocation`
+   (payment → charge → amount) is written by `services.allocate_to_charges`
+   inside the same transaction as the allocation it records. Before it, the
+   spreading moved `Charge.amount_paid` and threw the link away, so "what did
+   the laboratory collect in June?" had no answer at all — the money knew when
+   it arrived and the charge knew its department, and nothing joined them. It
+   is an audit row: it changes no figure, no workflow and no ordering, and
+   `Charge.amount_paid` is still the charge's own settled amount. Migration
+   `billing/0014` reconstructs it for history, capped at what each charge
+   already shows as paid, so it can under-attribute but never invent.
+
+   **A department comes from `Charge.source_type`, not from the department
+   FK.** That column is nullable and in practice almost never filled in — the
+   laboratory and the pharmacy raise charges through services that never set
+   it. What is always set is the source type: the counter posts the
+   `BillingItem` category, the lab stamps `lab_test`, the pharmacy stamps
+   `prescription`. `reporting.department_for` maps it, falls back to the
+   department FK, then to "Other / Unclassified" — a charge is never dropped
+   from the breakdown, and a department the map has never heard of gets a
+   bucket rather than being folded away.
+
+   **Anything the figures cannot place is named, never hidden.** Two ways that
+   happens, both reported rather than silently absorbed:
+   `departments()` adds an **Unattributed** row for cash whose allocation
+   predates the allocation rows, so the chart's bars always sum to the
+   headline revenue figure; and `adjustments()` reports `unlinked` — money
+   written off through `POST /api/adjustments/` against a patient's *ledger*
+   with no charge behind it, which therefore reduces what they owe without
+   ever appearing in a department's column. A number the reader cannot
+   reconcile is worse than one that says which part it cannot place.
+
+   **It is aggregated in the database, in a fixed number of queries.**
+   `GET /api/finance/report/` costs the same on 26 charges as on 26,000 —
+   `apps/billing/tests/test_financial_report.py` asserts exactly that, and it
+   is what caught `Charge.settlement_status` querying its deferral once per
+   row (the fix is `settlement_with(deferral)`, the same rule taking a
+   prefetched one). Never sum a page of transactions in React.
+
+   **Department attribution happens at the chokepoint, and the backend wins.**
+   `add_charge` is the only place a `Charge` is created, so it is the only
+   place attribution belongs: `resolve_department` reads the charge's own
+   `source_type` and fills the FK in. The precedence, in order —
+
+   1. **the authoritative `source_type` map** (`billing/departments.py`);
+   2. **an explicitly supplied department**, only for a source the map does
+      not cover;
+   3. **`None`**, for a source that is genuinely unattributable.
+
+   A supplied department **cannot override** an authoritative source type:
+   `source_type=prescription` with `department=reception` yields a Pharmacy
+   charge, never a Reception one. It is ignored rather than rejected, the same
+   way `Payment.channel` is stamped from the collector's role and never
+   trusted from the client (rule 18) — a 400 over a field the frontend does
+   not even send would fail a real transaction to correct a field nobody
+   typed, and the response carries the resolved department either way.
+   Step 3 still raises the charge: money owed is never refused over a
+   reporting field.
+
+   **`investigation`, `other` and a blank source are deliberately unmapped.**
+   Diagnostics passes `catalog.department`, and that row knows which unit
+   performs the study better than a hard-coded default; a write-in charge has
+   no department the system can know, and inventing one is the guesswork this
+   attribution exists to replace.
+
+   **Nothing is backfilled.** The 19 historical charges with neither field
+   stay "Other / Unclassified". A department is never inferred from a
+   description, a route, a timestamp or a naming convention — trustworthy
+   history beats artificially complete history.
+
+   **A discount or a waiver must name the charge it forgives.**
+   `AdjustmentSerializer.validate` refuses an unlinked one (400,
+   `code: "charge_required"`), closing the generic `POST /api/adjustments/`
+   path beside the charge-scoped actions that always named one.
+
+   **A refund is never posted as an adjustment.** The same `validate` refuses
+   `kind="refund"` outright (400, `code: "refund_workflow_required"`), on
+   create *and* on update — it reads the resulting kind, so a PATCH cannot turn
+   a discount into a refund or edit the ledger row the workflow wrote beside
+   its `Refund`. There is exactly one way money goes back: the Refund workflow
+   (`POST /api/payments/<id>/refund/`, `refund_charge`, `cancel_and_refund`),
+   which writes a `Refund` through `refund_payment` — the record Total Facility
+   Revenue, net revenue retained and the refunds report subtract. It used to be
+   allowed here, and a refund raised that way moved the ledger while every
+   revenue figure said nothing went back. The workflow writes its own
+   `Adjustment(kind="refund")` in `billing/services.py`, never through the
+   serializer, so it is unaffected. Both rules are on the serializer and never
+   on the model, so `Adjustment.charge` stays nullable and the rows history
+   already holds stay readable — and stay reported, as `adjustments.unlinked`.
+   Held by `apps/billing/tests/test_refund_only_through_workflow.py`.
+
+   **Total Facility Revenue is all time: payments received − refunds
+   processed.** `reporting.facility_revenue()` sums every `Payment.amount` and
+   subtracts every `Refund.amount` — nothing else, no period, no desk, no user —
+   and the report carries it as `facility_revenue` beside the period's blocks,
+   shown on `/finance` above the summary cards. A `Payment` row *is* a
+   successful payment: the model has no status or void state, the API never
+   edits or deletes one, and a part payment is just a smaller row. Every refund
+   path writes a `Refund` through `refund_payment`, so partial refunds add up.
+   Discounts and waivers are **never** subtracted (the money was never
+   received; subtracting them from payments would count them twice), and bills
+   still owed or cancelled before payment add nothing. It is not
+   gross − discounts − waivers − outstanding — that is receivables. Two known
+   edges: `POST /api/adjustments/` can still record `kind="refund"` with no
+   `Refund` row, which this figure (like `collections.refunds`) does not see;
+   and a patient purged from Django admin (rule 37) takes their payments and
+   refunds out of it. If `Payment` ever gains a void state, teach this function
+   to exclude it — `test_facility_revenue.py` fails until you do.
+
+   **Who reads it**: `FINANCE_REPORT_ROLES` — cashier, accountant, admin.
+   Deliberately narrower than `BILLING_ROLES`: reception bills at a window,
+   and hospital-wide revenue by department is a management figure, the same
+   boundary rule 13 draws on discounts and waivers. Mirrored in
+   `frontend/src/auth/roles.js`; `/finance` is one page for both audiences,
+   with the cashier additionally seeing what their own desk took.
+
+
+34. **The seven revenue departments are seeded, and `code` is their identity.**
+   `apps/billing/departments.py` holds the registry once — reception,
+   consultation, laboratory, pharmacy, radiology, eye, theatre — with the
+   `source_type` values that resolve to each. `add_charge` attributes from it,
+   `billing/reporting.py` groups by it, and
+   `departments/migrations/0002_seed_revenue_departments.py` creates a
+   `Department` row per entry. The migration repeats the codes and names as
+   literals because a migration must be self-contained;
+   `apps/departments/tests/test_department_registry.py` fails if the two
+   copies drift.
+
+   Departments had **no seed at all** before this — `0001_initial` made the
+   table and nothing filled it — which is why a fresh install had none, why
+   `Charge.department` was null on 96% of charges, and why a laboratory
+   referral was routed to "General Medicine" (the routing falls back to
+   whichever active department is first).
+
+   **The seed never overwrites.** `code` is the machine identity and `name` is
+   a label, so renaming "Radiology / Ultrasound" to "Imaging" keeps every
+   attribution working and the seed leaves that name alone on every future
+   run. It does not reactivate a department an admin retired, and it does not
+   touch departments it did not create. Where a hand-made department already
+   carries a seeded name, it **adopts** it by taking the stable code — `name`
+   is unique, so creating a second one would fail the constraint.
+
+   **A department that has taken money cannot be deleted.**
+   `Charge.department` is `on_delete=PROTECT` and `charge_set` is in
+   `DepartmentViewSet.protected_relations` and `DepartmentAdmin`'s — it used
+   to be `SET_NULL` and listed in neither, so deleting a department silently
+   erased which unit had earned every charge it ever took. Retire it with
+   `is_active=False`: an inactive department stops being offered for new work
+   and keeps its history, which still reads.
+
+
+35. **Money is announced once, from the service, to the desks that work it.**
+   `apps/billing/notifications.py` is the one place a financial event becomes a
+   notification, and `billing/services.py` is the only thing that calls it — so
+   a charge raised by the laboratory or the pharmacy reaches the cash desk
+   exactly the way one typed at the counter does, and a view cannot forget.
+
+   The events are the ones that change what a patient owes: a charge raised, a
+   payment (announced as **Paid in full** or **Part payment** according to what
+   the balance says *afterwards*, not what was intended at the window), a
+   discount, a waiver, a refund, a pay-later authorisation and a cancelled
+   bill. Recipients are `FINANCIAL_NOTICE_ROLES` — admin, hospital admin,
+   cashier, accountant, reception — minus whoever performed the action, because
+   a cashier told about the payment they just took is noise (rule 14). No
+   clinical role is ever on it.
+
+   **Once per decision**, which is a rule about loops as much as about views.
+   `ChargeViewSet.create` no longer notifies on top of `add_charge`;
+   `discount_patient_balance` and the laboratory's `add_tests` pass
+   `notify=False` down and announce the total themselves, so a script of six
+   drugs or an order of five tests is one line on the cash desk's bell rather
+   than six. Any new service that loops over `add_charge` must do the same.
+
+   The message carries the patient's name and hospital number, the amount, what
+   was done, who did it, the reference and the balance afterwards — and nothing
+   off the chart. `Charge.description` ("Laboratory: FBC") is a billed service
+   and is deliberately as far as it goes. Held by
+   `apps/billing/tests/test_financial_notifications.py`.
+
+36. **A refund is a transaction, never an undo.** The `Payment` row is never
+   edited and never deleted — it is the evidence the money arrived — so the
+   arithmetic is additive the way a ledger's always is:
+
+       Payment  +10,000
+       Refund    −3,000
+       Net         7,000
+
+   `Refund` points at the payment it answers and carries the amount, the
+   reason, who processed it, who authorised it (separate columns even though
+   this workflow does not force two people), the method and the time.
+   `RefundAllocation` is the mirror of `PaymentAllocation`: it names the bills
+   the money came back off, newest settlement first, decrements each charge's
+   `amount_paid` and lets the balance read as owed again. `Charge.amount` is
+   untouched, so rule 25's identity still closes. Every refund also writes the
+   `Adjustment(kind="refund")` the ledger, the statement and the write-off
+   register already read — one place money is recorded, not two.
+
+   `Payment.refundable_balance` is what is left to give back, read under
+   `select_for_update`, so partial refunds add up and can never pass the
+   payment's own total. Refused: no reason, zero or negative, more than the
+   refundable balance, and anything at all against a payment already fully
+   refunded. Nothing is written on a refusal.
+
+   **Who**: `REFUND_ROLES` — cashier, accountant, admin — the same boundary
+   rule 13 draws on discounts and waivers. Reception may collect and never
+   reverse; the pharmacy counter likewise (rule 18).
+   `POST /api/payments/<id>/refund/` is the only way one is made;
+   `GET /api/refunds/` is the read-only register, which BILLING_ROLES read so a
+   statement adds up in front of the person collecting the rest.
+
+   **One entry point, rendered twice.** `components/RefundAction.jsx` is the
+   button, and both places a payment is listed render *it* rather than each
+   spelling out its own control: the Billing counter's `PatientPayments` and
+   Transaction History's statement. `components/refundPolicy.js` holds the
+   decision behind it — who may refund, what is left, what the label says — so
+   the counter can never offer a refund the statement calls spent. The label
+   carries the figure (**"Refund ₦7,000"**, the *remaining* refundable amount,
+   not the payment's face value), because that is the number a cashier needs
+   before they click. It is `dangerOutline`, never a text link: a refund takes
+   cash out of the drawer and must not look like "Show more". With nothing left
+   it renders a plain "Fully refunded" badge rather than a greyed-out button —
+   a disabled control invites clicking to find out why.
+
+   The frontend refuses early only to spare a round trip; `refund_payment`
+   re-reads the balance under `select_for_update` and is what actually decides,
+   so a stale figure on screen loses that argument rather than winning it. A
+   403 and a 400 are both surfaced in the dialog, which stays open so the
+   amount can be corrected. On success the toast names the amount *and* says
+   the original payment stays on the record, and every key the money touched is
+   invalidated — ledger, ledgers, charges, payments, adjustments, refunds,
+   dashboard, finance-report, unread-count and the chart's own
+   `["patient-overview", <pk>]`.
+
+   **In the report** (rule 33) refunds are their own category and are never
+   netted into revenue: `collections.total` stays the gross the drawer took,
+   `collections.refunds` is what went back, `collections.net` is what was kept,
+   and the department table carries **Refunded** and **Net kept** beside
+   **Received**, attributed through the allocation to the department that took
+   the money. Held by `apps/billing/tests/test_refunds.py`.
+
+37. **Only the Super Admin deletes a patient, and only where there is no
+   history.** `Role.ADMIN` is spelled "Super Admin" in the role list and
+   `hospital_admin` is the ordinary administrator beside it, so the distinction
+   already existed; `IsSuperAdmin` in `accounts/permissions.py` is what reads
+   it. `DELETE /api/patients/<uuid>/` used to be `IsReception()` — reception
+   and every administrator could permanently delete a patient.
+
+   Three gates, in order: **who** (`IsSuperAdmin`, and the role scoping still
+   applies on the way out — a superuser with no HMIS role reaches no patient);
+   **deliberateness** (the body must carry the patient's own hospital number in
+   `confirm`, so a DELETE at the wrong URL cannot succeed); and **history** —
+   anything in `patients.views.PROTECTED_HISTORY` and the answer is 409 with
+   the counts, the same shape `ProtectedConfigMixin` uses for configuration
+   (rule 31). Charges, payments, adjustments, refunds, deferrals, visits, lab
+   orders, admissions and investigation orders are all `PROTECT` at the
+   database as well, so the refusal is two layers deep and financial and audit
+   history is never cascaded away to let a delete through.
+
+   What does cascade is what only ever described that person: the ledger row,
+   vitals, notes, the nine health-record tiles, appointments and prescriptions.
+   That is the case this endpoint is for — a registration typed twice. The
+   audit row is written **before** the delete and keeps the number, UUID and
+   name in its `details`, because `object_id` would point at nothing.
+   Held by `apps/patients/tests/test_deletion.py`.
+
+   **The one way past it is a purge, and it is Django admin's alone.** A
+   registration that was never a real patient — a demo, a screenshot, a run
+   through the till — carries bills and payments as fictional as the person,
+   and the 409 above leaves no way to remove it. `patients/services.py`
+   `purge_patient()` does: Super Admin only (`accounts.permissions
+   .is_super_admin`, the same test `IsSuperAdmin` reads), the hospital number
+   typed and a mandatory reason, then every `PURGE_ORDER` relation and
+   everything cascading from it deleted in one transaction, after an
+   `AuditLog` row (`patients.purged`) naming the reason, the counts and the
+   money charged / paid / refunded. It changes the past on purpose — purged
+   payments leave the finance report — which is why it is exactly this narrow.
+   Django admin's Delete button leads to its confirmation page (which lists
+   everything that goes, from Django's own deletion collector), bulk delete is
+   removed, and `DELETE /api/patients/<uuid>/` and every HMIS screen still
+   answer 409: this is the sanctioned exception to rule 31's "Django admin is
+   not a bypass", not a precedent for another. A new `PROTECT` foreign key to
+   `Patient` must join `PURGE_ORDER`. Held by
+   `apps/patients/tests/test_admin_purge.py`.
+
+
+38. **Cancelling a service and refunding money are different decisions.**
+   Getting them confused is how a patient ends up owing ₦4,000 for a laboratory
+   test that was never run.
+
+   - **Refund** — money goes back. `refund_payment` (payment-scoped) or
+     `refund_charge` (one service). The bill **stays active** and becomes owed
+     again, which is right when the service *was* delivered.
+   - **Cancel** — `cancel_charge`. The obligation ends; no money moves. The row,
+     its `amount`, its department and its history all stay; `status` carries the
+     state and `cancelled_at` / `cancelled_by` / `cancellation_reason` carry who,
+     when and why. `refresh_ledger` already excludes cancelled charges from
+     `total_charges`, so the outstanding falls out of the arithmetic rather than
+     being forced, hidden or deleted.
+   - **Cancel & refund** — `cancel_and_refund`. The unused-service case: the
+     bill is withdrawn **and everything paid for it goes back**, in one
+     `transaction.atomic` under `select_for_update`. A failure anywhere rolls
+     back the cancellation too, so there is no state where the bill is
+     withdrawn but the money never went back.
+
+   **Cancel & refund returns all of it, never a chosen amount.** The refund is
+   `refundable_for_charge` — what the charge still holds — and is not a
+   parameter. A ₦4,000 test cancelled with ₦1,000 refunded used to leave the
+   patient ₦3,000 in credit against a bill nobody owed; there is no
+   patient-credit account for that money to sit in, and inventing one is a
+   business decision nobody has taken. The amount a screen sends (`amount`,
+   read as `expected_amount`) is a **confirmation**: anything else is refused
+   before anything is written, `code: "full_refund_required"` with the current
+   `refundable`, which also stops a stale screen acting on a figure another
+   cashier has since changed. Part of a payment going back for a service that
+   stays active is `refund_payment`, on the Refunds desk. A part-paid service
+   refunds what was paid, and its unpaid remainder stops being owed with the
+   rest of the bill.
+
+   **And it proves it landed.** Afterwards the charge must hold nothing and the
+   patient's balance must have fallen by exactly what the bill still owed
+   (`_check_withdrawal`; `cancel_charge` makes the same check when no money
+   moves). Either failing raises `UntraceablePayment` / `LedgerMismatch` and
+   rolls the whole operation back. The status is written **compare-and-set**,
+   so two cashiers pressing at once cancel once and refund once even on SQLite,
+   where `select_for_update` does nothing.
+
+   **A forgiven part of a withdrawn bill is not forgiven twice.**
+   `services.ledger_totals` leaves discounts and waivers on a *cancelled* charge
+   out of the credits: the whole charge has already left `total_charges`, and
+   counting its ₦1,000 discount as well read as −₦1,000. The adjustment row
+   stays and still reports; refunds on a cancelled charge still count, because
+   that money did go back.
+
+   **A refund never cancels, and a cancellation is never a refund.** Neither
+   service calls the other behind the caller's back; the combined operation has
+   to be asked for by name.
+
+   **Cancelling a charge that is still holding money is refused** —
+   `RefundRequired`, surfaced as `code: "refund_required"` with the amount.
+   Without that guard `total_payments` runs ahead of `total_charges` and the
+   patient reads as being in **credit**, which is rule 12's prohibition seen
+   from the other side. `refunding=True` is how `cancel_and_refund` says the
+   money is going back in the same transaction.
+
+   **A charge-scoped refund comes off that charge alone.** `_reverse_allocations`
+   takes an `only_charge`, and `_payment_slices_for` finds the payments that
+   actually settled it — so cancelling an unused scan cannot reopen the
+   consultation the same ₦5,000 payment also covered. `Charge.outstanding` is
+   the patient-facing figure (zero once cancelled); `Charge.balance` is the
+   charge's own arithmetic and is deliberately left alone, because an audit
+   needs to read what was withdrawn.
+
+   **Money no allocation explains is refused, never guessed.**
+   `UntraceablePayment` (`code: "untraceable_payment"`) stops Cancel & refund
+   and `refund_charge` before anything is written; no payment is ever chosen by
+   patient, date or amount. The application cannot create that state —
+   `record_payment` writes the allocations in the same transaction as
+   `amount_paid`, and nothing outside `billing/services.py` writes `amount_paid`
+   (an AST scan in `test_payment_allocation_integrity.py` holds it). Only
+   history or a hand edit can, and `manage.py billing_integrity`
+   (`billing/integrity.py`, read-only, `--strict` to fail a deployment) reports
+   it with unallocated payments, patients in credit and ledger drift.
+   `ChargeSerializer.untraceable_amount` tells the screen before anybody presses.
+
+   **One decision, one bell**: the two services are called with `notify=False`
+   and the combined event announces once, as "Service cancelled & refunded". It
+   links to `/transactions`, which every recipient — reception included — can
+   open.
+
+   **Two desks, two role groups.** `/refunds` (*Refunds*, `REFUND_ROLES`) is
+   money going back: find the patient, pick the payment, refund all or part of
+   it through `RefundAction`, plus the refund register headed by
+   `/refunds/summary/`. `/service-cancellations` (*Service Cancellations*,
+   `CANCEL_ROLES`) ends the responsibility for a service never received: every
+   patient's bills, narrowed to one patient picked from the dropdown patient
+   picker (browse the list or type a number, name or phone), filtered by
+   state, department and billed date (`?created_from` / `?created_to` — list
+   only, never `get_object()`), with services a department **withdrew but that
+   are still billed** pinned first (`billing/withdrawn.py`: a `lab_test` charge
+   whose line or order is cancelled or gone — read off the service, never
+   inferred from a description) and counted by `/charges/cancellation-summary/`.
+   `CANCEL_ROLES` holds the same people as `REFUND_ROLES` today and is named
+   apart on purpose: Cancel & refund requires **both**, so reaching the
+   cancellations desk is never on its own a way into the drawer. Both desks
+   render the one `CancelServiceModal` (cancel / cancel & refund, no amount
+   field) and `RefundModal` (payment refunds only) — there is no second
+   implementation. The contextual actions on Transaction History, the Billing
+   counter and the chart's Billing tab still work and reach the same services.
+   Held by `apps/billing/tests/test_cancellation.py`,
+   `test_cancel_and_refund_hardening.py`, `test_service_cancellations_desk.py`,
+   `test_payment_allocation_integrity.py` and
+   `frontend/src/pages/{Refunds,ServiceCancellations}.test.jsx`.
+
+39. **The pharmacy POS is a second workflow on the same shelf, never a second
+   pharmacy.** Doctor → prescription → pharmacist dispensing (rule 6) is
+   untouched; the walk-in till (`/pharmacy/pos`) sits beside it. `apps/sales`
+   holds only what had no model before — `PosRegister` (a till session),
+   `Sale` + `SaleLine` (the receipt), `SaleItem` (the batch each unit came off)
+   and `SaleReturn` + `SaleReturnLine` — and every row is written by
+   `sales/services.py`. The API is read-only apart from POST actions.
+
+   - **Stock** leaves through `inventory.services.consume_fefo`: the
+     dispensing location only, earliest expiry first, expired lots excluded,
+     under `select_for_update`, one `StockMovement(reason="sale")` per batch
+     naming the `POS-` reference. There is no POS quantity anywhere: 100 on the
+     shelf, 5 dispensed, 3 sold is 92, and both movements are in the log.
+   - **Money** is one ordinary `Payment` per completed sale
+     (`billing.services.record_pos_payment`, channel `pharmacy`). A **walk-in
+     customer** is `Payment.patient = NULL`: no patient row is created, no
+     charge, no ledger. A **registered patient** gets a Pharmacy charge
+     (`source_type="pos_sale"`), the discount as an `Adjustment`, and the
+     payment allocated to that charge alone — never spread over older bills.
+     Collections, Total Facility Revenue and the Pharmacy department's
+     *Received* see POS money without being told; a walk-in payment is placed on
+     Pharmacy through its sale. `reporting.pos_sales` is the till's own block
+     (gross − discounts = paid; `payments` must equal `paid`, or `reconciles`
+     is False), shown on `/finance` and behind `/sales/summary/`.
+   - **Discounts** are rule 13's approvals: `POS_DISCOUNT_ROLES` (cashier,
+     accountant, admin — a pharmacist sells but cannot discount), a mandatory
+     reason, product prices never changed. A line's own discount comes off that
+     line first; a sale-wide percentage comes off what is left. No line goes
+     below zero and the total discount must stay below the subtotal. **How
+     large one may be, and who authorises an unusual one, is rule 42.**
+   - **Returns** (`POS_RETURN_ROLES`: cashier + admin) are taken against a
+     completed sale, never by editing it. The medicine goes to the
+     `returns-quarantine` location (seeded by `inventory/0007`), which is
+     neither receiving nor dispensing, so nothing there can be sold until
+     somebody transfers it back or counts it out. The money goes back through
+     `refund_payment(pos_return=True)` — the Refunds desk refuses a POS payment,
+     because refunding there would leave the medicine unaccounted for. A
+     registered patient's charge takes the goods back in its own column,
+     `Charge.amount_returned` with `Adjustment(kind="return")` (rule 25), so the
+     ledger closes; the report's reconciliation identity subtracts returns.
+   - **A register reconciles money that exists** — float + cash sales − cash
+     refunds = expected cash — and never creates any.
+   - **No notifications.** Rule 35 announces changes to what a patient owes; a
+     POS sale changes nobody's balance. Every sale, discount, return and
+     register variance writes an `AuditLog` row instead.
+
+   Held by `apps/sales/tests/test_pos.py` and
+   `frontend/src/pages/PharmacyPOS.test.js`.
+
+40. **A stock count can be a spreadsheet, and it is still a count.**
+   `GET /stock-counts/export/` is the count sheet as a CSV (a line per batch per
+   location, keyed by the stock record's Line ID); `POST /stock-count-imports/`
+   validates an upload and keeps a **preview** — nothing moves — and
+   `POST …/<id>/apply/` posts it through `post_stock_count`, one `StockCount`
+   per location, every difference a `StockMovement(reason="stock_count")`:
+   system 100 counted 92 is −8, never an overwrite (`inventory/count_csv.py`).
+   A file with one problem applies nothing; stock that moved since the export is
+   a conflict, checked again under lock at apply; an import applies once and
+   the same bytes are recognised; a failure part-way rolls the whole import
+   back. **Who counts where** is `count_csv.countable_locations`: admin and the
+   inventory manager anywhere, a pharmacist the dispensing shelf — checked for
+   the uploader and again for whoever confirms. Both workspaces render the one
+   `CountImportExport` panel from `StockPanels.jsx` (rule 29). Held by
+   `apps/inventory/tests/test_count_csv.py` and
+   `frontend/src/components/CountImportExport.test.jsx`.
+
+41. **One category on the product, read by everything, deciding nothing.**
+   `Item.category` → `ItemCategory` is the single relation (rule 31), so there
+   is no category text on a batch, a stock record, a prescription, a sale line
+   or a movement: re-file a drug and the stock screen, the movement log, the
+   doctor's picker, the dispensing queue and the till all move with it, because
+   there is nothing else to update. `inventory/migrations/0008` seeds the
+   twenty-three groups a pharmacy starts with — **adopting** an existing
+   spelling through its `ALIASES` rather than creating a second row beside it
+   (the same adopt-by-identity rule 34 applies to departments), never renaming
+   or reactivating what an administrator has set, and **classifying no
+   product**: a drug nobody has filed keeps no category until somebody who
+   knows what it is says so.
+
+   **It is a label, never a gate.** Dispensing still resolves stock, expiry,
+   FEFO and location exactly as rules 6, 8 and 30 describe; a retired category
+   is a closed list for new filing, not a block on medicine, and `POST
+   /api/adjustments/`-shaped money is untouched by any of it.
+   `test_categories.py`'s last class dispenses, records every figure — charge,
+   payment, allocation, ledger — then re-files the product and retires its
+   category, and asserts the whole dict is unchanged.
+
+   **Where it is read**: `/stock-records/` and `/stock-movements/` carry it and
+   filter on `?batch__item__category=`; `/items/` filters on `?category=` and
+   searches `category__name`, for the stock screens and the doctor's picker
+   alike (rule 7 still holds — the doctor gets the category and never a count);
+   `/prescriptions/` carries `item_category` for the dispensing queue;
+   `/sales/products/` carries the POS chips, **built from the whole catalogue**
+   rather than from the sixty results beside them, and served from there rather
+   than from `/item-categories/` because a cashier works the till and is not in
+   `STOCK_ROLES` — sending the POS to the configuration endpoint would widen
+   who reads the catalogue in order to draw a row of buttons.
+   `/sales/summary/`'s `categories` block decomposes the till's own figures and
+   never recounts them: the categories' `net` sums to `sales.total`, and a
+   product with no category is reported as **Uncategorised** rather than
+   dropped, the way `reporting.department_for` never drops a charge.
+
+   **The CSV count recognises a category; it never invents one and never
+   applies one.** `count_csv.normalise_category` drops case and punctuation, so
+   "Pain Relief", "pain relief" and "Pain-Relief" are one group — and is
+   deliberately not fuzzy, so "Pain Relif" resolves to nothing, is reported by
+   name in `summary.unknown_categories`, and creates no row. A cell naming a
+   *real* category that is not that product's is refused too: a count sheet
+   moves a quantity and nothing else, so re-filing a product is done under
+   Products and not in a spreadsheet. Held by
+   `apps/inventory/tests/test_categories.py`,
+   `test_category_end_to_end.py` and `apps/sales/tests/test_pos.py`'s
+   `PosCategoryTests`.
+
+42. **A POS discount has a ceiling, and above it somebody else says yes.**
+   Rule 39 already had the shape — a line's own discount, a sale-wide one on
+   top, `POS_DISCOUNT_ROLES` only, a mandatory reason, and the product's price
+   never changed. What it had no way to express was *how much*: the only
+   ceilings were 100% and "something has to be paid", written into
+   `sales/services.py`. `apps/sales/discount_policy.py` is those ceilings moved
+   to where an administrator sets them, plus the approval that was missing.
+
+       limit  — what a cashier may give on their own
+       max    — what nobody passes, approved or not
+
+   Both live on `core.HospitalSettings` (rule 31's singleton — **not** a second
+   configuration system), as a percentage pair and a naira pair, beside
+   `pos_discounts_enabled`, `pos_discount_types`, and the preset percentages
+   and reasons the dialog offers. **The defaults are the behaviour that was
+   there before** — 100%, no fixed ceiling, both kinds — so a hospital that
+   never opens the screen sees no change.
+
+   **The limit is judged on the amount, never on the wording.** A percentage
+   limit that only read `type="percent"` would be walked past with a fixed sum:
+   ₦500 off a ₦1,000 line is 50% however it was typed. So `check_amount` runs
+   on the **priced** discount against the line it comes off, in
+   `_price_discounts`, after FEFO has priced the cart — the first moment either
+   number exists — and each line is judged separately so an over-limit one is
+   refused by name.
+
+   **An approver is authenticated, never asserted.** `approver_for` takes a
+   supervisor's own username and password from the till, authenticates them,
+   and checks `POS_DISCOUNT_APPROVAL_ROLES` (accountant + admins — a cashier is
+   deliberately *not* on it, so nobody authorises their own). A user id in a
+   request body would be an authorisation every cashier could grant themselves.
+   An accountant or an administrator working the till approves by being who
+   they are. `Sale.discount_approved_by` is written **only where the policy
+   required one**, so the column means "this needed authorising" rather than "a
+   manager was present".
+
+   Three refusals, and the till tells them apart because they are different
+   conversations: `discounts_disabled` / `discount_type_not_allowed` (400),
+   `discount_over_maximum` (400 — no supervisor can clear it), and
+   `discount_needs_approval` / `discount_approval_failed` (403 — one can). The
+   POS opens its authorisation prompt on the last pair and refuses flatly on
+   the rest.
+
+   **Nothing else moves.** A discount is money, not medicine: the quantity that
+   leaves the shelf, FEFO, the expiry exclusion, the location and the
+   `StockMovement` are all exactly what they were. For a registered patient the
+   charge keeps its face value and the discount is an `Adjustment` against it
+   (rule 25); a return refunds **what was paid**, not what was billed, so a
+   ₦4,000 line discounted to ₦3,000 gives back ₦3,000 and nobody lands in
+   credit. And rule 39's "no notifications" is unchanged — a POS sale changes
+   nobody's balance — so a discount writes an `AuditLog` row instead, now
+   carrying **per line** the price, quantity, gross, discount as asked and as
+   priced, and the net, because a receipt with one over-limit line among five
+   read as a single number before.
+
+   **And it is reachable from the cart, which is the only place it matters.**
+   The engine above was complete while the screen in front of it was not: the
+   cart's checkboxes were gated on `cart.length > 1`, so a cashier with one
+   item on the till could not select it; the only per-line affordance was a
+   `size="xs"` text link; and a **pharmacist** — who may work a till but never
+   discount — saw none of it and no reason why. The cart is now Odoo-shaped:
+   every line carries a checkbox with a selected state, "Select all" sits above
+   the list, and one prominent **Discount** button in the action row beside
+   Hold / Clear / Take Charge discounts the ticked lines. With nothing ticked
+   it is disabled and says "Tick an item to discount it", with the sale-wide
+   discount kept beside it as the separate thing it is. A pharmacist is told
+   who may give one rather than shown an empty cart. Totals always carry a
+   **Discount** row — at zero as well — and **Take Charge** spends
+   `totals.total`, so the payment dialog can never open on the undiscounted
+   figure. Selecting is how a line is edited too: one selected line opens the
+   dialog pre-filled, and Remove restores its own price, which was never
+   overwritten.
+
+   The frontend mirror is `components/posDiscountPolicy.js` (the pure-module
+   pattern `refundPolicy.js` set), and it refuses early only to spare a round
+   trip. `/sales/summary/`'s `discounts` block reports the same figure split by
+   reason, by cashier and by type, with what needed authorising called out;
+   every grouping sums to `sales.discounts`, which `reconciles` asserts. Held by
+   `apps/sales/tests/test_pos_discounts.py`,
+   `frontend/src/components/posDiscountPolicy.test.js`,
+   `frontend/src/pages/PharmacyPOS.discounts.test.jsx` (the cart walk: select,
+   discount, recalculate, take payment) and
+   `frontend/src/components/PosReceipt.discount.test.jsx`.
 
 ## Django admin
 
@@ -541,6 +1176,26 @@ Two rules the admin classes follow, and new ones should:
   refused for somebody else's. An admin bell counting the hospital's traffic
   would never clear, and one press of "mark all as read" would silently
   clear every nurse's and doctor's unread notifications.
+
+- **Notifications are archived, never deleted.** There is no DELETE on
+  `/notifications/`, and `NotificationAdmin.has_delete_permission` is False:
+  what somebody was told, and when, is kept. Archiving stamps `archived_at`
+  (read-only on the serializer) and takes the row out of the inbox —
+  `POST /notifications/<id>/archive/`, `/archive_selected/` (`{"ids": […]}`,
+  refused whole with 403 if any id is somebody else's) and `/archive_all/`
+  (the caller's inbox only, like `mark_all_read`); `/<id>/unarchive/` puts one
+  back. `GET /notifications/` is the inbox and `?archived=true` the archive,
+  and that split is applied to `list` only, never `get_object()`, so an
+  archived row can still be marked read/unread and restored. Read/unread and
+  archived are independent. The bell, the dashboard and the overview's `unread`
+  count `Notification.objects.active()` — an archived notification never
+  rings. The page is `/notifications?tab=archived`; selection and "Archive
+  all" exist only on your own inbox, never on the admin's everyone view. A
+  side effect worth knowing: Django admin refuses to delete a staff account
+  that holds notifications, because the cascade would delete them —
+  deactivate the account instead. Held by
+  `apps/core/tests/test_notification_archive.py` and
+  `frontend/src/pages/Notifications.test.jsx`.
 
 - **A notification nobody sees is not a notification.** The shell polls
   `GET /notifications/unread-count/` every 30s and shows the number on a
@@ -687,7 +1342,11 @@ Two rules the admin classes follow, and new ones should:
   can find are the same set. Never hand-roll another search-box-plus-dropdown:
   five pages each had one, and each behaved slightly differently. Its
   `patientLabel()` is the one place a patient's name is formatted
-  ("Last, First"). `PatientsList.jsx` keeps a plain filter box instead — it
+  ("Last, First"). `variant="dropdown"` is the same picker as a select-style
+  button that stays closed until clicked and opens a panel with the search box
+  and the list — the Refunds and Service Cancellations desks use it; reach for
+  the prop, not a copy. Its panel is portalled into `<body>` at a fixed
+  position, because `Card` is `overflow-hidden` and clipped the list away. `PatientsList.jsx` keeps a plain filter box instead — it
   is a list being narrowed, not a value being chosen.
 - New health-record tiles: copy `AddAllergyModal.jsx`'s structure, wire the
   new modal into `PatientDetail.jsx`'s `TileLoader` the same way Allergies
@@ -698,6 +1357,16 @@ Two rules the admin classes follow, and new ones should:
 
 See `README.md` for install steps. Needs Postgres + Redis running (or
 adjust `.env`). `ANTHROPIC_API_KEY` required only for the `ai_agents` app.
+
+**Frontend tests: `npm test` (vitest + Testing Library, jsdom).** The suite
+lives beside what it tests (`src/**/*.test.{js,jsx}`), with
+`src/test/harness.jsx` providing the providers a component actually gets —
+router, TanStack Query, the toaster, and an auth context holding whichever role
+the test is about. `AuthContext` is exported for that reason and for no other;
+`AuthProvider` is still the only thing the application renders. Reach for a
+pure module and a plain unit test where the decision can be lifted out of the
+DOM — `refundPolicy.js` is the pattern — and a component test only for what
+genuinely needs rendering.
 
 **After any model change, run `python manage.py migrate` — not just
 `makemigrations`.** The dev server runs against `backend/hmis/db.sqlite3`,
@@ -934,8 +1603,9 @@ Done:
 - Inventory (`/inventory`) — **Administration's** stock desk (admin +
   inventory manager; a pharmacist works their own shelf from `/pharmacy`
   instead, rule 29): five tabs against **two stock locations** (rule
-  30) — **Stock on hand** (product / batch / location / expiry / quantity,
-  filterable by location, with per-shelf count and write-off), **Receive**
+  30) — **Stock on hand** (product / category / SKU / unit / location / batch /
+  expiry / quantity / status, filterable by location and by category and
+  searchable across all four, with per-shelf count and write-off), **Receive**
   (into the Main Store by default), **Transfer** (Main Store → Pharmacy: pick
   batches off the source shelf, one document, its own `TRF-` reference),
   **Physical count** (per location — system qty, counted qty, difference per
@@ -943,7 +1613,20 @@ Done:
   location and kind, showing the transfer reference on both halves). Every
   quantity change goes through `inventory/services.py`, leaves a
   StockMovement, and cannot be made any other way.
-- Tests: 595 passing (`./venv/bin/python manage.py test` — the venv is at
+- **Financial reporting** (`/finance`, `FinanceReport.jsx`) — the cash desk's
+  and administration's revenue view over any date range: Today / Yesterday /
+  This week / This month / Last month / This year / a custom From–To. One
+  `GET /finance/report/` behind all of it (rule 33), so nothing is summed in
+  the browser. Total revenue collected, part payments, transactions, gross
+  charges, discounts, waivers, net due and outstanding; revenue collected per
+  department as a chart; the payment-method breakdown, which reconciles to the
+  collected total; the department table with its Total row, every row of which
+  reconciles; and the period's transactions — time, patient (by UUID and
+  hospital number, never a pk), department, service, due, discount, waiver,
+  paid, balance, method and settlement status. The dashboards' money cards
+  open it on the period they count.
+- Tests: 1,070 passing, 1 skipped (backend; frontend `npm test`: 174) — the PostgreSQL-only two-thread race in
+  `test_cancel_and_refund_hardening.py` (`./venv/bin/python manage.py test` — the venv is at
   `backend/hmis/venv`; a bare `python` has no Django and fails misleadingly) — pharmacy dispensing +
   payment flow, charge settlement (full / half / later, oldest-first
   allocation), percentage discounts and their permission boundary, reception's boundaries on appointments and routes,
@@ -964,7 +1647,18 @@ Done:
   the write-off / deferral boundaries in `apps/billing/tests/
   test_deferrals_and_writeoffs.py` — plus the permission surface itself:
   `apps/core/tests/test_api_permissions.py` checks every API path against
-  every role and against an anonymous caller.
+  every role and against an anonymous caller — plus the financial report
+  (`apps/billing/tests/test_financial_report.py`): that a discount and a
+  waiver each add nothing to revenue, that a part payment is counted as
+  collected *and* named as part-paid, that the reconciliation closes per
+  department and down the Total row after every kind of settlement, that a
+  department is read off the charge rather than guessed, that cash is
+  attributed through the allocation to the bill it settled, that the method
+  breakdown reconciles with the collected total, that the write-off register
+  and the charge cohort are allowed to differ and the unlinked amount says by
+  how much, that each preset asks a different question of the same rows, and
+  that the whole report costs the same number of queries on 26 charges as
+  on 1.
 
 - **Outstanding** (`/outstanding`) and **Waived & Written Off**
   (`/waivers`) — reception, cashier, accountant and admin. The debtors list
@@ -1074,12 +1768,26 @@ Done:
   billed and shows on the statement instead of dead-ending on an empty
   dropdown.
 
+- **Prescriptions carry their directions.** Beside the dose, a script line
+  has frequency, duration, route (`Prescription.ROUTE_CHOICES`) and notes, and
+  a product has an optional strength and dosage form. `components/
+  prescriptionDirections.js` is the one place they are joined for the queue,
+  the chart and the printed sheets; the doctor's picker still shows
+  availability, never a count (rule 7).
+- **Pharmacy POS and the spreadsheet count** — rules 39 and 40. The Pharmacy
+  navigation group opens each job directly (`/pharmacy?tab=…`, POS, Sales,
+  Returns & Refunds); `AppShell.navItemActive` is what tells tabs of one page
+  apart.
+
 Not yet built:
-- Sales/discount checkout UI. `apps/sales` is now **admin-only** rather
-  than open to every signed-in role, because creating a `SaleItem` still
-  deducts no stock — it sells something the shelf believes it has. Route it
-  through `pharmacy/services.py`, then widen the permission and its row in
-  `test_api_permissions.py` together.
+- Partial dispensing. `dispense_prescription` fills a line whole or refuses it;
+  a part-fill needs its own status and charge rule before anyone adds it.
+- A quarantine desk. Returned POS stock is released or destroyed with the
+  existing transfer and count screens; there is no inspection workflow of its
+  own.
+- The on-screen `/stock-counts/` endpoint still accepts any location from any
+  STOCK_ROLE, as it always has; only the CSV import applies
+  `countable_locations`. Narrowing the older endpoint is a separate decision.
 - `apps/diagnostics` is still unreachable, and `apps/laboratory` has now
   answered the question it was left open on: the laboratory owns catalogued,
   priced, parameterised tests, and it rides on `PatientRoute` +

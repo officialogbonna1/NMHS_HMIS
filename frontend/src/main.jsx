@@ -8,9 +8,11 @@ import "./index.css";
 import { AuthProvider } from "./auth/AuthContext.jsx";
 import RequireAuth from "./auth/RequireAuth.jsx";
 import {
-  BILLING_ROLES, CHART_ROLES, CLINICAL_ROLES, PATIENT_LOOKUP_ROLES,
-  QUEUE_ROLES, WARD_ROLES,
+  BILLING_ROLES, CANCEL_ROLES, CHART_ROLES, CLINICAL_ROLES, FINANCE_REPORT_ROLES, REFUND_ROLES,
+  PATIENT_LOOKUP_ROLES, POS_HISTORY_ROLES, POS_ROLES, QUEUE_ROLES, WARD_ROLES,
 } from "./auth/roles.js";
+import PharmacyPOS from "./pages/PharmacyPOS.jsx";
+import PosSales from "./pages/PosSales.jsx";
 import Login from "./pages/Login.jsx";
 import NotFound from "./pages/NotFound.jsx";
 import PatientsList from "./pages/PatientsList.jsx";
@@ -32,7 +34,10 @@ import DepartmentsAdmin from "./pages/DepartmentsAdmin.jsx";
 import UsersAdmin from "./pages/UsersAdmin.jsx";
 import Billing from "./pages/Billing.jsx";
 import TransactionHistory from "./pages/TransactionHistory.jsx";
+import FinanceReport from "./pages/FinanceReport.jsx";
 import Outstanding from "./pages/Outstanding.jsx";
+import Refunds from "./pages/Refunds.jsx";
+import ServiceCancellations from "./pages/ServiceCancellations.jsx";
 import Waivers from "./pages/Waivers.jsx";
 import BillingItemsAdmin from "./pages/BillingItemsAdmin.jsx";
 import Appointments from "./pages/Appointments.jsx";
@@ -77,7 +82,7 @@ ReactDOM.createRoot(document.getElementById("root")).render(
             />
 
             <Route
-              path="/patients/:id"
+              path="/patients/:patientUuid"
               element={
                 <RequireAuth roles={CHART_ROLES}>
                   <PatientDetail />
@@ -86,7 +91,7 @@ ReactDOM.createRoot(document.getElementById("root")).render(
             />
 
             <Route
-              path="/patients/:id/record"
+              path="/patients/:patientUuid/record"
               element={
                 <RequireAuth roles={CHART_ROLES}>
                   <PatientDetail />
@@ -95,7 +100,7 @@ ReactDOM.createRoot(document.getElementById("root")).render(
             />
 
             <Route
-              path="/patients/:id/notes"
+              path="/patients/:patientUuid/notes"
               element={
                 <RequireAuth roles={CHART_ROLES}>
                   <PatientDetail />
@@ -104,7 +109,7 @@ ReactDOM.createRoot(document.getElementById("root")).render(
             />
 
             <Route
-              path="/patients/:id/vitals"
+              path="/patients/:patientUuid/vitals"
               element={
                 <RequireAuth roles={CHART_ROLES}>
                   <PatientDetail />
@@ -119,7 +124,7 @@ ReactDOM.createRoot(document.getElementById("root")).render(
             {["lab", "ultrasound", "eye", "procedure", "admission", "pharmacy"].map((section) => (
               <Route
                 key={section}
-                path={`/patients/:id/${section}`}
+                path={`/patients/:patientUuid/${section}`}
                 element={
                   <RequireAuth roles={CHART_ROLES}>
                     <PatientDetail />
@@ -129,7 +134,7 @@ ReactDOM.createRoot(document.getElementById("root")).render(
             ))}
 
             <Route
-              path="/patients/:id/billing"
+              path="/patients/:patientUuid/billing"
               element={
                 <RequireAuth roles={BILLING_ROLES}>
                   <PatientDetail />
@@ -138,7 +143,7 @@ ReactDOM.createRoot(document.getElementById("root")).render(
             />
 
             <Route
-              path="/patients/:id/prescribe"
+              path="/patients/:patientUuid/prescribe"
               element={
                 <RequireAuth roles={CLINICAL_ROLES}>
                   <PrescribeDrug />
@@ -151,6 +156,24 @@ ReactDOM.createRoot(document.getElementById("root")).render(
               element={
                 <RequireAuth roles={["pharmacist"]}>
                   <Pharmacy />
+                </RequireAuth>
+              }
+            />
+
+            {/* The walk-in POS, alongside dispensing rather than inside it. */}
+            <Route
+              path="/pharmacy/pos"
+              element={
+                <RequireAuth roles={POS_ROLES}>
+                  <PharmacyPOS />
+                </RequireAuth>
+              }
+            />
+            <Route
+              path="/pharmacy/sales"
+              element={
+                <RequireAuth roles={POS_HISTORY_ROLES}>
+                  <PosSales />
                 </RequireAuth>
               }
             />
@@ -178,6 +201,17 @@ ReactDOM.createRoot(document.getElementById("root")).render(
               }
             />
 
+            {/* The financial report: one aggregated read of the whole
+                period, for the desks that reconcile it. */}
+            <Route
+              path="/finance"
+              element={
+                <RequireAuth roles={FINANCE_REPORT_ROLES}>
+                  <FinanceReport />
+                </RequireAuth>
+              }
+            />
+
             <Route
               path="/transactions"
               element={
@@ -192,6 +226,27 @@ ReactDOM.createRoot(document.getElementById("root")).render(
               element={
                 <RequireAuth roles={BILLING_ROLES}>
                   <Outstanding />
+                </RequireAuth>
+              }
+            />
+
+            {/* Two desks for two decisions. Refunds — money going back, all or
+                part of a payment — is REFUND_ROLES. Service Cancellations —
+                ending the responsibility for a service never received — is
+                CANCEL_ROLES. The backend holds each action to the same group. */}
+            <Route
+              path="/refunds"
+              element={
+                <RequireAuth roles={REFUND_ROLES}>
+                  <Refunds />
+                </RequireAuth>
+              }
+            />
+            <Route
+              path="/service-cancellations"
+              element={
+                <RequireAuth roles={CANCEL_ROLES}>
+                  <ServiceCancellations />
                 </RequireAuth>
               }
             />

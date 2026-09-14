@@ -13,6 +13,10 @@ from .services import (create_prescription, create_prescriptions, dispense_presc
 from apps.accounts.permissions import IsDoctor, IsPharmacist, RoleRequired
 from apps.core.services import audit_event, notify
 
+# How a drug is to be taken, beside the dose — passed through to the service,
+# which validates the route.
+DIRECTION_FIELDS = ("frequency", "duration", "route", "notes")
+
 
 class PrescriptionViewSet(viewsets.ModelViewSet):
     """
@@ -40,7 +44,8 @@ class PrescriptionViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         user = self.request.user
-        base = Prescription.objects.select_related("patient", "item", "doctor", "dispensed_by")
+        base = Prescription.objects.select_related(
+            "patient", "item__category", "item__unit", "doctor", "dispensed_by")
         if user.role in {"admin", "hospital_admin", "pharmacist"}:
             return base
         if user.role == "doctor":
@@ -57,6 +62,7 @@ class PrescriptionViewSet(viewsets.ModelViewSet):
                 item=serializer.validated_data["item"],
                 quantity=serializer.validated_data["quantity"],
                 dosage_instructions=serializer.validated_data.get("dosage_instructions", ""),
+                **{field: serializer.validated_data.get(field, "") for field in DIRECTION_FIELDS},
             )
         except ValidationError as exc:
             return Response({"detail": _message(exc)}, status=status.HTTP_400_BAD_REQUEST)
@@ -102,6 +108,7 @@ class PrescriptionViewSet(viewsets.ModelViewSet):
             lines.append({
                 "item": item, "quantity": quantity,
                 "dosage_instructions": entry.get("dosage_instructions", "") or "",
+                **{field: entry.get(field, "") or "" for field in DIRECTION_FIELDS},
             })
 
         try:
@@ -129,7 +136,7 @@ class PrescriptionViewSet(viewsets.ModelViewSet):
             title=f"Dispensed: {prescription.item.name} for {prescription.patient}",
             message=f"{prescription.quantity} {prescription.item.unit_label}(s) handed over by the pharmacy.",
             category="pharmacy",
-            action_url=f"/patients/{prescription.patient_id}",
+            action_url=f"/patients/{prescription.patient.uuid}",
         )
         return Response(self.get_serializer(prescription).data)
 

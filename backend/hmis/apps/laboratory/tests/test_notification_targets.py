@@ -27,7 +27,7 @@ class ReferralNotificationTests(TestCase):
         self.reception = User.objects.create_user(username="rec", password="t", role="reception")
         self.patient = Patient.objects.create(first_name="Amaka", last_name="Nwosu", sex="F",
                                               created_by=self.reception)
-        self.department = Department.objects.create(code="lab", name="Laboratory")
+        self.department = Department.objects.get(code="laboratory")
         # Dera is the doctor holding this patient.
         self.visit = Visit.objects.create(patient=self.patient, opened_by=self.reception,
                                           attending_doctor=self.dera)
@@ -115,7 +115,7 @@ class ResultNotificationTests(TestCase):
         self.reception = User.objects.create_user(username="rec", password="t", role="reception")
         self.patient = Patient.objects.create(first_name="Amaka", last_name="Nwosu", sex="F",
                                               created_by=self.reception)
-        self.department = Department.objects.create(code="lab", name="Laboratory")
+        self.department = Department.objects.get(code="laboratory")
         self.visit = Visit.objects.create(patient=self.patient, opened_by=self.reception,
                                           attending_doctor=self.dera)
         self.route = PatientRoute.objects.create(
@@ -182,7 +182,7 @@ class ResultNotificationTests(TestCase):
         """
         self._submit()
         note = Notification.objects.get(category="clinical")
-        self.assertEqual(note.action_url, f"/patients/{self.patient.pk}/lab")
+        self.assertEqual(note.action_url, f"/patients/{self.patient.uuid}/lab")
 
     def test_the_default_recipient_is_named_before_anything_is_sent(self):
         """The bench should be able to see where it is going without guessing."""

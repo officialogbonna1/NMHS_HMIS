@@ -1,3 +1,4 @@
+import { directionsOf } from "./prescriptionDirections.js";
 import { useQuery } from "@tanstack/react-query";
 import api from "../api/client";
 import { patientNumber } from "./patientIdentity.js";
@@ -27,6 +28,127 @@ import PrintSheet, {
 
 const dateTime = (value) => (value ? new Date(value).toLocaleString() : "—");
 const dateOnly = (value) => (value ? new Date(value).toLocaleDateString() : "—");
+
+/* ============================================================ pharmacy POS */
+
+/**
+ * The receipt a pharmacy POS sale hands over.
+ *
+ * Built from the sale the server returned — the till's own completion
+ * response, or a row of POS Sales history — so it prints the moment the sale
+ * lands and can only show what was recorded: each batch's own price, the
+ * discount and who approved it, what was tendered and the change. A line that
+ * came off two batches at two prices prints as two rows rather than an average
+ * nobody was charged.
+ */
+export function PosReceiptSheet({ sale, onClose }) {
+  if (!sale) return null;
+  const rows = [];
+  for (const line of sale.lines ?? []) {
+    const byPrice = new Map();
+    for (const piece of line.pieces ?? []) {
+      const key = String(piece.unit_price);
+      byPrice.set(key, (byPrice.get(key) ?? 0) + piece.quantity);
+    }
+    if (byPrice.size <= 1) {
+      rows.push({ key: line.id, name: line.item_name, quantity: line.quantity, unit: line.unit_label,
+                  price: line.unit_price, amount: line.gross });
+    } else {
+      for (const [price, quantity] of byPrice) {
+        rows.push({ key: `${line.id}-${price}`, name: line.item_name, quantity, unit: line.unit_label,
+                    price, amount: Number(price) * quantity });
+      }
+    }
+    if (Number(line.line_discount) > 0) {
+      const percent = line.line_discount_type === "percent" ? ` (${Number(line.line_discount_value)}%)` : "";
+      rows.push({ key: `${line.id}-discount`, name: `less discount${percent}`, amount: line.line_discount,
+                  discount: true });
+    }
+  }
+  const lineDiscounts = (sale.lines ?? []).reduce((sum, line) => sum + Number(line.line_discount ?? 0), 0);
+  const saleDiscount = sale.sale_discount_amount !== undefined
+    ? Number(sale.sale_discount_amount) : Number(sale.discount_amount ?? 0) - lineDiscounts;
+  const customer = sale.customer_type === "patient"
+    ? [sale.patient_name ?? "Registered patient", sale.patient_number].filter(Boolean).join(" · ")
+    : [sale.customer_name || "Walk-in customer", sale.customer_phone].filter(Boolean).join(" · ");
+
+  return (
+    <PrintSheet title={`Receipt — ${sale.reference}`} onClose={onClose}>
+      <SheetHeader documentTitle="Pharmacy receipt" reference={sale.reference}
+                   date={dateTime(sale.completed_at ?? sale.created_at)} />
+      <section className="mb-5 grid grid-cols-1 gap-x-8 gap-y-1 text-sm sm:grid-cols-2">
+        <Field label="Customer type" value={sale.customer_type_label ?? "—"} />
+        <Field label="Customer" value={customer} />
+        <Field label="Served by" value={sale.sold_by_name ?? "—"} />
+        <Field label="Register" value={sale.register_reference ?? "—"} />
+      </section>
+
+      <table className="mb-5 w-full border-collapse text-sm">
+        <thead>
+          <tr className="border-b-2 border-slate-800 text-left">
+            <th className="py-1.5 pr-2 font-semibold">Item</th>
+            <th className="py-1.5 pr-2 text-right font-semibold">Qty</th>
+            <th className="py-1.5 pr-2 text-right font-semibold">Unit price</th>
+            <th className="py-1.5 text-right font-semibold">Amount</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row) => (
+            <tr key={row.key} className="border-b border-slate-300">
+              <td className={`py-1.5 pr-2 ${row.discount ? "pl-4 text-slate-700" : "text-slate-900"}`}>{row.name}</td>
+              <td className="py-1.5 pr-2 text-right tabular-nums">{row.discount ? "" : `${row.quantity} ${row.unit}`}</td>
+              <td className="py-1.5 pr-2 text-right tabular-nums">{row.discount ? "" : money(row.price)}</td>
+              <td className="py-1.5 text-right tabular-nums">
+                {row.discount ? `− ${money(row.amount)}` : money(row.amount)}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+
+      <section className="keep-together ml-auto w-full max-w-xs space-y-1 text-sm">
+        <ReceiptLine label="Subtotal" value={money(sale.subtotal)} />
+        {lineDiscounts > 0 && <ReceiptLine label="Item discounts" value={`− ${money(lineDiscounts)}`} />}
+        {saleDiscount > 0 && (
+          <ReceiptLine
+            label={`Sale discount${sale.discount_type === "percent" ? ` (${Number(sale.discount_value)}%)` : ""}`}
+            value={`− ${money(saleDiscount)}`}
+          />
+        )}
+        <p className="flex justify-between gap-4 border-t-2 border-slate-800 pt-2 text-base font-bold">
+          <span>Total</span><span className="tabular-nums">{money(sale.total_amount)}</span>
+        </p>
+        <ReceiptLine label="Payment method" value={sale.payment_method_label ?? "—"} />
+        <ReceiptLine label="Amount received" value={money(sale.amount_tendered ?? sale.total_amount)} />
+        <ReceiptLine label="Change" value={money(sale.change_due)} />
+        {Number(sale.amount_returned) > 0 && (
+          <ReceiptLine label="Returned since" value={`− ${money(sale.amount_returned)}`} />
+        )}
+      </section>
+
+      {sale.discount_reason && (
+        <p className="mt-4 text-sm text-slate-700">
+          Discount: {sale.discount_reason}
+          {/* Who gave it and who authorised it are different people whenever
+              the discount was above a cashier's limit (rule 42), so the
+              receipt says both rather than calling the cashier the approver. */}
+          {sale.discount_by_name && ` — given by ${sale.discount_by_name}`}
+          {sale.discount_approved_by_name && `, authorised by ${sale.discount_approved_by_name}`}
+        </p>
+      )}
+      <SheetFooter note="Keep this receipt. A return is taken against its number." signatory="Served by" />
+    </PrintSheet>
+  );
+}
+
+function ReceiptLine({ label, value }) {
+  return (
+    <p className="flex justify-between gap-4">
+      <span className="text-slate-700">{label}</span>
+      <span className="tabular-nums text-slate-900">{value}</span>
+    </p>
+  );
+}
 
 /* ============================================================ laboratory */
 
@@ -308,7 +430,9 @@ export function PrescriptionSheet({ patientId, prescriptionIds, onClose }) {
                 <td className="py-2 pr-3 text-slate-900">
                   {line.quantity}{line.item_unit ? ` ${line.item_unit}` : ""}
                 </td>
-                <td className="py-2 pr-3 text-slate-900">{line.dosage_instructions || "—"}</td>
+                <td className="py-2 pr-3 text-slate-900">{directionsOf(line) || "—"}
+                  {line.notes && <span className="block text-xs text-slate-700">{line.notes}</span>}
+                </td>
                 <td className="py-2 text-slate-900">
                   {line.status === "dispensed" ? `Dispensed ${dateOnly(line.dispensed_at)}` : "Awaiting dispensing"}
                 </td>
@@ -374,7 +498,9 @@ export function DispensingSheet({ patientId, prescriptionIds, onClose }) {
                 <td className="py-2 pr-3 text-slate-900">
                   {line.quantity}{line.item_unit ? ` ${line.item_unit}` : ""}
                 </td>
-                <td className="py-2 pr-3 text-slate-900">{line.dosage_instructions || "—"}</td>
+                <td className="py-2 pr-3 text-slate-900">{directionsOf(line) || "—"}
+                  {line.notes && <span className="block text-xs text-slate-700">{line.notes}</span>}
+                </td>
                 <td className="py-2 pr-3 text-slate-900">
                   {line.dispensed_by_name || "—"}
                   <span className="block text-xs text-slate-700">{dateOnly(line.dispensed_at)}</span>
@@ -744,7 +870,7 @@ export function ClinicalSummarySheet({ patientId, onClose }) {
             {prescriptions?.filter((p) => p.status !== "cancelled").map((prescription) => (
               <li key={`p${prescription.id}`}>
                 {prescription.item} ×{prescription.quantity}
-                {prescription.dosage_instructions && ` — ${prescription.dosage_instructions}`}
+                {directionsOf(prescription) && ` — ${directionsOf(prescription)}`}
                 <span className="text-xs text-slate-700"> ({prescription.status_label})</span>
               </li>
             ))}

@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { useQuery, keepPreviousData } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import api from "../api/client";
-import { patientNumber } from "../components/patientIdentity.js";
+import { patientNumber, patientUuidOf } from "../components/patientIdentity.js";
 import { useAuth } from "../auth/AuthContext.jsx";
 import { EmptyState, Page, PageHeader, SearchInput, Skeleton, Button, MetaStat } from "../components/ui.jsx";
 import { Icon } from "../components/icons.jsx";
@@ -142,7 +142,7 @@ function PatientRow({ patient: p }) {
 
   return (
     <Link
-      to={`/patients/${p.id}`}
+      to={`/patients/${patientUuidOf(p)}`}
       className="flex items-center gap-3 px-4 py-3 transition hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-brand-500"
     >
       <span aria-hidden="true" className={`grid h-11 w-11 shrink-0 place-items-center rounded-full text-sm font-semibold ${tone}`}>

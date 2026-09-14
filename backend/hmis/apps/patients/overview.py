@@ -208,6 +208,8 @@ def build_overview(*, patient, user):
             {
                 "id": p.id, "item": p.item.name, "quantity": p.quantity, "status": p.status,
                 "status_label": p.get_status_display(), "dosage_instructions": p.dosage_instructions,
+                "frequency": p.frequency, "duration": p.duration, "route": p.route,
+                "route_label": p.get_route_display(), "notes": p.notes,
                 "doctor": _name(p.doctor), "created_at": p.created_at,
                 "dispensed_at": p.dispensed_at, "dispensed_by": _name(p.dispensed_by),
             }

@@ -405,7 +405,8 @@ class LabOrderViewSet(viewsets.ModelViewSet):
         # the cash desk to refund, because the lab cannot move money.
         charge = item.charge
         if charge and charge.amount_paid <= 0 and charge.status != "cancelled":
-            cancel_charge(charge=charge)
+            cancel_charge(charge=charge, cancelled_by=request.user,
+                          reason=f"{item.name} removed from order {order.order_number}")
 
         if item.values.exists():
             # A result has been filed against it: cancel rather than delete,
@@ -556,7 +557,7 @@ class LabOrderViewSet(viewsets.ModelViewSet):
                category="clinical",
                # Straight to the Lab tab on the chart, not the chart's front
                # page — the doctor came to read the result, not to look for it.
-               action_url=f"/patients/{order.patient_id}/lab")
+               action_url=f"/patients/{order.patient.uuid}/lab")
 
     @action(detail=True, methods=["post"])
     def verify(self, request, pk=None):

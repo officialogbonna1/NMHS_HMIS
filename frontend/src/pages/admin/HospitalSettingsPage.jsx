@@ -4,7 +4,7 @@ import api from "../../api/client";
 import { readError } from "../../api/errors";
 import { useToast } from "../../components/Toaster.jsx";
 import {
-  Alert, Badge, Button, Field, Input, Page, PageHeader, Section,
+  Alert, Badge, Button, Field, Input, Page, PageHeader, Section, Select,
 } from "../../components/ui.jsx";
 
 // The hospital's own details and the numbers the application treats as
@@ -49,7 +49,7 @@ export default function HospitalSettingsPage() {
       <PageHeader
         icon="building"
         title="Hospital settings"
-        subtitle="The hospital's own details, and the thresholds the dashboards alert on."
+        subtitle="The hospital's own details, the thresholds the dashboards alert on, and what the pharmacy till may discount."
       />
 
       <form
@@ -100,6 +100,78 @@ export default function HospitalSettingsPage() {
               <Input type="number" min="1" value={form.unpaid_charge_alert_hours ?? 2}
                      onChange={(e) => set("unpaid_charge_alert_hours", Number(e.target.value))} />
             </Field>
+          </div>
+        </Section>
+
+        <Section
+          title="Pharmacy discounts"
+          description="What the POS till may take off, and when somebody more senior has to say so. The server enforces every one of these on the priced amount — the screen only refuses early."
+        >
+          <div className="space-y-4">
+            <label className="flex min-h-[44px] items-center gap-2 text-sm text-slate-800">
+              <input type="checkbox" className="h-4 w-4"
+                     checked={form.pos_discounts_enabled ?? true}
+                     onChange={(e) => set("pos_discounts_enabled", e.target.checked)} />
+              Allow discounts at the pharmacy till
+            </label>
+
+            <div className="grid gap-4 sm:grid-cols-2">
+              <Field label="Discount types offered"
+                     hint="What the till's dialog shows. A kind that is not offered is refused by the API too.">
+                <Select value={form.pos_discount_types ?? "both"}
+                        onChange={(e) => set("pos_discount_types", e.target.value)}>
+                  <option value="both">Percentage and fixed amount</option>
+                  <option value="percent">Percentage only</option>
+                  <option value="amount">Fixed amount only</option>
+                </Select>
+              </Field>
+              <Field label="Preset percentages"
+                     hint="The buttons the dialog offers, comma separated. A cashier may still type another value, within the limits below.">
+                <Input value={form.pos_discount_presets ?? ""}
+                       onChange={(e) => set("pos_discount_presets", e.target.value)}
+                       placeholder="5,10,15,20,25" />
+              </Field>
+            </div>
+
+            <div className="grid gap-4 sm:grid-cols-2">
+              <Field label="Cashier's limit (%)"
+                     hint="The largest percentage a cashier may give alone. Above it needs an accountant or an administrator. 100 means no approval is ever needed.">
+                <Input type="number" min="0" max="100" step="0.01"
+                       value={form.pos_discount_limit_percent ?? "100.00"}
+                       onChange={(e) => set("pos_discount_limit_percent", e.target.value)} />
+              </Field>
+              <Field label="Maximum (%)"
+                     hint="The ceiling nobody passes, approved or not.">
+                <Input type="number" min="0" max="100" step="0.01"
+                       value={form.pos_max_discount_percent ?? "100.00"}
+                       onChange={(e) => set("pos_max_discount_percent", e.target.value)} />
+              </Field>
+              <Field label="Cashier's limit (₦)"
+                     hint="The largest sum a cashier may take off alone. 0 means no ceiling of its own — the percentage limit still applies.">
+                <Input type="number" min="0" step="0.01"
+                       value={form.pos_discount_limit_amount ?? "0.00"}
+                       onChange={(e) => set("pos_discount_limit_amount", e.target.value)} />
+              </Field>
+              <Field label="Maximum (₦)" hint="The sum nobody passes. 0 means no ceiling.">
+                <Input type="number" min="0" step="0.01"
+                       value={form.pos_max_discount_amount ?? "0.00"}
+                       onChange={(e) => set("pos_max_discount_amount", e.target.value)} />
+              </Field>
+            </div>
+
+            <Field label="Reasons offered"
+                   hint="What the dialog suggests, comma separated. A reason is always required, and a cashier may write their own.">
+              <Input value={form.pos_discount_reasons ?? ""}
+                     onChange={(e) => set("pos_discount_reasons", e.target.value)}
+                     placeholder="Staff discount,Loyal customer,Hospital concession" />
+            </Field>
+
+            <Alert tone="info">
+              A percentage limit is judged on the <strong>amount</strong>, so a fixed sum cannot
+              walk past it: ₦500 off a ₦1,000 line is 50% however it was typed. Who approves an
+              over-limit discount is the accountant and administrator roles, and the person
+              authorising types their own password at the till.
+            </Alert>
           </div>
         </Section>
 

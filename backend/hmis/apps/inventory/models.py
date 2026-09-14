@@ -167,6 +167,21 @@ class Item(TimeStampedModel):
         default=True,
         help_text="An inactive product stays on every record that references it, "
                   "but cannot be received, transferred or newly prescribed.")
+    # How the pharmacy counter finds a product fast: typed (SKU) or scanned
+    # (barcode). Both optional — no existing product needs one — and unique
+    # when set. NULL rather than "" when absent, so "no barcode" never
+    # collides with another product that has none.
+    sku = models.CharField(max_length=64, unique=True, null=True, blank=True,
+                           help_text="Stock-keeping code, e.g. PH-PARA-500. Optional; unique.")
+    barcode = models.CharField(max_length=64, unique=True, null=True, blank=True,
+                               help_text="The code the POS scanner reads. Optional; unique.")
+    # What a prescriber and the till read beside the name, where the catalogue
+    # knows it: "500 mg", "Tablet". Optional — a bandage has neither — and
+    # never parsed: it is a label, not a dose calculation.
+    strength = models.CharField(max_length=60, blank=True,
+                                help_text="e.g. 500 mg, 125 mg/5 ml. Optional.")
+    dosage_form = models.CharField(max_length=60, blank=True,
+                                   help_text="e.g. Tablet, Syrup, Injection. Optional.")
 
     class Meta:
         # Alphabetical, and stable: without an ordering the paginated drug
@@ -175,6 +190,12 @@ class Item(TimeStampedModel):
 
     def __str__(self):
         return self.name
+
+    def save(self, *args, **kwargs):
+        # A blank typed into a form is "none", not a second empty code.
+        self.sku = (self.sku or "").strip() or None
+        self.barcode = (self.barcode or "").strip() or None
+        super().save(*args, **kwargs)
 
     @property
     def category_name(self):
@@ -226,8 +247,10 @@ class Batch(TimeStampedModel):
 
     @property
     def is_expired(self):
+        # The hospital's own date, not UTC: they differ between local midnight
+        # and 01:00 on Africa/Lagos, and an expired lot must not read as fine.
         from django.utils import timezone
-        return self.expiry_date < timezone.now().date()
+        return self.expiry_date < timezone.localdate()
 
     @property
     def total_quantity(self):
@@ -415,8 +438,10 @@ class StockMovement(TimeStampedModel):
         ("transfer_out", "Transferred out"),
         ("transfer_in", "Transferred in"),
         ("prescription", "Dispensed via prescription"),
-        ("sale", "Sold to patient"),
+        ("sale", "Sold at the pharmacy counter (POS)"),
         ("adjustment", "Manual adjustment"),
+        ("stock_count", "Physical stock count"),
+        ("returned", "Customer return (quarantined)"),
         ("expired_writeoff", "Expired write-off"),
     ]
     batch = models.ForeignKey(Batch, on_delete=models.PROTECT, related_name="movements")
@@ -436,3 +461,62 @@ class StockMovement(TimeStampedModel):
     class Meta:
         ordering = ["-created_at"]
         indexes = [models.Index(fields=["location", "-created_at"])]
+
+
+#: Where medicine a customer brings back goes. Neither a receiving location nor
+#: a dispensing point, so nothing standing here can be sold or dispensed: it
+#: waits for somebody to inspect it and then either transfer it back to the
+#: shelf or count it out as destroyed — both existing, audited operations.
+#: A row seeded by migration, like the other two.
+QUARANTINE = "returns-quarantine"
+
+
+def quarantine_location():
+    return StockLocation.objects.filter(code=QUARANTINE).first()
+
+
+class StockCountImport(TimeStampedModel):
+    """
+    A physical count submitted as a CSV, held as a preview until a person
+    confirms it (`inventory/count_csv.py`).
+
+    Nothing moves when a file is uploaded. The validated rows, every problem
+    found and the additions/reductions they add up to are kept here so the
+    screen can show them; confirming posts ordinary `StockCount` documents
+    through `post_stock_count` — one per location — and links them in
+    `counts`. An import is applied at most once (a compare-and-set on
+    `status`), and `checksum` is how a file already applied is recognised if
+    it is uploaded again.
+    """
+    STATUS = [("previewed", "Previewed"), ("applied", "Applied"), ("discarded", "Discarded")]
+    reference = models.CharField(max_length=24, unique=True, blank=True, editable=False)
+    filename = models.CharField(max_length=255, blank=True)
+    checksum = models.CharField(max_length=64, db_index=True)
+    status = models.CharField(max_length=12, choices=STATUS, default="previewed")
+    rows = models.JSONField(default=list, blank=True)
+    errors = models.JSONField(default=list, blank=True)
+    summary = models.JSONField(default=dict, blank=True)
+    uploaded_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
+                                    related_name="stock_count_imports")
+    applied_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True,
+                                   on_delete=models.PROTECT,
+                                   related_name="stock_count_imports_applied")
+    applied_at = models.DateTimeField(null=True, blank=True)
+    counts = models.ManyToManyField(StockCount, blank=True, related_name="imports")
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"{self.reference or 'IMP'} ({self.get_status_display()})"
+
+    def save(self, *args, **kwargs):
+        creating = self._state.adding
+        super().save(*args, **kwargs)
+        if creating and not self.reference:
+            self.reference = f"IMP-{self.pk:06d}"
+            super().save(update_fields=["reference"])
+
+    @property
+    def is_applicable(self):
+        return self.status == "previewed" and not self.errors and bool(self.rows)

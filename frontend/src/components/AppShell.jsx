@@ -7,7 +7,8 @@ import { useAuth } from "../auth/AuthContext.jsx";
 // The nav and the route guards read from the same groups, so a link can
 // never appear for a role that RequireAuth will then turn away.
 import {
-  ADMIN_ROLES, BILLING_ROLES, PATIENT_LOOKUP_ROLES, QUEUE_ROLES,
+  ADMIN_ROLES, BILLING_ROLES, CANCEL_ROLES, FINANCE_REPORT_ROLES,
+  POS_HISTORY_ROLES, POS_ROLES, REFUND_ROLES, PATIENT_LOOKUP_ROLES, QUEUE_ROLES,
   WARD_ROLES, hasRole,
 } from "../auth/roles.js";
 import { Icon } from "./icons.jsx";
@@ -40,8 +41,19 @@ const NAV_ITEMS = [
   ["/admissions", "Admissions", "bed", WARD_ROLES, "Departments"],
 
   ["/billing", "Billing", "cash", BILLING_ROLES, "Finance"],
+  // The report the cash desk and accounts reconcile from. Narrower than
+  // BILLING_ROLES on purpose — see FINANCE_REPORT_ROLES.
+  ["/finance", "Financial Report", "price", FINANCE_REPORT_ROLES, "Finance"],
   ["/outstanding", "Outstanding", "clock", BILLING_ROLES, "Finance"],
   ["/waivers", "Waived & Written Off", "tag", BILLING_ROLES, "Finance"],
+  // Two desks, deliberately apart, because they are two different decisions.
+  // **Refunds** is money going back to a patient — all or part of a payment,
+  // the bill staying active. **Service Cancellations** ends the patient's
+  // responsibility for a service they never received, and returns everything
+  // paid for it when anything was. Both narrower than BILLING_ROLES: reception
+  // bills at a window and never reverses what it billed.
+  ["/refunds", "Refunds", "refund", REFUND_ROLES, "Finance"],
+  ["/service-cancellations", "Service Cancellations", "receiptX", CANCEL_ROLES, "Finance"],
   ["/transactions", "Transaction History", "receipt", BILLING_ROLES, "Finance"],
   ["/billing-items", "Billing Catalog", "price", ["cashier", "accountant"], "Finance"],
 
@@ -49,7 +61,21 @@ const NAV_ITEMS = [
   // counter takes, and the stock on its own shelf — all inside /pharmacy.
   // Configuring the catalogue and running the Main Store are Administration's;
   // a pharmacist has no Administration or Inventory item at all.
-  ["/pharmacy", "Pharmacy", "pill", PHARMACY_ROLES, "Pharmacy"],
+  // Most of these open a tab of /pharmacy (`?tab=`), so each carries the
+  // /pharmacy guard's roles — a link never outruns the route it opens.
+  ["/pharmacy?tab=overview", "Pharmacy Dashboard", "home", PHARMACY_ROLES, "Pharmacy"],
+  ["/pharmacy", "Prescriptions", "pill", PHARMACY_ROLES, "Pharmacy"],
+  ["/pharmacy?tab=dispensed", "Dispensing", "check", PHARMACY_ROLES, "Pharmacy"],
+  // The walk-in till sits beside dispensing, never inside it: same catalogue,
+  // same shelf, same FEFO, a different workflow.
+  ["/pharmacy/pos", "Pharmacy POS", "cash", POS_ROLES, "Pharmacy"],
+  ["/pharmacy/sales", "Sales", "receipt", POS_HISTORY_ROLES, "Pharmacy"],
+  ["/pharmacy/sales?tab=returns", "Returns & Refunds", "refund", POS_HISTORY_ROLES, "Pharmacy"],
+  ["/pharmacy?tab=products", "Products", "tag", PHARMACY_ROLES, "Pharmacy"],
+  ["/pharmacy?tab=stock", "Stock", "box", PHARMACY_ROLES, "Pharmacy"],
+  ["/pharmacy?tab=transfer", "Stock Operations", "handoff", PHARMACY_ROLES, "Pharmacy"],
+  ["/pharmacy?tab=count", "Stock Count", "list", PHARMACY_ROLES, "Pharmacy"],
+  ["/pharmacy?tab=import", "Inventory Import/Export", "archive", PHARMACY_ROLES, "Pharmacy"],
 
   // **Administration configures inventory.** /inventory is the hospital-wide
   // stock desk — receipts into the store, transfers between locations, counts
@@ -57,6 +83,7 @@ const NAV_ITEMS = [
   // the setup, for admin and the inventory manager who keeps the store.
   ["/admin", "Administration", "shield", ADMIN_ROLES, "Administration"],
   ["/inventory", "Inventory", "box", ["inventory_manager"], "Administration"],
+  ["/inventory?tab=import", "Stock Import / Export", "archive", ["inventory_manager"], "Administration"],
   ["/departments", "Departments", "building", ADMIN_ROLES, "Administration"],
   ["/users", "Users", "shield", ADMIN_ROLES, "Administration"],
 ];
@@ -124,7 +151,7 @@ function Shell() {
 
   // Following a link on a phone should leave you on the page, not behind the
   // drawer you opened to get there.
-  useEffect(() => { closeMenu(); }, [location.pathname, closeMenu]);
+  useEffect(() => { closeMenu(); }, [location.pathname, location.search, closeMenu]);
 
   useEffect(() => {
     if (!menuOpen) return undefined;
@@ -260,7 +287,28 @@ function Shell() {
   );
 }
 
+/**
+ * Is this navigation item the page being shown? Several items open tabs of one
+ * page (`/pharmacy?tab=stock`), which NavLink cannot tell apart — it compares
+ * paths only, so every one of them would light up at once. A tabbed item is
+ * active when its path and its query both match; a plain item beside tabbed
+ * siblings owns its page only while none of their tabs is showing.
+ */
+export function navItemActive(to, location, paths) {
+  const [path, query] = to.split("?");
+  if (path === "/") return location.pathname === "/";
+  const current = new URLSearchParams(location.search);
+  const matches = (candidate) => [...new URLSearchParams(candidate.split("?")[1] ?? "")]
+    .every(([key, value]) => current.get(key) === value);
+  if (query) return location.pathname === path && matches(to);
+  const tabbed = paths.filter((other) => other.startsWith(`${path}?`));
+  if (tabbed.length) return location.pathname === path && !tabbed.some(matches);
+  return location.pathname === path || location.pathname.startsWith(`${path}/`);
+}
+
 function NavList({ groups, unread }) {
+  const location = useLocation();
+  const paths = groups.flatMap(({ rows }) => rows.map(([to]) => to));
   return (
     <nav className="p-3">
       {groups.map(({ group, rows }) => (
@@ -268,29 +316,28 @@ function NavList({ groups, unread }) {
           <p className="px-3 pb-1.5 text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-500">
             {group}
           </p>
-          {rows.map(([to, label, icon]) => (
-            <NavLink
-              key={to} to={to} end={to === "/"}
-              className={({ isActive }) => `mb-0.5 flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition
-                focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-brand-500 ${
-                isActive
-                  ? "bg-white text-brand-800 shadow-[inset_2px_0_0_0] shadow-brand-600"
-                  : "text-slate-700 hover:bg-white/70 hover:text-slate-900"}`}
-            >
-              {({ isActive }) => (
-                <>
-                  <Icon name={icon} aria-hidden="true"
-                        className={`h-[18px] w-[18px] shrink-0 ${isActive ? "text-brand-600" : "text-slate-500"}`} />
-                  <span className="min-w-0 flex-1 truncate">{label}</span>
-                  {to === "/notifications" && unread > 0 && (
-                    <span className="shrink-0 rounded-full bg-red-500 px-1.5 py-0.5 text-xs font-bold text-white">
-                      {unread > 99 ? "99+" : unread}
-                    </span>
-                  )}
-                </>
-              )}
-            </NavLink>
-          ))}
+          {rows.map(([to, label, icon]) => {
+            const isActive = navItemActive(to, location, paths);
+            return (
+              <Link
+                key={to} to={to} aria-current={isActive ? "page" : undefined}
+                className={`mb-0.5 flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition
+                  focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-brand-500 ${
+                  isActive
+                    ? "bg-white text-brand-800 shadow-[inset_2px_0_0_0] shadow-brand-600"
+                    : "text-slate-700 hover:bg-white/70 hover:text-slate-900"}`}
+              >
+                <Icon name={icon} aria-hidden="true"
+                      className={`h-[18px] w-[18px] shrink-0 ${isActive ? "text-brand-600" : "text-slate-500"}`} />
+                <span className="min-w-0 flex-1 truncate">{label}</span>
+                {to === "/notifications" && unread > 0 && (
+                  <span className="shrink-0 rounded-full bg-red-500 px-1.5 py-0.5 text-xs font-bold text-white">
+                    {unread > 99 ? "99+" : unread}
+                  </span>
+                )}
+              </Link>
+            );
+          })}
         </div>
       ))}
     </nav>

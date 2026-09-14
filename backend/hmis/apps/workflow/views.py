@@ -232,7 +232,7 @@ def _queue_consultation(*, visit, doctor, nurse, notes, department, priority, cl
     notify(recipient=doctor,
            title=f"{'⚠ No vitals — ' if without_vitals else ''}Queued for consultation: {visit.patient}",
            message=notes or f"Sent from Nursing by {_display_name(nurse)} — vitals are on the chart.",
-           category="routing", action_url=f"/patients/{visit.patient_id}")
+           category="routing", action_url=f"/patients/{visit.patient.uuid}")
     return onward
 
 
@@ -299,7 +299,7 @@ PURPOSE_CHART_TAB = {
 
 def chart_url_for(route):
     tab = PURPOSE_CHART_TAB.get(route.purpose)
-    base = f"/patients/{route.visit.patient_id}"
+    base = f"/patients/{route.visit.patient.uuid}"
     return f"{base}/{tab}" if tab else base
 
 
@@ -349,7 +349,7 @@ def _notify_route(route):
     for user in route_targets(route):
         notify(recipient=user, title=f"{route.get_purpose_display()} requested: {route.visit.patient}",
                message=route.notes, category="routing",
-               action_url="/vitals" if user.role == "nurse" else f"/patients/{route.visit.patient_id}")
+               action_url="/vitals" if user.role == "nurse" else f"/patients/{route.visit.patient.uuid}")
 
 
 def work_routes_for(user, statuses=("queued", "in_progress")):
@@ -919,7 +919,7 @@ class DashboardView(APIView):
             "created_at": route.created_at,
             # Nurses work the queue from their own station; everyone else
             # goes straight to the patient's chart.
-            "href": "/vitals" if user.role == "nurse" else f"/patients/{route.visit.patient_id}",
+            "href": "/vitals" if user.role == "nurse" else f"/patients/{route.visit.patient.uuid}",
         } for route in task_routes]
 
         if is_admin_dashboard:
@@ -931,7 +931,7 @@ class DashboardView(APIView):
             } for event in activity]
         else:
             recent_activity = [{"id": note.id, "action": note.title, "actor": "", "created_at": note.created_at}
-                               for note in Notification.objects.filter(recipient=user)[:10]]
+                               for note in Notification.objects.filter(recipient=user).active()[:10]]
 
         return Response({
             "today": today,
@@ -944,7 +944,8 @@ class DashboardView(APIView):
         })
 
     def _cards_for(self, user, routes, today):
-        unread = Notification.objects.filter(recipient=user, is_read=False).count()
+        # The inbox only — the same number the bell shows.
+        unread = Notification.objects.filter(recipient=user, is_read=False).active().count()
         if user.role == "nurse":
             return self._nurse_cards(user, routes, today, unread)
         if user.role in {"cashier", "accountant"}:
@@ -956,8 +957,12 @@ class DashboardView(APIView):
                 {"label": "Registered patients", "value": Patient.objects.count(), "href": "/patients", "tone": "blue"},
                 {"label": "Open visits", "value": Visit.objects.filter(status="open").count(), "href": "/patients", "tone": "violet"},
                 {"label": "Active admissions", "value": Admission.objects.filter(status="admitted").count(), "href": "/admissions", "tone": "amber"},
-                {"label": "Today’s collections", "value": payments_today, "format": "currency", "href": "/billing", "tone": "green"},
-                {"label": "Outstanding balance", "value": outstanding, "format": "currency", "href": "/billing", "tone": "red"},
+                # The money cards open the report that explains them, not the
+                # counter that takes one payment at a time.
+                {"key": "collections_today", "label": "Today’s collections", "value": payments_today,
+                 "format": "currency", "href": "/finance?preset=today", "tone": "green"},
+                {"key": "outstanding", "label": "Outstanding balance", "value": outstanding,
+                 "format": "currency", "href": "/outstanding", "tone": "red"},
                 {"label": "Unread notifications", "value": unread, "href": "/notifications", "tone": "slate"},
             ]
         role = user.role
@@ -1018,27 +1023,27 @@ class DashboardView(APIView):
 
         return [
             {"key": "taken_today", "label": "Taken today", "value": total(paid_today),
-             "format": "currency", "href": "/billing", "tone": "green"},
+             "format": "currency", "href": "/finance?preset=today", "tone": "green"},
             {"key": "cash_today", "label": "Cash today", "value": total(paid_today.filter(method="cash")),
-             "format": "currency", "href": "/billing", "tone": "green"},
+             "format": "currency", "href": "/finance?preset=today", "tone": "green"},
             # What the desk collected itself, as against the pharmacy counter
             # — the two reconcile separately (Payment.channel).
             {"key": "my_desk_today", "label": "Taken at this desk",
              "value": total(paid_today.filter(received_by=user)),
-             "format": "currency", "href": "/billing", "tone": "blue"},
+             "format": "currency", "href": "/finance?preset=today", "tone": "blue"},
             {"key": "part_paid", "label": "Part-paid charges",
              "value": Charge.objects.filter(status="partial").count(), "href": "/billing", "tone": "amber"},
             {"key": "unpaid_charges", "label": "Unpaid charges",
              "value": Charge.objects.filter(status__in=["unpaid", "partial"]).count(),
              "href": "/billing", "tone": "red"},
             {"key": "outstanding", "label": "Outstanding balance", "value": outstanding,
-             "format": "currency", "href": "/billing", "tone": "red"},
+             "format": "currency", "href": "/outstanding", "tone": "red"},
             {"key": "discounted_today", "label": "Discounted today",
              "value": total(adjusted_today.filter(kind="discount")),
-             "format": "currency", "href": "/transactions", "tone": "violet"},
+             "format": "currency", "href": "/finance?preset=today", "tone": "violet"},
             {"key": "waived_today", "label": "Waived today",
              "value": total(adjusted_today.filter(kind="waiver")),
-             "format": "currency", "href": "/transactions", "tone": "violet"},
+             "format": "currency", "href": "/finance?preset=today", "tone": "violet"},
             {"key": "refunded_today", "label": "Refunded today",
              "value": total(adjusted_today.filter(kind="refund")),
              "format": "currency", "href": "/transactions", "tone": "slate"},

@@ -9,6 +9,18 @@
 
 export const ADMIN_ROLES = ["admin", "hospital_admin"];
 
+// The Super Admin alone. Mirrors SUPER_ADMIN_ROLES — `Role.ADMIN` is spelled
+// "Super Admin" in the role list, with `hospital_admin` the ordinary
+// administrator beside it. It guards the one irreversible action there is:
+// permanently deleting a patient. `hasRole` is deliberately not used for this
+// check — it lets every ADMIN_ROLE through by design, which is the opposite of
+// what this group means.
+export const SUPER_ADMIN_ROLES = ["admin"];
+
+export function isSuperAdmin(user) {
+  return SUPER_ADMIN_ROLES.includes(user?.role ?? "");
+}
+
 // Who may look a patient up at all — a name and a file number, not a chart.
 // Mirrors PATIENT_LOOKUP_ROLES.
 export const PATIENT_LOOKUP_ROLES = [
@@ -25,8 +37,40 @@ export const WARD_ROLES = ["ward_manager", "doctor", "nurse"];
 // Who handles money at a counter. Mirrors BILLING_ROLES.
 export const BILLING_ROLES = ["cashier", "accountant", "reception"];
 
+// Who reads the hospital's financial report. Mirrors FINANCE_REPORT_ROLES in
+// `apps/billing/views.py` — deliberately narrower than BILLING_ROLES, because
+// reception bills at a window and hospital-wide revenue by department is a
+// management figure.
+export const FINANCE_REPORT_ROLES = ["cashier", "accountant"];
+
+// Who may hand money back. Mirrors REFUND_ROLES — narrower than
+// BILLING_ROLES, because a refund takes cash out of the drawer and reception
+// bills at a window.
+export const REFUND_ROLES = ["cashier", "accountant"];
+
+// Who may cancel a service — withdraw a bill the patient no longer owes.
+// Mirrors CANCEL_ROLES. Kept apart from REFUND_ROLES even while the two hold
+// the same people: reaching the Service Cancellations page is never permission
+// to take money out of the drawer, and Cancel & refund needs both groups.
+export const CANCEL_ROLES = ["cashier", "accountant"];
+
 // Who moves stock. Mirrors STOCK_ROLES.
 export const STOCK_ROLES = ["pharmacist", "inventory_manager"];
+
+// The pharmacy POS till. Mirrors POS_ROLES: pharmacists and cashiers open a
+// register, ring up sales and take payment.
+export const POS_ROLES = ["pharmacist", "cashier"];
+
+// Who reads POS sales and registers. Mirrors POS_HISTORY_ROLES — the accountant
+// reconciles the tills but never operates one.
+export const POS_HISTORY_ROLES = [...POS_ROLES, "accountant"];
+
+// Who may discount a POS sale. Mirrors POS_DISCOUNT_ROLES — rule 13's boundary;
+// a pharmacist sells but never discounts.
+export const POS_DISCOUNT_ROLES = ["cashier", "accountant"];
+
+// Who may take a POS return (money out of a till). Mirrors POS_RETURN_ROLES.
+export const POS_RETURN_ROLES = ["cashier"];
 
 // Who a patient can be routed to, and so who has a queue to read.
 export const QUEUE_ROLES = [

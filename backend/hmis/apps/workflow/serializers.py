@@ -5,6 +5,10 @@ class VisitSerializer(serializers.ModelSerializer):
     class Meta: model = Visit; fields = "__all__"; read_only_fields = ["opened_by"]
 class PatientRouteSerializer(serializers.ModelSerializer):
     patient_id = serializers.IntegerField(source="visit.patient_id", read_only=True)
+    # The routing identity, so a row that drives a link to the chart does not
+    # have to send the reader to the integer pk. Read-only, and never a
+    # permission: `/patients/<uuid>/` runs the same access filter.
+    patient_uuid = serializers.UUIDField(source="visit.patient.uuid", read_only=True)
     patient_name = serializers.CharField(source="visit.patient.__str__", read_only=True)
     patient_number = serializers.CharField(source="visit.patient.patient_number", read_only=True)
     patient_file_number = serializers.CharField(source="visit.patient.patient_number", read_only=True)

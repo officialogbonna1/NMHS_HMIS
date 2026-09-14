@@ -51,7 +51,7 @@ class VitalsNotificationTests(TestCase):
         # The figures are in the message, so the doctor can triage from the list.
         self.assertIn("150/95", note.message)
         self.assertIn("Ada Bello", note.message)
-        self.assertEqual(note.action_url, f"/patients/{self.patient.id}/vitals")
+        self.assertEqual(note.action_url, f"/patients/{self.patient.uuid}/vitals")
 
     def test_a_doctor_with_the_patient_queued_is_told(self):
         visit = Visit.objects.create(patient=self.patient, opened_by=self.reception)

@@ -13,6 +13,16 @@ class PrescriptionSerializer(serializers.ModelSerializer):
     patient_sex = serializers.CharField(source="patient.get_sex_display", read_only=True)
     item_name = serializers.CharField(source="item.name", read_only=True)
     item_unit = serializers.CharField(source="item.unit_label", read_only=True)
+    # What the drug is, beside what it is called — the pharmacist reading a
+    # queue of unfamiliar brand names, and the doctor reading their own script
+    # back. It is the product's own category (rule: one relation, no second
+    # copy of the text) and it decides nothing: dispensing still resolves
+    # stock, expiry, FEFO and location exactly as before.
+    item_category = serializers.CharField(source="item.category_name", read_only=True,
+                                          default="")
+    item_strength = serializers.CharField(source="item.strength", read_only=True)
+    item_form = serializers.CharField(source="item.dosage_form", read_only=True)
+    route_label = serializers.CharField(source="get_route_display", read_only=True)
     doctor_name = serializers.SerializerMethodField()
     dispensed_by_name = serializers.SerializerMethodField()
 

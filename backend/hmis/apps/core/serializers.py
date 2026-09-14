@@ -7,11 +7,14 @@ class NotificationSerializer(serializers.ModelSerializer):
     # can say whose inbox it landed in — on your own list it is simply you.
     recipient_name = serializers.SerializerMethodField()
     recipient_role = serializers.CharField(source="recipient.role", read_only=True)
+    is_archived = serializers.BooleanField(read_only=True)
 
     class Meta:
         model = Notification
         fields = "__all__"
-        read_only_fields = ["recipient", "created_at", "updated_at"]
+        # `archived_at` moves only through the archive / unarchive actions, so
+        # the server stamps when — a PATCH cannot back-date or clear it.
+        read_only_fields = ["recipient", "archived_at", "created_at", "updated_at"]
 
     def get_recipient_name(self, obj):
         user = obj.recipient
@@ -27,18 +30,65 @@ class AuditLogSerializer(serializers.ModelSerializer):
 
 class HospitalSettingsSerializer(serializers.ModelSerializer):
     """
-    The hospital's identity and the thresholds the dashboards alert on.
+    The hospital's identity, the thresholds the dashboards alert on, and what
+    the pharmacy till may discount.
 
-    Every field here changes real behaviour — the printed documents' letterhead
-    and the three alert windows — so there is nothing on this form that only
-    looks like it does something.
+    Every field here changes real behaviour — the printed documents'
+    letterhead, the three alert windows, and the ceilings
+    `sales/discount_policy.py` enforces on every sale — so there is nothing on
+    this form that only looks like it does something.
     """
+    # Read by everybody (the POS dialog offers exactly what is allowed here),
+    # written by an admin — the viewset's own rule, unchanged. They are
+    # derived rather than stored so the two spellings of a preset list,
+    # "5,10" and "5, 10", can never disagree with each other.
+    pos_discount_preset_values = serializers.SerializerMethodField()
+    pos_discount_reason_options = serializers.SerializerMethodField()
+
     class Meta:
         model = HospitalSettings
         fields = ["id", "name", "full_name", "address", "phone", "email",
                   "expiry_warning_days", "vitals_wait_alert_minutes",
-                  "unpaid_charge_alert_hours", "updated_at"]
+                  "unpaid_charge_alert_hours",
+                  # The pharmacy till's discount policy (rule 42).
+                  "pos_discounts_enabled", "pos_discount_types",
+                  "pos_discount_limit_percent", "pos_max_discount_percent",
+                  "pos_discount_limit_amount", "pos_max_discount_amount",
+                  "pos_discount_presets", "pos_discount_preset_values",
+                  "pos_discount_reasons", "pos_discount_reason_options",
+                  "updated_at"]
         read_only_fields = ["id", "updated_at"]
+
+    def get_pos_discount_preset_values(self, obj):
+        return [str(value) for value in obj.pos_discount_presets_list]
+
+    def get_pos_discount_reason_options(self, obj):
+        return obj.pos_discount_reasons_list
+
+    def validate(self, attrs):
+        """
+        A limit above its own maximum is a policy that cannot mean anything:
+        the cashier's ceiling would sit above the one nobody may pass. Caught
+        here so the administration screen says so, rather than the till
+        refusing a discount the settings appear to allow.
+        """
+        current = self.instance
+        def value(name):
+            return attrs.get(name, getattr(current, name, None))
+
+        limit_percent, max_percent = value("pos_discount_limit_percent"), value("pos_max_discount_percent")
+        if limit_percent is not None and max_percent is not None and limit_percent > max_percent:
+            raise serializers.ValidationError({
+                "pos_discount_limit_percent":
+                    f"A cashier's limit ({limit_percent}%) cannot be above the maximum "
+                    f"anybody may give ({max_percent}%)."})
+        limit_amount, max_amount = value("pos_discount_limit_amount"), value("pos_max_discount_amount")
+        if limit_amount and max_amount and limit_amount > max_amount:
+            raise serializers.ValidationError({
+                "pos_discount_limit_amount":
+                    f"A cashier's limit ({limit_amount}) cannot be above the maximum "
+                    f"anybody may give ({max_amount})."})
+        return attrs
 
     def validate_expiry_warning_days(self, value):
         if value < 1:

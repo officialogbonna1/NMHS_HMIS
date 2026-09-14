@@ -22,6 +22,7 @@ FRONTEND_ROUTES = {
     "/nursing",
     "/patients", "/patients/new", "/pharmacy", "/queue", "/refer", "/send-to-doctor",
     "/transactions", "/ultrasound", "/users", "/vitals", "/outstanding", "/waivers",
+    "/finance", "/refunds", "/service-cancellations",
     "/admin", "/admin/settings", "/admin/notifications", "/admin/:resource",
     "/patients/:id", "/patients/:id/billing", "/patients/:id/notes",
     "/patients/:id/prescribe", "/patients/:id/record", "/patients/:id/vitals",
@@ -48,9 +49,18 @@ ROLES = [
 # pointing at nothing — and that is exactly what happened when the inventory
 # desk moved to Administration and the pharmacist's low-stock alert stayed
 # aimed at /inventory.
+#: `/patients/550e8400-…/lab` — the browser identity a chart link carries now.
+#: The integer form is still matched: notification rows written before the URL
+#: moved keep it, and reach the chart through the compatibility redirect.
+UUID_SEGMENT = re.compile(
+    r"/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
+
+
 ROUTE_ROLES = {
     "/inventory": {"inventory_manager"},
     "/pharmacy": {"pharmacist"},
+    "/pharmacy/pos": {"pharmacist", "cashier"},
+    "/pharmacy/sales": {"pharmacist", "cashier", "accountant"},
     "/admin": set(),                     # admin only
     "/admin/settings": set(),
     "/admin/notifications": set(),
@@ -58,6 +68,11 @@ ROUTE_ROLES = {
     "/departments": set(),
     "/users": set(),
     "/billing-items": {"cashier", "accountant"},
+    "/finance": {"cashier", "accountant"},
+    # Two desks, two guards, matching main.jsx: Refunds is REFUND_ROLES and
+    # Service Cancellations is CANCEL_ROLES.
+    "/refunds": {"cashier", "accountant"},
+    "/service-cancellations": {"cashier", "accountant"},
     "/laboratory": {"laboratory"},
     "/lab-catalogue": {"laboratory"},
     "/ultrasound": {"radiology"},
@@ -72,7 +87,7 @@ ADMIN = {"admin", "hospital_admin"}
 
 def normalise(url):
     """The route this URL matches, with ids and query strings stripped."""
-    return re.sub(r"/\d+", "/:id", url.split("?")[0])
+    return re.sub(r"/\d+", "/:id", UUID_SEGMENT.sub("/:id", url.split("?")[0]))
 
 
 def routable(url):

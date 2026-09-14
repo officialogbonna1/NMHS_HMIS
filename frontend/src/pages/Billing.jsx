@@ -9,6 +9,7 @@ import { readError } from "../api/errors";
 import { BILLING_CATEGORIES } from "./BillingItemsAdmin.jsx";
 import { BillSheet, ReceiptSheet } from "../components/PrintDocuments.jsx";
 import PatientPicker from "../components/PatientPicker.jsx";
+import RefundAction from "../components/RefundAction.jsx";
 import { useAuth } from "../auth/AuthContext.jsx";
 import { useToast } from "../components/Toaster.jsx";
 
@@ -244,15 +245,27 @@ function PatientPayments({ patient }) {
       {rows.length > 0 && (
         <div className="divide-y rounded-lg border">
           {rows.slice(0, 8).map((p) => (
-            <div key={p.id} className="flex items-center justify-between gap-3 px-3 py-2.5 text-sm">
-              <div>
-                <p className="font-medium text-slate-800">{currency(p.amount)}</p>
+            <div key={p.id} className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2 px-3 py-2.5 text-sm">
+              <div className="min-w-0">
+                <p className="font-medium text-slate-800">
+                  {currency(p.amount)}
+                  {Number(p.amount_refunded) > 0 && (
+                    <span className="ml-2 text-xs font-medium text-amber-800">
+                      {currency(p.amount_refunded)} refunded
+                    </span>
+                  )}
+                </p>
                 <p className="text-sm text-slate-600">
                   {new Date(p.created_at).toLocaleString()} · {p.method}
                   {p.received_by_name && ` · ${p.received_by_name}`}
                 </p>
               </div>
-              {p.reference && <span className="text-sm text-slate-600">{p.reference}</span>}
+              <div className="flex shrink-0 items-center gap-3">
+                {p.reference && <span className="text-sm text-slate-600">{p.reference}</span>}
+                {/* The same control Transaction History renders — one refund
+                    entry point, one eligibility rule, one API call. */}
+                <RefundAction payment={p} patient={patient} size="xs" />
+              </div>
             </div>
           ))}
         </div>
@@ -944,7 +957,7 @@ function OutstandingList({ onPick }) {
         {owing.slice(0, 15).map((l) => (
           <button
             key={l.id}
-            onClick={() => onPick({ id: l.patient, last_name: l.patient_name?.split(",")[0] ?? "", first_name: (l.patient_name?.split(",")[1] ?? "").trim(), patient_number: l.patient_number })}
+            onClick={() => onPick({ id: l.patient, last_name: l.patient_name?.split(",")[0] ?? "", first_name: (l.patient_name?.split(",")[1] ?? "").trim(), patient_number: l.patient_number, uuid: l.patient_uuid })}
             className="flex w-full items-center justify-between px-5 py-3 text-left text-sm hover:bg-slate-50"
           >
             <span className="font-medium">{l.patient_name}</span>

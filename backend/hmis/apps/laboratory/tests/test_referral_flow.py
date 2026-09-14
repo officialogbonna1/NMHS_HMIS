@@ -27,7 +27,7 @@ class ReferralFlowTests(TestCase):
         self.cashier = User.objects.create_user(username="cash", password="t", role="cashier")
         self.patient = Patient.objects.create(first_name="Ngozi", last_name="Ike", sex="F",
                                               created_by=self.reception)
-        self.department = Department.objects.create(code="lab", name="Laboratory")
+        self.department = Department.objects.get(code="laboratory")
         self.visit = Visit.objects.create(patient=self.patient, opened_by=self.reception,
                                           attending_doctor=self.doctor)
         self.route = PatientRoute.objects.create(
@@ -115,7 +115,7 @@ class ReferralFlowTests(TestCase):
 
         note = Notification.objects.filter(recipient=self.doctor, category="clinical").first()
         self.assertIsNotNone(note)
-        self.assertEqual(note.action_url, f"/patients/{self.patient.pk}/lab")
+        self.assertEqual(note.action_url, f"/patients/{self.patient.uuid}/lab")
 
     def test_ordering_a_test_raises_the_charge_by_itself(self):
         """

@@ -3,7 +3,8 @@ from django.contrib import admin, messages
 from apps.core.config import ProtectedConfigAdmin
 
 from .models import (
-    Batch, Item, ItemCategory, StockCount, StockCountLine, StockLocation, StockMovement,
+    Batch, Item, ItemCategory, StockCount, StockCountImport, StockCountLine, StockLocation,
+    StockMovement,
     StockRecord, StockTransfer, StockTransferLine, UnitOfMeasure,
 )
 
@@ -125,21 +126,26 @@ class ItemAdmin(ProtectedConfigAdmin, admin.ModelAdmin):
     edit. Quantities are not here: they are per location, on Stock records,
     and move only through the services.
     """
-    list_display = ["name", "category", "unit", "on_hand", "reorder_threshold",
+    list_display = ["name", "sku", "barcode", "category", "unit", "on_hand", "reorder_threshold",
                     "needs_reorder", "is_active"]
     list_editable = ["is_active", "reorder_threshold"]
     list_filter = ["category", "unit", "is_active"]
-    search_fields = ["name", "category__name"]
+    search_fields = ["name", "sku", "barcode", "category__name"]
     ordering = ["name"]
     list_select_related = ["category", "unit"]
     autocomplete_fields = ["category", "unit"]
     list_per_page = 50
     actions = ["activate", "deactivate"]
-    # A product with stock or prescriptions behind it is deactivated, never
-    # deleted, or every movement and bill naming it loses its subject.
-    protected_relations = ("batches", "prescription_set")
+    # A product with stock, prescriptions or POS sales behind it is deactivated,
+    # never deleted, or every movement and bill naming it loses its subject.
+    protected_relations = ("batches", "prescription_set", "pos_sale_lines")
     fieldsets = [
-        (None, {"fields": ["name", "category", "unit", "is_active"]}),
+        (None, {"fields": ["name", "strength", "dosage_form", "category", "unit", "is_active"]}),
+        ("Counter identifiers", {
+            "fields": ["sku", "barcode"],
+            "description": "Optional, unique when set. The pharmacy POS finds a product by "
+                           "either, and the stock-count CSV carries the SKU.",
+        }),
         ("Reordering", {
             "fields": ["reorder_threshold"],
             "description": "The hospital-wide total below which this product is "
@@ -312,6 +318,28 @@ class StockCountLineAdmin(admin.ModelAdmin):
         return False
 
     def has_change_permission(self, request, obj=None):
+        return False
+
+
+@admin.register(StockCountImport)
+class StockCountImportAdmin(admin.ModelAdmin):
+    """A CSV stock count: the preview somebody confirmed or discarded, and the
+    count documents it posted. Frozen — its adjustments are in the movement log,
+    and applying one is `inventory/count_csv.py`'s job, never a form's."""
+    list_display = ["reference", "filename", "status", "uploaded_by", "applied_by",
+                    "applied_at", "created_at"]
+    list_filter = ["status", "created_at"]
+    search_fields = ["reference", "filename", "checksum"]
+    list_select_related = ["uploaded_by", "applied_by"]
+    date_hierarchy = "created_at"
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
         return False
 
 

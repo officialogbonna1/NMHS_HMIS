@@ -54,6 +54,13 @@ class StockRecordSerializer(serializers.ModelSerializer):
     item = serializers.IntegerField(source="batch.item_id", read_only=True)
     item_name = serializers.CharField(source="batch.item.name", read_only=True)
     item_unit = serializers.CharField(source="batch.item.unit_label", read_only=True)
+    item_sku = serializers.CharField(source="batch.item.sku", read_only=True, default="")
+    # The relation for filtering, the name for reading — the same pair
+    # `ItemSerializer` carries, so a stock line and a product row say the
+    # category the same way and there is one copy of the text.
+    item_category = serializers.IntegerField(source="batch.item.category_id", read_only=True)
+    item_category_name = serializers.CharField(source="batch.item.category_name",
+                                               read_only=True, default="")
     batch_no = serializers.CharField(source="batch.batch_no", read_only=True)
     expiry_date = serializers.DateField(source="batch.expiry_date", read_only=True)
     is_expired = serializers.ReadOnlyField()
@@ -67,6 +74,7 @@ class StockRecordSerializer(serializers.ModelSerializer):
     class Meta:
         model = StockRecord
         fields = ["id", "batch", "batch_no", "item", "item_name", "item_unit",
+                  "item_sku", "item_category", "item_category_name",
                   "location", "location_code", "location_name", "quantity",
                   "expiry_date", "is_expired", "sale_price", "cost_price"]
         read_only_fields = fields
@@ -87,9 +95,20 @@ class ItemSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Item
-        fields = ["id", "name", "category", "category_name", "reorder_threshold",
-                  "unit", "unit_name", "unit_label", "is_active", "batch_count",
-                  "total_quantity", "is_low_stock", "by_location"]
+        fields = ["id", "name", "sku", "barcode", "strength", "dosage_form", "category",
+                  "category_name",
+                  "reorder_threshold", "unit", "unit_name", "unit_label", "is_active",
+                  "batch_count", "total_quantity", "is_low_stock", "by_location"]
+        # Optional and unique. A blank from a form is "none" (the model stores
+        # NULL), so it never collides with another product that has none.
+        extra_kwargs = {"sku": {"allow_null": True, "required": False},
+                        "barcode": {"allow_null": True, "required": False}}
+
+    def validate_sku(self, value):
+        return (value or "").strip() or None
+
+    def validate_barcode(self, value):
+        return (value or "").strip() or None
 
     def get_batch_count(self, obj):
         # What makes a product undeletable — shown so the administration
@@ -127,7 +146,7 @@ class ItemForPrescribingSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Item
-        fields = ["id", "name", "category", "unit", "available"]
+        fields = ["id", "name", "strength", "dosage_form", "category", "unit", "available"]
 
     def get_available(self, obj):
         from apps.pharmacy.services import available_quantity
@@ -147,6 +166,8 @@ class BatchSerializer(serializers.ModelSerializer):
     is_expired = serializers.ReadOnlyField()
     item_name = serializers.CharField(source="item.name", read_only=True)
     item_unit = serializers.CharField(source="item.unit_label", read_only=True)
+    item_category_name = serializers.CharField(source="item.category_name",
+                                               read_only=True, default="")
     total_quantity = serializers.ReadOnlyField()
     stock = StockRecordSerializer(many=True, read_only=True)
 
@@ -165,7 +186,8 @@ class BatchSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Batch
-        fields = ["id", "item", "item_name", "item_unit", "batch_no", "cost_price",
+        fields = ["id", "item", "item_name", "item_unit", "item_category_name",
+                  "batch_no", "cost_price",
                   "sale_price", "expiry_date", "supplier", "received_date",
                   "is_expired", "total_quantity", "stock",
                   "opening_quantity", "quantity", "location"]
@@ -174,6 +196,8 @@ class BatchSerializer(serializers.ModelSerializer):
 
 class StockMovementSerializer(serializers.ModelSerializer):
     item_name = serializers.CharField(source="batch.item.name", read_only=True)
+    item_category_name = serializers.CharField(source="batch.item.category_name",
+                                               read_only=True, default="")
     batch_no = serializers.CharField(source="batch.batch_no", read_only=True)
     location_name = serializers.CharField(source="location.name", read_only=True)
     location_code = serializers.CharField(source="location.code", read_only=True)
@@ -253,3 +277,30 @@ class StockCountSerializer(serializers.ModelSerializer):
     def get_counted_by_name(self, obj):
         user = obj.counted_by
         return (user.get_full_name() or user.username) if user else None
+
+
+class StockCountImportSerializer(serializers.ModelSerializer):
+    """A CSV count's preview or its applied result. Read-only — the service writes it."""
+    uploaded_by_name = serializers.SerializerMethodField()
+    applied_by_name = serializers.SerializerMethodField()
+    counts = serializers.SerializerMethodField()
+    is_applicable = serializers.BooleanField(read_only=True)
+
+    class Meta:
+        model = __import__("apps.inventory.models", fromlist=["StockCountImport"]).StockCountImport
+        fields = ["id", "reference", "filename", "status", "is_applicable", "summary", "errors",
+                  "rows", "uploaded_by", "uploaded_by_name", "applied_by", "applied_by_name",
+                  "applied_at", "counts", "created_at"]
+        read_only_fields = fields
+
+    def get_uploaded_by_name(self, obj):
+        user = obj.uploaded_by
+        return (user.get_full_name() or user.username) if user else None
+
+    def get_applied_by_name(self, obj):
+        user = obj.applied_by
+        return (user.get_full_name() or user.username) if user else None
+
+    def get_counts(self, obj):
+        return [{"id": count.pk, "reference": count.reference, "location": count.location_id}
+                for count in obj.counts.all()]

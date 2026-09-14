@@ -1,7 +1,10 @@
 import { createContext, useContext, useEffect, useState } from "react";
 import api from "../api/client";
 
-const AuthContext = createContext(null);
+// Exported so a test can mount a component under a chosen role without
+// standing up a login. `AuthProvider` remains the only thing the application
+// itself renders.
+export const AuthContext = createContext(null);
 
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(null);

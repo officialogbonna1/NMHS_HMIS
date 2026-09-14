@@ -53,6 +53,8 @@ REACHABLE = {
     "/api/notifications/": EVERYONE,                # scoped to the caller
     "/api/notifications/unread-count/": EVERYONE,
     "/api/notifications/mark_all_read/": EVERYONE,
+    "/api/notifications/archive_selected/": EVERYONE,  # own notifications only
+    "/api/notifications/archive_all/": EVERYONE,       # the caller's inbox
     "/api/users/": EVERYONE,                        # staff directory, minimal fields
     "/api/departments/": EVERYONE,
     "/api/services/": EVERYONE,
@@ -107,6 +109,19 @@ REACHABLE = {
     "/api/charges/discount-balance/": [CASH, ACC, R],
     "/api/payments/": [CASH, ACC, R, PH],
     "/api/adjustments/": [CASH, ACC, R],
+    # The refund register — read like the write-off register, by the desks
+    # that have to make a statement add up. Granting a refund is
+    # `POST /api/payments/<id>/refund/` and is narrower still (REFUND_ROLES).
+    "/api/refunds/": [CASH, ACC, R],
+    # The figures heading the two desks. Narrower than the lists they count:
+    # the Service Cancellations desk is CANCEL_ROLES and the Refunds desk is
+    # REFUND_ROLES — the people who act on them, not everyone who reads a bill.
+    "/api/charges/cancellation-summary/": [CASH, ACC],
+    "/api/refunds/summary/": [CASH, ACC],
+    # Hospital-wide revenue by department is a management figure, so it sits
+    # with the cash desk and accounts rather than with every counter that can
+    # take a payment — reception bills at a window and is not on it.
+    "/api/finance/report/": [CASH, ACC],
 
     # --- pharmacy and stock ----------------------------------------------
     "/api/prescriptions/": [D, PH],
@@ -150,8 +165,20 @@ REACHABLE = {
     "/api/audit-logs/": [],
     "/api/notifications/overview/": [],
     # Not finished: SaleItem sells stock the shelf still thinks it has.
-    "/api/sales/": [],
-    "/api/sale-items/": [],
+    # The pharmacy POS till. Pharmacists and cashiers operate it; the
+    # accountant reads sales and registers to reconcile them, and never sells.
+    "/api/sales/": [PH, CASH, ACC],
+    "/api/sales/summary/": [PH, CASH, ACC],
+    "/api/sales/returns/": [PH, CASH, ACC],     # the POS returns register
+    "/api/sales/products/": [PH, CASH],
+    "/api/sales/hold/": [PH, CASH],
+    "/api/sales/complete/": [PH, CASH],
+    "/api/pos-registers/": [PH, CASH, ACC],
+    "/api/pos-registers/current/": [PH, CASH],
+    "/api/pos-registers/open/": [PH, CASH],
+    # The CSV stock count has the count sheet's authority.
+    "/api/stock-counts/export/": [PH, INV],
+    "/api/stock-count-imports/": [PH, INV],
 }
 
 

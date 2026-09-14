@@ -5,6 +5,7 @@ import api from "../api/client";
 import { patientNumber } from "../components/patientIdentity.js";
 import { TextLink, Page, PageHeader } from "../components/ui.jsx";
 import { useAuth } from "../auth/AuthContext.jsx";
+import RefundAction from "../components/RefundAction.jsx";
 import { PrintButton } from "../components/printing.jsx";
 import PatientPicker from "../components/PatientPicker.jsx";
 
@@ -21,6 +22,9 @@ const KIND_STYLE = {
   discount: { label: "Discount", tone: "bg-violet-50 text-violet-700 border-violet-200", sign: "−" },
   waiver: { label: "Waiver", tone: "bg-slate-50 text-slate-600 border-slate-200", sign: "−" },
   refund: { label: "Refund", tone: "bg-amber-50 text-amber-800 border-amber-200", sign: "+" },
+  // A withdrawn bill. It stays on the statement — deleting or hiding it would
+  // make the account unauditable — but it moves the balance by nothing.
+  cancelled: { label: "Cancelled", tone: "bg-slate-50 text-slate-600 border-slate-200", sign: "" },
 };
 
 const FILTERS = [
@@ -28,6 +32,8 @@ const FILTERS = [
   ["charge", "Charges"],
   ["payment", "Payments"],
   ["credit", "Discounts & waivers"],
+  ["refund", "Refunds"],
+  ["cancelled", "Cancelled services"],
 ];
 
 export default function TransactionHistory() {
@@ -176,7 +182,8 @@ function Statement({ patient }) {
                     <span className={`rounded-full border px-2 py-0.5 text-xs font-medium ${style.tone}`}>
                       {style.label}
                     </span>
-                    <span className="font-medium">{row.label}</span>
+                    <span className={`font-medium ${row.kind === "cancelled"
+                      ? "text-slate-500 line-through" : ""}`}>{row.label}</span>
                   </div>
                   <p className="mt-0.5 text-xs text-slate-600">
                     {new Date(row.date).toLocaleString()}
@@ -185,10 +192,29 @@ function Statement({ patient }) {
                   </p>
                 </div>
                 <div className="shrink-0 text-right">
-                  <p className={`font-semibold ${row.debit ? "text-red-700" : "text-emerald-700"}`}>
-                    {style.sign}{currency(row.amount)}
-                  </p>
+                  {row.kind === "cancelled" ? (
+                    <p className="font-semibold text-slate-500 line-through">
+                      {currency(row.originalAmount)}
+                    </p>
+                  ) : (
+                    <p className={`font-semibold ${row.debit ? "text-red-700" : "text-emerald-700"}`}>
+                      {style.sign}{currency(row.amount)}
+                    </p>
+                  )}
                   <p className="text-xs text-slate-600">balance {currency(row.balanceAfter)}</p>
+                  {row.kind === "payment" && Number(row.payment?.amount_refunded) > 0 && (
+                    <p className="mt-1 text-xs font-medium text-amber-800">
+                      {currency(row.payment.amount_refunded)} refunded
+                    </p>
+                  )}
+                  {/* The refund entry point, shared with the Billing counter
+                      so the two screens can never disagree about what is left
+                      to refund on the same payment. */}
+                  {row.kind === "payment" && (
+                    <div className="mt-1.5 flex justify-end">
+                      <RefundAction payment={row.payment} patient={patient} size="xs" />
+                    </div>
+                  )}
                 </div>
               </div>
             );
@@ -218,18 +244,30 @@ function Summary({ label, value, tone, note }) {
 // the newest entry reads first.
 function buildStatement(charges, payments, adjustments) {
   const rows = [
-    ...(charges ?? [])
-      .filter((c) => c.status !== "cancelled")
-      .map((c) => ({
-        kind: "charge", id: c.id, date: c.created_at, label: c.description,
-        amount: Number(c.amount), debit: true,
-        detail: c.department_name || null,
-      })),
+    // Cancelled charges are shown, not hidden. The bill was raised and then
+    // withdrawn, and both halves of that are the record — what they no longer
+    // do is move the balance, so they carry `amount: 0` while still printing
+    // their original figure.
+    ...(charges ?? []).map((c) => ({
+      kind: c.status === "cancelled" ? "cancelled" : "charge",
+      id: c.id, date: c.created_at, label: c.description,
+      amount: c.status === "cancelled" ? 0 : Number(c.amount),
+      originalAmount: Number(c.amount),
+      debit: true,
+      detail: c.status === "cancelled"
+        ? [c.department_name, c.cancellation_reason].filter(Boolean).join(" · ") || null
+        : c.department_name || null,
+      by: c.status === "cancelled" ? c.cancelled_by_name : null,
+    })),
     ...(payments ?? []).map((p) => ({
       kind: "payment", id: p.id, date: p.created_at,
       label: `Payment — ${p.method}`, amount: Number(p.amount), debit: false,
       by: p.received_by_name,
       detail: p.channel === "pharmacy" ? "pharmacy counter" : p.reference || null,
+      // The whole row, so the refund control knows what is still refundable
+      // without a second lookup. A refund never alters this figure: `amount`
+      // is what arrived and stays what arrived.
+      payment: p,
     })),
     ...(adjustments ?? []).map((a) => ({
       kind: a.kind, id: a.id, date: a.created_at,
@@ -290,5 +328,5 @@ function RecentlyBilled({ onPick }) {
 function patientFromLedger(ledger) {
   const [last = "", first = ""] = (ledger.patient_name ?? "").split(",");
   return { id: ledger.patient, last_name: last.trim(), first_name: first.trim(),
-           patient_number: ledger.patient_number };
+           patient_number: ledger.patient_number, uuid: ledger.patient_uuid };
 }

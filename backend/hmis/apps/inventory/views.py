@@ -15,19 +15,22 @@ people in this hospital — the pharmacist runs the counter and the store
 between them — so authority is per *operation*, not per location.
 """
 from django.core.exceptions import PermissionDenied, ValidationError
+from django.http import HttpResponse
+from django.utils import timezone
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework import filters, permissions, status, viewsets
 from rest_framework.decorators import action
+from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.response import Response
 
 from apps.accounts.permissions import IsAdmin, RoleRequired, STOCK_ROLES
 from apps.core.config import ProtectedConfigMixin
 from apps.core.services import audit_event
 
-from . import serializers
+from . import count_csv, serializers
 from .models import (
-    Batch, Item, ItemCategory, StockCount, StockLocation, StockMovement, StockRecord,
-    StockTransfer, UnitOfMeasure, receiving_location,
+    Batch, Item, ItemCategory, StockCount, StockCountImport, StockLocation, StockMovement,
+    StockRecord, StockTransfer, UnitOfMeasure, receiving_location,
 )
 from .services import (
     count_sheet, fefo_lines_for, post_stock_count, receive_stock, record_stock_count,
@@ -153,12 +156,12 @@ class ItemViewSet(ProtectedConfigMixin, viewsets.ModelViewSet):
     reads correctly.
     """
     queryset = Item.objects.select_related("category", "unit")
-    protected_relations = ("batches", "prescription_set")
+    protected_relations = ("batches", "prescription_set", "pos_sale_lines")
     # The doctor's drug picker searches this list rather than filtering the
     # first page client-side, which quietly hid every drug past number 25.
     filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
     filterset_fields = ["category", "unit", "is_active"]
-    search_fields = ["name", "category__name"]
+    search_fields = ["name", "sku", "barcode", "category__name"]
     ordering = ["name"]
 
     def get_permissions(self):
@@ -188,10 +191,11 @@ class BatchViewSet(viewsets.ModelViewSet):
     movement is written by the service. Nothing here can change a quantity
     afterwards; that is a transfer, a count or a write-off.
     """
-    queryset = Batch.objects.select_related("item").prefetch_related("stock__location")
+    queryset = (Batch.objects.select_related("item__category", "item__unit")
+                .prefetch_related("stock__location"))
     serializer_class = serializers.BatchSerializer
     filter_backends = [DjangoFilterBackend]
-    filterset_fields = ["item"]
+    filterset_fields = ["item", "item__category"]
 
     def get_permissions(self):
         return [RoleRequired(STOCK_ROLES)]
@@ -305,11 +309,14 @@ class StockRecordViewSet(viewsets.ReadOnlyModelViewSet):
     is the number stock control turns on, and the only things that may move
     it are a receipt, a transfer, a count, a write-off or a dispense.
     """
-    queryset = StockRecord.objects.select_related("batch__item", "location")
+    queryset = StockRecord.objects.select_related("batch__item__category", "location")
     serializer_class = serializers.StockRecordSerializer
     filter_backends = [DjangoFilterBackend, filters.SearchFilter]
-    filterset_fields = ["location", "batch", "batch__item"]
-    search_fields = ["batch__item__name", "batch__batch_no"]
+    # Product + location + category: "what Pain Relief is standing in the
+    # pharmacy" is this list narrowed, never a category-specific stock system.
+    filterset_fields = ["location", "batch", "batch__item", "batch__item__category"]
+    search_fields = ["batch__item__name", "batch__batch_no", "batch__item__sku",
+                     "batch__item__category__name"]
 
     def get_permissions(self):
         return [RoleRequired(STOCK_ROLES)]
@@ -468,6 +475,46 @@ class StockCountViewSet(viewsets.ModelViewSet):
             ],
         })
 
+    @action(detail=False, methods=["get"])
+    def export(self, request):
+        """
+        The count sheet as a CSV (`inventory/count_csv.py`): one row per batch per
+        location with its system quantity, and Counted Qty left for whoever walks
+        the shelves. `?location=` and `?category=` narrow it; `?include_empty=1`
+        lists lines standing at zero too. A pharmacist exports only the shelf they
+        may count, and asking for another location is refused rather than
+        quietly emptied.
+        """
+        params = request.query_params
+        allowed = count_csv.countable_locations(request.user)
+        location = None
+        if params.get("location"):
+            location = StockLocation.objects.filter(pk=_as_int(params.get("location"))).first()
+            if location is None:
+                return Response({"location": "That location does not exist."},
+                                status=status.HTTP_400_BAD_REQUEST)
+            if not allowed.filter(pk=location.pk).exists():
+                return Response({"detail": f"You are not authorised to count {location.name}."},
+                                status=status.HTTP_403_FORBIDDEN)
+        category = None
+        if params.get("category"):
+            category = ItemCategory.objects.filter(pk=_as_int(params.get("category"))).first()
+            if category is None:
+                return Response({"category": "That category does not exist."},
+                                status=status.HTTP_400_BAD_REQUEST)
+        records = list(count_csv.stock_lines(
+            location=location, category=category, locations=allowed,
+            include_empty=params.get("include_empty") in ("1", "true", "True")))
+        stamp = timezone.localtime().strftime("%Y%m%d-%H%M")
+        filename = f"stock-count-{location.code if location else 'all-locations'}-{stamp}.csv"
+        response = HttpResponse(count_csv.export_csv(records), content_type="text/csv; charset=utf-8")
+        response["Content-Disposition"] = f'attachment; filename="{filename}"'
+        audit_event(actor=request.user, action="stock.count_exported", instance=location,
+                    details={"location": location.code if location else None,
+                             "category": category.name if category else None,
+                             "lines": len(records)}, request=request)
+        return response
+
     def create(self, request, *args, **kwargs):
         location = StockLocation.objects.filter(
             pk=_as_int(request.data.get("location"))).first()
@@ -505,10 +552,77 @@ class StockCountViewSet(viewsets.ModelViewSet):
 
 class StockMovementViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = StockMovement.objects.select_related(
-        "batch__item", "location", "performed_by", "transfer")
+        "batch__item__category", "location", "performed_by", "transfer")
     serializer_class = serializers.StockMovementSerializer
     filter_backends = [DjangoFilterBackend]
-    filterset_fields = ["batch", "reason", "location", "transfer"]
+    filterset_fields = ["batch", "reason", "location", "transfer", "batch__item__category"]
 
     def get_permissions(self):
         return [RoleRequired(STOCK_ROLES)]
+
+
+class StockCountImportViewSet(viewsets.ReadOnlyModelViewSet):
+    """
+    The CSV stock count (`inventory/count_csv.py`), same authority as the count
+    sheet: STOCK_ROLES.
+
+    `POST /stock-count-imports/` with a multipart `file` validates it and keeps
+    a preview — nothing moves. `POST …/<id>/apply/` posts it, all of it and
+    once. `POST …/<id>/discard/` abandons a preview. The sheet to count from is
+    `GET /stock-counts/export/`.
+    """
+    queryset = (StockCountImport.objects.select_related("uploaded_by", "applied_by")
+                .prefetch_related("counts"))
+    serializer_class = serializers.StockCountImportSerializer
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
+    MAX_BYTES = 5 * 1024 * 1024
+
+    def get_permissions(self):
+        return [RoleRequired(STOCK_ROLES)]
+
+    def create(self, request, *args, **kwargs):
+        upload = request.FILES.get("file")
+        if upload is None:
+            return Response({"file": "Choose the CSV file to import."},
+                            status=status.HTTP_400_BAD_REQUEST)
+        if upload.size > self.MAX_BYTES:
+            return Response({"file": "That file is too large for one count — export by location."},
+                            status=status.HTTP_400_BAD_REQUEST)
+        stock_import = count_csv.preview_import(content=upload.read(), filename=upload.name,
+                                                user=request.user)
+        audit_event(actor=request.user, action="stock.count_import_previewed",
+                    instance=stock_import,
+                    details={"reference": stock_import.reference, "filename": stock_import.filename,
+                             "errors": len(stock_import.errors),
+                             "counted": stock_import.summary.get("counted", 0)},
+                    request=request)
+        return Response(self.get_serializer(stock_import).data, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=["post"])
+    def apply(self, request, pk=None):
+        stock_import = self.get_object()
+        try:
+            applied = count_csv.apply_import(stock_import=stock_import, user=request.user)
+        except PermissionDenied as exc:
+            return Response(_error(exc), status=status.HTTP_403_FORBIDDEN)
+        except ValidationError as exc:
+            return Response(_error(exc), status=status.HTTP_400_BAD_REQUEST)
+        audit_event(actor=request.user, action="stock.count_imported", instance=applied,
+                    details={"reference": applied.reference,
+                             "counts": [count.reference for count in applied.counts.all()],
+                             "units_added": applied.summary.get("units_added", 0),
+                             "units_removed": applied.summary.get("units_removed", 0)},
+                    request=request)
+        return Response(self.get_serializer(applied).data)
+
+    @action(detail=True, methods=["post"])
+    def discard(self, request, pk=None):
+        stock_import = self.get_object()
+        try:
+            count_csv.discard_import(stock_import=stock_import)
+        except ValidationError as exc:
+            return Response(_error(exc), status=status.HTTP_400_BAD_REQUEST)
+        audit_event(actor=request.user, action="stock.count_import_discarded",
+                    instance=stock_import, details={"reference": stock_import.reference},
+                    request=request)
+        return Response(self.get_serializer(stock_import).data)

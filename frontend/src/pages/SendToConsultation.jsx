@@ -143,6 +143,7 @@ export default function SendToConsultation() {
                       key={route.id}
                       onClick={() => setPatient({
                         id: route.patient_id,
+                        uuid: route.patient_uuid,
                         patient_number: route.patient_number,
                         display: route.patient_name,
                       })}

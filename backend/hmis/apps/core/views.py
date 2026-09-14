@@ -39,15 +39,32 @@ class NotificationViewSet(viewsets.ModelViewSet):
     def _wants_everyone(self):
         return self.request.query_params.get("scope") == "all"
 
+    def _wants_archived(self):
+        return self.request.query_params.get("archived") in ("true", "1")
+
     def _mine(self):
         return Notification.objects.filter(recipient=self.request.user)
+
+    def _own(self, pk):
+        """The caller's own notification, or 403 — for anything that changes one."""
+        notification = self._mine().filter(pk=pk).first()
+        if notification is None:
+            raise PermissionDenied("You can only change your own notifications.")
+        return notification
 
     def get_queryset(self):
         if self._wants_everyone():
             if not self.request.user.is_admin:
                 raise PermissionDenied("Only an admin can read other people's notifications.")
-            return Notification.objects.select_related("recipient")
-        return self._mine().select_related("recipient")
+            rows = Notification.objects.select_related("recipient")
+        else:
+            rows = self._mine().select_related("recipient")
+        # Inbox or archive is the list's question only. A detail route names
+        # the row it means, and hiding an archived one there would stop it
+        # being marked read or restored (rule 21's lesson).
+        if self.action == "list":
+            rows = rows.archived() if self._wants_archived() else rows.active()
+        return rows
 
     def create(self, request, *args, **kwargs):
         # Notifications are only ever created server-side via core.services.notify().
@@ -55,8 +72,8 @@ class NotificationViewSet(viewsets.ModelViewSet):
 
     def partial_update(self, request, *args, **kwargs):
         """
-        Marking one as read. Only ever your own: an admin reading the whole
-        system is looking, not answering somebody else's mail.
+        Marking one as read or unread. Only ever your own: an admin reading the
+        whole system is looking, not answering somebody else's mail.
         """
         if not self._mine().filter(pk=kwargs.get("pk")).exists():
             raise PermissionDenied("You can only mark your own notifications as read.")
@@ -69,6 +86,50 @@ class NotificationViewSet(viewsets.ModelViewSet):
         self._mine().update(is_read=True)
         return Response(status=204)
 
+    # --- archiving -------------------------------------------------------
+    # There is no delete: `http_method_names` has no DELETE, Django admin
+    # refuses one, and nothing below removes a row. Archiving moves a
+    # notification out of the inbox and keeps it, and is always your own.
+
+    @action(detail=True, methods=["post"])
+    def archive(self, request, pk=None):
+        """Out of the inbox, still stored. Archiving twice keeps the first time."""
+        notification = self._own(pk)
+        Notification.objects.filter(pk=notification.pk).archive()
+        notification.refresh_from_db()
+        return Response(self.get_serializer(notification).data)
+
+    @action(detail=True, methods=["post"])
+    def unarchive(self, request, pk=None):
+        """Back into the inbox."""
+        notification = self._own(pk)
+        Notification.objects.filter(pk=notification.pk).restore()
+        notification.refresh_from_db()
+        return Response(self.get_serializer(notification).data)
+
+    @action(detail=False, methods=["post"])
+    def archive_selected(self, request):
+        """
+        `{"ids": [...]}`. Refused whole if any of them is somebody else's, so a
+        mixed selection never half-succeeds.
+        """
+        ids = request.data.get("ids")
+        try:
+            ids = {int(i) for i in ids} if isinstance(ids, list) else set()
+        except (TypeError, ValueError):
+            ids = set()
+        if not ids:
+            raise ValidationError({"ids": "Send the ids of the notifications to archive."})
+        selection = self._mine().filter(pk__in=ids)
+        if selection.count() != len(ids):
+            raise PermissionDenied("You can only archive your own notifications.")
+        return Response({"archived": selection.archive()})
+
+    @action(detail=False, methods=["post"])
+    def archive_all(self, request):
+        # `_mine()`, like mark_all_read: the caller's inbox, never the hospital's.
+        return Response({"archived": self._mine().archive()})
+
     @action(detail=False, methods=["get"], url_path="unread-count")
     def unread_count(self, request):
         """
@@ -76,35 +137,38 @@ class NotificationViewSet(viewsets.ModelViewSet):
         there is something waiting. Deliberately not the notification list:
         this is fetched on a timer from every page — and deliberately your
         own, admin or not, because a bell that counts other people's work is
-        one you learn to ignore.
+        one you learn to ignore. An archived notification never counts: it
+        has been dealt with, and a badge you cannot clear stops being read.
         """
-        return Response({"unread": self._mine().filter(is_read=False).count()})
+        return Response({"unread": self._mine().active().filter(is_read=False).count()})
 
     @action(detail=False, methods=["get"], permission_classes=[IsAdmin])
     def overview(self, request):
         """
         What the whole system has been telling people, summarised: how many
-        notifications each role and each person has, and how many are still
-        unread. Answers "is anybody actually reading the lab's queue?" without
-        scrolling a list of thousands.
+        notifications each role and each person has, how many are still
+        unread in their inbox, and how many they archived. Answers "is anybody
+        actually reading the lab's queue?" without scrolling a list of
+        thousands.
         """
+        unread = models.Count("id", filter=models.Q(is_read=False, archived_at__isnull=True))
+        archived = models.Count("id", filter=models.Q(archived_at__isnull=False))
         rows = (Notification.objects.values("recipient__username", "recipient__role")
-                .annotate(total=models.Count("id"),
-                          unread=models.Count("id", filter=models.Q(is_read=False)))
+                .annotate(total=models.Count("id"), unread=unread, archived=archived)
                 .order_by("recipient__role", "recipient__username"))
         by_category = (Notification.objects.values("category")
-                       .annotate(total=models.Count("id"),
-                                 unread=models.Count("id", filter=models.Q(is_read=False)))
+                       .annotate(total=models.Count("id"), unread=unread, archived=archived)
                        .order_by("-total"))
         return Response({
             "people": [
                 {"username": r["recipient__username"], "role": r["recipient__role"],
-                 "total": r["total"], "unread": r["unread"]}
+                 "total": r["total"], "unread": r["unread"], "archived": r["archived"]}
                 for r in rows
             ],
             "categories": list(by_category),
             "total": Notification.objects.count(),
-            "unread": Notification.objects.filter(is_read=False).count(),
+            "unread": Notification.objects.active().filter(is_read=False).count(),
+            "archived": Notification.objects.archived().count(),
         })
 
 

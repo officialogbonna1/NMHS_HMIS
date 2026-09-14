@@ -1,7 +1,7 @@
 import { useSearchParams } from "react-router-dom";
 import { Page, PageHeader, MetaStat, TabBar, Tab } from "../components/ui.jsx";
 import {
-  MovementLog, PhysicalCount, ReceiveStock, StockOnHand, TransferStock, useLocations,
+  CountImportExport, MovementLog, PhysicalCount, ReceiveStock, StockOnHand, TransferStock, useLocations,
 } from "../components/StockPanels.jsx";
 
 // **Administration → Inventory.** Stock control across every location the
@@ -29,6 +29,7 @@ const TABS = [
   ["receive", "Receive stock"],
   ["transfer", "Transfer"],
   ["count", "Physical count"],
+  ["import", "Import / export"],
   ["movements", "Movement log"],
 ];
 
@@ -75,6 +76,7 @@ export default function InventoryDashboard() {
       {tab === "receive" && <ReceiveStock locations={locations} store={store} />}
       {tab === "transfer" && <TransferStock locations={locations} store={store} counter={counter} />}
       {tab === "count" && <PhysicalCount locations={locations} store={store} />}
+      {tab === "import" && <CountImportExport locations={locations} />}
       {tab === "movements" && <MovementLog locations={locations} />}
     </Page>
   );

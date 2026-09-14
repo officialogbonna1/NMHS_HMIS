@@ -4,8 +4,8 @@ import api from "../api/client";
 import { readError } from "../api/errors";
 import { useToast } from "./Toaster.jsx";
 import {
-  Alert, Badge, Button, EmptyState, Field, Input, PageHeader, MetaStat, SearchInput, Select,
-  Table, TableWrap, TabBar, Tab, Td, Th, THead, Tr, naira,
+  Alert, Badge, Button, EmptyState, ErrorState, Field, Input, Modal, PageHeader, MetaStat, SearchInput,
+  Select, Skeleton, Table, TableWrap, TabBar, Tab, Td, Th, THead, Tr, naira,
 } from "./ui.jsx";
 
 // The stock panels, shared by the two workspaces that need them.
@@ -32,8 +32,10 @@ const REASON_LABEL = {
   transfer_out: "Transferred out",
   transfer_in: "Transferred in",
   prescription: "Dispensed",
-  sale: "Sold",
+  sale: "POS sale",
   adjustment: "Stock count",
+  stock_count: "Physical stock count (CSV)",
+  returned: "Customer return (quarantined)",
   expired_writeoff: "Expired write-off",
 };
 
@@ -42,7 +44,10 @@ const REASON_TONE = {
   transfer_in: "info",
   transfer_out: "info",
   prescription: "brand",
+  sale: "brand",
   adjustment: "warning",
+  stock_count: "warning",
+  returned: "violet",
   expired_writeoff: "danger",
 };
 
@@ -55,12 +60,29 @@ export function useLocations() {
   });
 }
 
-export function useStockRecords(locationId) {
+export function useStockRecords(locationId, categoryId) {
   return useQuery({
-    queryKey: ["stock-records", locationId ?? "all"],
+    // The category narrows the list on the server, not in the browser: with
+    // 500 rows to a page, filtering what arrived would hide whatever did not.
+    queryKey: ["stock-records", locationId ?? "all", categoryId ?? "all"],
     queryFn: () => api.get("/stock-records/", {
-      params: { page_size: 500, ...(locationId ? { location: locationId } : {}) },
+      params: {
+        page_size: 500,
+        ...(locationId ? { location: locationId } : {}),
+        ...(categoryId ? { batch__item__category: categoryId } : {}),
+      },
     }).then((r) => r.data.results ?? r.data),
+  });
+}
+
+// One list of categories behind every picker on these panels, so the stock
+// filter, the count-sheet export and the movement log all offer the same
+// groups the catalogue actually has.
+export function useItemCategories() {
+  return useQuery({
+    queryKey: ["item-categories", "picker"],
+    queryFn: () => api.get("/item-categories/", { params: { page_size: 200 } })
+      .then((r) => r.data.results ?? r.data),
   });
 }
 
@@ -86,33 +108,61 @@ export function useRefresh() {
 
 export function StockOnHand({ locations, lockedLocation }) {
   const [locationId, setLocationId] = useState("");
+  const [categoryId, setCategoryId] = useState("");
+  const [term, setTerm] = useState("");
   // Locked: this panel is one shelf, and the filter is not the user's to move.
+  // The category is the user's either way — it narrows what is on the shelf,
+  // it does not change which shelf.
   const active = lockedLocation ? lockedLocation.id : (locationId || null);
-  const { data: records, isLoading } = useStockRecords(active);
+  const { data: records, isLoading } = useStockRecords(active, categoryId || null);
   const { data: items } = useItems();
+  const categories = useItemCategories();
 
-  const lowStock = (items ?? []).filter((i) => i.is_low_stock);
-  const expiringSoon = (records ?? []).filter(
+  const search = term.trim().toLowerCase();
+  const visible = (records ?? []).filter((r) => !search || [
+    r.item_name, r.item_sku, r.item_category_name, r.batch_no,
+  ].some((field) => (field ?? "").toLowerCase().includes(search)));
+
+  // The low-stock and expiry panels answer the same question the table does,
+  // so the category narrows them too — "what Pain Relief is running out".
+  const lowStock = (items ?? []).filter(
+    (i) => i.is_low_stock && (!categoryId || String(i.category) === String(categoryId)));
+  const expiringSoon = visible.filter(
     (r) => r.quantity > 0 && daysUntil(r.expiry_date) <= 30);
 
   if (isLoading) return <p className="text-slate-600">Loading…</p>;
 
+  const categoryName = (categories.data ?? [])
+    .find((c) => String(c.id) === String(categoryId))?.name;
+
   return (
     <div className="space-y-6">
-      {!lockedLocation && (
-        <div className="flex flex-wrap items-end gap-3">
-          <div className="min-w-0">
-            <Field label="Location">
-              <Select value={locationId} onChange={(e) => setLocationId(e.target.value)}>
-                <option value="">Everywhere in the hospital</option>
-                {(locations ?? []).map((l) => (
-                  <option key={l.id} value={l.id}>{l.name}</option>
-                ))}
-              </Select>
-            </Field>
-          </div>
-        </div>
-      )}
+      <div className="grid min-w-0 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        {!lockedLocation && (
+          <Field label="Location">
+            <Select aria-label="Location" value={locationId}
+                    onChange={(e) => setLocationId(e.target.value)}>
+              <option value="">Everywhere in the hospital</option>
+              {(locations ?? []).map((l) => (
+                <option key={l.id} value={l.id}>{l.name}</option>
+              ))}
+            </Select>
+          </Field>
+        )}
+        <Field label="Category">
+          <Select aria-label="Category" value={categoryId}
+                  onChange={(e) => setCategoryId(e.target.value)}>
+            <option value="">Every category</option>
+            {(categories.data ?? []).map((c) => (
+              <option key={c.id} value={c.id}>{c.name}</option>
+            ))}
+          </Select>
+        </Field>
+        <Field label="Search">
+          <SearchInput value={term} onChange={setTerm}
+                       placeholder="Product, SKU, category or batch…" />
+        </Field>
+      </div>
 
       {!lockedLocation && lowStock.length > 0 && (
         <section>
@@ -173,30 +223,37 @@ export function StockOnHand({ locations, lockedLocation }) {
             : "The same batch in two locations is two lines, and only what is in the Pharmacy can be "
               + "dispensed. Counting corrects one shelf and logs the difference."}
         </p>
-        {(records ?? []).length === 0 ? (
+        {visible.length === 0 ? (
           <EmptyState
             icon="📦"
-            title="Nothing on this shelf"
-            description={lockedLocation
-              ? "Transfer stock from the Main Store to start dispensing."
-              : "Receive a delivery into the Main Store, then transfer what the counter needs."}
+            title={search || categoryId ? "Nothing matches that" : "Nothing on this shelf"}
+            description={search || categoryId
+              ? `No stock here${categoryName ? ` under ${categoryName}` : ""}`
+                + `${search ? ` matching “${term.trim()}”` : ""}. Clear the filters to see everything.`
+              : lockedLocation
+                ? "Transfer stock from the Main Store to start dispensing."
+                : "Receive a delivery into the Main Store, then transfer what the counter needs."}
           />
         ) : (
           <div className="overflow-hidden rounded-xl border border-slate-200 bg-white">
             <TableWrap>
-              <Table className="min-w-[46rem]">
+              <Table className="min-w-[62rem]">
                 <THead>
                   <Tr>
                     <Th>Product</Th>
-                    <Th>Batch</Th>
+                    <Th>Category</Th>
+                    <Th>SKU</Th>
+                    <Th>Unit</Th>
                     <Th>Location</Th>
+                    <Th>Batch</Th>
                     <Th>Expiry</Th>
                     <Th className="text-right">Quantity</Th>
+                    <Th>Status</Th>
                     <Th className="text-right">Actions</Th>
                   </Tr>
                 </THead>
                 <tbody>
-                  {(records ?? []).map((record) => (
+                  {visible.map((record) => (
                     <StockRow key={record.id} record={record} />
                   ))}
                 </tbody>
@@ -207,6 +264,19 @@ export function StockOnHand({ locations, lockedLocation }) {
       </section>
     </div>
   );
+}
+
+/**
+ * What this line is: expired, expiring, out, or fine. One reading of the two
+ * facts a stock line carries — its expiry date and its quantity — so the table
+ * says the same thing the expiry panel above it does.
+ */
+function StockStatus({ record }) {
+  const days = daysUntil(record.expiry_date);
+  if (record.is_expired) return <Badge tone="danger">Expired</Badge>;
+  if (record.quantity === 0) return <Badge tone="neutral">Out of stock</Badge>;
+  if (days <= 30) return <Badge tone="warning">Expires in {days}d</Badge>;
+  return <Badge tone="success">In stock</Badge>;
 }
 
 function StockRow({ record }) {
@@ -245,15 +315,16 @@ function StockRow({ record }) {
     <>
       <Tr>
         <Td className="font-medium text-slate-900">{record.item_name}</Td>
-        <Td>{record.batch_no}</Td>
+        <Td className="text-slate-700">{record.item_category_name || "—"}</Td>
+        <Td className="text-slate-700">{record.item_sku || "—"}</Td>
+        <Td className="text-slate-700">{record.item_unit}</Td>
         <Td><Badge tone={record.location_code === "pharmacy" ? "brand" : "neutral"}>
           {record.location_name}
         </Badge></Td>
-        <Td>
-          {record.expiry_date}
-          {record.is_expired && <Badge tone="danger" className="ml-2">Expired</Badge>}
-        </Td>
+        <Td>{record.batch_no}</Td>
+        <Td>{record.expiry_date}</Td>
         <Td className="text-right font-medium tabular-nums text-slate-900">{record.quantity}</Td>
+        <Td><StockStatus record={record} /></Td>
         <Td className="text-right">
           <div className="flex justify-end gap-1">
             <Button variant="link" size="xs" onClick={() => setCounting((c) => !c)}>Count</Button>
@@ -270,7 +341,7 @@ function StockRow({ record }) {
       </Tr>
       {counting && (
         <Tr>
-          <Td colSpan={6} className="bg-slate-50">
+          <Td colSpan={10} className="bg-slate-50">
             <form
               onSubmit={(e) => { e.preventDefault(); if (counted !== "") submitCount.mutate(); }}
               className="flex flex-wrap items-end gap-3"
@@ -691,7 +762,7 @@ export function PhysicalCount({ locations, store, lockedLocation }) {
         <>
           <div className="overflow-hidden rounded-xl border border-slate-200 bg-white">
             <TableWrap>
-              <Table className="min-w-[44rem]">
+              <Table className="min-w-[50rem]">
                 <THead>
                   <Tr>
                     <Th>Product</Th>
@@ -762,15 +833,18 @@ export function PhysicalCount({ locations, store, lockedLocation }) {
 export function MovementLog({ locations, lockedLocation }) {
   const [locationId, setLocationId] = useState("");
   const [reason, setReason] = useState("");
+  const [categoryId, setCategoryId] = useState("");
   const active = lockedLocation ? lockedLocation.id : locationId;
+  const categories = useItemCategories();
 
   const { data: movements, isLoading } = useQuery({
-    queryKey: ["stock-movements", active || "all", reason || "all"],
+    queryKey: ["stock-movements", active || "all", reason || "all", categoryId || "all"],
     queryFn: () => api.get("/stock-movements/", {
       params: {
         page_size: 200,
         ...(active ? { location: active } : {}),
         ...(reason ? { reason } : {}),
+        ...(categoryId ? { batch__item__category: categoryId } : {}),
       },
     }).then((r) => r.data.results ?? r.data),
   });
@@ -798,6 +872,17 @@ export function MovementLog({ locations, lockedLocation }) {
             </Select>
           </Field>
         </div>
+        <div className="w-56">
+          <Field label="Category">
+            <Select aria-label="Category" value={categoryId}
+                    onChange={(e) => setCategoryId(e.target.value)}>
+              <option value="">Every category</option>
+              {(categories.data ?? []).map((c) => (
+                <option key={c.id} value={c.id}>{c.name}</option>
+              ))}
+            </Select>
+          </Field>
+        </div>
       </div>
 
       {isLoading && <p className="text-slate-600">Loading…</p>}
@@ -813,6 +898,9 @@ export function MovementLog({ locations, lockedLocation }) {
                 <p className="font-medium text-slate-900">
                   {m.item_name}
                   <span className="font-normal text-slate-600"> · batch {m.batch_no}</span>
+                  {m.item_category_name && (
+                    <span className="font-normal text-slate-600"> · {m.item_category_name}</span>
+                  )}
                 </p>
                 <p className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-slate-600">
                   <Badge tone={REASON_TONE[m.reason] ?? "neutral"}>
@@ -844,3 +932,387 @@ function daysUntil(dateStr) {
   return Math.ceil((new Date(dateStr) - new Date()) / (1000 * 60 * 60 * 24));
 }
 
+/* ------------------------------------------------ CSV count: export / import */
+
+/** Hand the browser a file the server produced — the download half of the CSV count. */
+function saveBlob(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+const IMPORT_STATUS = {
+  previewed: ["Preview — nothing applied yet", "warning"],
+  applied: ["Applied", "success"],
+  discarded: ["Discarded", "neutral"],
+};
+
+/**
+ * Stock-taking as a spreadsheet, on top of the count the inventory already has:
+ *
+ *   download the count sheet → count the shelves → fill in "Counted Qty" →
+ *   upload → read the preview → confirm.
+ *
+ * Nothing moves until a person confirms a clean preview, and confirming posts
+ * ordinary count documents (`inventory/count_csv.py`) — every difference is an
+ * adjustment in the movement log, never an overwrite. `lockedLocation` pins the
+ * export to that shelf like every other panel here; the server refuses any row
+ * the person may not count, whatever the screen sends.
+ */
+export function CountImportExport({ locations, lockedLocation }) {
+  const { showToast } = useToast();
+  const refresh = useRefresh();
+  const queryClient = useQueryClient();
+  const [locationId, setLocationId] = useState("");
+  const [categoryId, setCategoryId] = useState("");
+  const [includeEmpty, setIncludeEmpty] = useState(false);
+  const [file, setFile] = useState(null);
+  const [fileKey, setFileKey] = useState(0);
+  const [preview, setPreview] = useState(null);
+  const [confirming, setConfirming] = useState(false);
+
+  const categories = useItemCategories();
+  const history = useQuery({
+    queryKey: ["stock-count-imports"],
+    queryFn: () => api.get("/stock-count-imports/", { params: { page_size: 10 } })
+      .then((r) => r.data.results ?? r.data),
+  });
+  const recordImport = (data) => {
+    setPreview(data);
+    queryClient.invalidateQueries({ queryKey: ["stock-count-imports"] });
+  };
+
+  const download = useMutation({
+    mutationFn: () => api.get("/stock-counts/export/", {
+      params: {
+        ...(lockedLocation ? { location: lockedLocation.id } : locationId ? { location: locationId } : {}),
+        ...(categoryId ? { category: categoryId } : {}),
+        ...(includeEmpty ? { include_empty: 1 } : {}),
+      },
+      responseType: "blob",
+    }),
+    onSuccess: (response) => {
+      const disposition = response.headers?.["content-disposition"] ?? "";
+      const name = /filename="?([^";]+)"?/.exec(disposition)?.[1] ?? "stock-count.csv";
+      saveBlob(response.data, name);
+      showToast({ title: "Count sheet downloaded",
+                  message: "Fill in Counted Qty for what you count, then upload it here." });
+    },
+    onError: (error) => showToast({
+      tone: "error", title: "Could not export the count sheet", message: readError(error, "Please try again."),
+    }),
+  });
+
+  const upload = useMutation({
+    mutationFn: () => {
+      const body = new FormData();
+      body.append("file", file);
+      return api.post("/stock-count-imports/", body, { headers: { "Content-Type": "multipart/form-data" } });
+    },
+    onSuccess: (response) => recordImport(response.data),
+    onError: (error) => showToast({
+      tone: "error", title: "Could not read the file", message: readError(error, "Please try again."),
+    }),
+  });
+
+  const apply = useMutation({
+    mutationFn: () => api.post(`/stock-count-imports/${preview.id}/apply/`),
+    onSuccess: (response) => {
+      setConfirming(false);
+      recordImport(response.data);
+      refresh();
+      const s = response.data.summary ?? {};
+      showToast({
+        title: `Stock count ${response.data.reference} applied`,
+        message: `${(s.increase_lines ?? 0) + (s.decrease_lines ?? 0)} adjustment(s) posted: +${s.units_added ?? 0} / −${s.units_removed ?? 0} units.`,
+      });
+    },
+    onError: (error) => {
+      setConfirming(false);
+      showToast({ tone: "error", title: "Nothing was applied", message: readError(error, "Please try again.") });
+    },
+  });
+
+  const discard = useMutation({
+    mutationFn: () => api.post(`/stock-count-imports/${preview.id}/discard/`),
+    onSuccess: (response) => {
+      recordImport(null);
+      setFile(null);
+      setFileKey((key) => key + 1);
+      showToast({ title: `${response.data.reference} discarded`, message: "Nothing was applied." });
+    },
+    onError: (error) => showToast({
+      tone: "error", title: "Could not discard", message: readError(error, "Please try again."),
+    }),
+  });
+
+  return (
+    <div className="space-y-5">
+      <div className="grid min-w-0 gap-4 lg:grid-cols-2">
+        <section aria-labelledby="count-export-title" className="min-w-0 rounded-xl border border-slate-200 bg-white p-4 sm:p-5">
+          <h2 id="count-export-title" className="font-semibold text-slate-900">1. Download the count sheet</h2>
+          <p className="mt-1 text-sm text-slate-600">
+            One row per batch per location with what the system holds. Fill in <strong>Counted Qty</strong> for
+            each line you count and leave a line blank to leave it alone. Do not edit the other columns.
+          </p>
+          <div className="mt-4 grid gap-3 sm:grid-cols-2">
+            {lockedLocation ? (
+              <Field label="Location">
+                <Input aria-label="Location" value={lockedLocation.name} readOnly disabled />
+              </Field>
+            ) : (
+              <Field label="Location">
+                <Select aria-label="Location" value={locationId} onChange={(e) => setLocationId(e.target.value)}>
+                  <option value="">Every location</option>
+                  {(locations ?? []).map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}
+                </Select>
+              </Field>
+            )}
+            <Field label="Category">
+              <Select aria-label="Category" value={categoryId} onChange={(e) => setCategoryId(e.target.value)}>
+                <option value="">Every category</option>
+                {(categories.data ?? []).map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+              </Select>
+            </Field>
+          </div>
+          <label className="mt-2 flex min-h-[44px] items-center gap-2 text-sm text-slate-700">
+            <input type="checkbox" className="h-4 w-4" checked={includeEmpty}
+                   onChange={(e) => setIncludeEmpty(e.target.checked)} />
+            Include lines standing at zero
+          </label>
+          <Button className="mt-2" onClick={() => download.mutate()} disabled={download.isPending}>
+            {download.isPending ? "Preparing…" : "Download CSV"}
+          </Button>
+        </section>
+
+        <section aria-labelledby="count-import-title" className="min-w-0 rounded-xl border border-slate-200 bg-white p-4 sm:p-5">
+          <h2 id="count-import-title" className="font-semibold text-slate-900">2. Upload the counted sheet</h2>
+          <p className="mt-1 text-sm text-slate-600">
+            Uploading only checks the file. You see every line it would change — and every problem — before
+            anything is applied, and a file with a single problem applies nothing.
+          </p>
+          <div className="mt-4">
+            <Field label="Counted CSV file" hint="If your spreadsheet asks, save as “CSV UTF-8”.">
+              <input
+                key={fileKey} type="file" accept=".csv,text/csv" aria-label="Counted CSV file"
+                onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+                className="block w-full min-w-0 text-base text-slate-700 file:mr-3 file:min-h-[44px] file:rounded-lg file:border-0 file:bg-brand-50 file:px-4 file:text-sm file:font-medium file:text-brand-700 hover:file:bg-brand-100"
+              />
+            </Field>
+          </div>
+          <Button className="mt-3" onClick={() => upload.mutate()} disabled={!file || upload.isPending}>
+            {upload.isPending ? "Checking the file…" : "Upload and preview"}
+          </Button>
+        </section>
+      </div>
+
+      {preview && (
+        <ImportPreview
+          preview={preview} busy={apply.isPending || discard.isPending}
+          onApply={() => setConfirming(true)} onDiscard={() => discard.mutate()}
+        />
+      )}
+
+      <ImportHistory history={history} current={preview?.id} onOpen={setPreview} />
+
+      {confirming && preview && (
+        <Modal
+          open onClose={() => setConfirming(false)} title={`Apply stock count ${preview.reference}?`}
+          description="Each line that differs posts an adjustment against that batch, in that location. It is undone only by another count."
+          footer={
+            <>
+              <Button variant="secondary" onClick={() => setConfirming(false)}>Cancel</Button>
+              <Button onClick={() => apply.mutate()} disabled={apply.isPending}>
+                {apply.isPending ? "Applying…" : "Apply count"}
+              </Button>
+            </>
+          }
+        >
+          <ul className="space-y-1.5 text-sm text-slate-800">
+            <li><strong>{preview.summary?.increase_lines ?? 0}</strong> line(s) go up by <strong>{preview.summary?.units_added ?? 0}</strong> unit(s)</li>
+            <li><strong>{preview.summary?.decrease_lines ?? 0}</strong> line(s) go down by <strong>{preview.summary?.units_removed ?? 0}</strong> unit(s)</li>
+            <li><strong>{preview.summary?.unchanged ?? 0}</strong> counted line(s) already match</li>
+            <li>Locations: {(preview.summary?.locations ?? []).join(", ") || "—"}</li>
+            <li>Categories: {(preview.summary?.categories ?? []).join(", ") || "—"}</li>
+          </ul>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+function ImportPreview({ preview, busy, onApply, onDiscard }) {
+  const [onlyChanges, setOnlyChanges] = useState(false);
+  const summary = preview.summary ?? {};
+  const errors = preview.errors ?? [];
+  const rows = (preview.rows ?? []).filter((row) => !onlyChanges || row.difference !== 0);
+  const unknownCategories = summary.unknown_categories ?? [];
+  const [statusLabel, statusTone] = IMPORT_STATUS[preview.status] ?? [preview.status, "neutral"];
+  const figures = [
+    ["Rows read", summary.rows_read ?? 0, "text-slate-900"],
+    ["Counted", summary.counted ?? 0, "text-slate-900"],
+    ["Left blank", summary.not_counted ?? 0, "text-slate-900"],
+    ["Unchanged", summary.unchanged ?? 0, "text-slate-900"],
+    [`Increases (${summary.increase_lines ?? 0} lines)`, `+${summary.units_added ?? 0}`, "text-emerald-700"],
+    [`Decreases (${summary.decrease_lines ?? 0} lines)`, `−${summary.units_removed ?? 0}`, "text-amber-800"],
+  ];
+
+  return (
+    <section aria-label="Import preview" className="min-w-0 overflow-hidden rounded-xl border border-slate-200 bg-white">
+      <div className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-200 p-4 sm:p-5">
+        <div className="min-w-0">
+          <h2 className="truncate font-semibold text-slate-900">{preview.reference} · {preview.filename || "count.csv"}</h2>
+          <p className="text-sm text-slate-600">
+            Uploaded by {preview.uploaded_by_name} · {new Date(preview.created_at).toLocaleString()}
+            {preview.applied_at && ` · applied by ${preview.applied_by_name}, ${new Date(preview.applied_at).toLocaleString()}`}
+          </p>
+        </div>
+        <Badge tone={statusTone}>{statusLabel}</Badge>
+      </div>
+
+      <dl className="grid grid-cols-2 gap-3 p-4 sm:grid-cols-3 sm:p-5 xl:grid-cols-6">
+        {figures.map(([label, value, tone]) => (
+          <div key={label} className="min-w-0 rounded-lg bg-slate-50 px-3 py-2">
+            <dt className="truncate text-xs text-slate-600">{label}</dt>
+            <dd className={`mt-0.5 text-lg font-semibold tabular-nums ${tone}`}>{value}</dd>
+          </div>
+        ))}
+      </dl>
+
+      {unknownCategories.length > 0 && (
+        <div className="px-4 pb-1 sm:px-5">
+          <Alert tone="warning"
+                 title={`${unknownCategories.length} category name${unknownCategories.length === 1 ? " was" : "s were"} not recognised`}>
+            {unknownCategories.join(", ")} — importing a count never creates a category, so nothing
+            was added. Correct the spelling in the sheet, or add the category under Administration →
+            Product categories first.
+          </Alert>
+        </div>
+      )}
+
+      {errors.length > 0 && (
+        <div className="space-y-3 px-4 pb-4 sm:px-5">
+          <Alert tone="warning" title={`${errors.length} problem${errors.length === 1 ? "" : "s"} — nothing can be applied from this file`}>
+            Correct the spreadsheet and upload it again. Rows are numbered the way your spreadsheet numbers them.
+          </Alert>
+          <TableWrap>
+            <Table className="min-w-[36rem]">
+              <THead><Tr><Th>Row</Th><Th>Column</Th><Th>Problem</Th></Tr></THead>
+              <tbody>
+                {errors.map((error, index) => (
+                  <Tr key={`${error.row}-${error.column}-${index}`}>
+                    <Td className="tabular-nums">{error.row ?? "File"}</Td>
+                    <Td>{error.column ?? "—"}</Td>
+                    <Td className="text-slate-800">{error.message}</Td>
+                  </Tr>
+                ))}
+              </tbody>
+            </Table>
+          </TableWrap>
+        </div>
+      )}
+
+      {(preview.rows ?? []).length > 0 && (
+        <div className="space-y-2 px-4 pb-4 sm:px-5">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h3 className="font-medium text-slate-900">Valid counted lines</h3>
+            <label className="flex min-h-[44px] items-center gap-2 text-sm text-slate-700">
+              <input type="checkbox" className="h-4 w-4" checked={onlyChanges}
+                     onChange={(e) => setOnlyChanges(e.target.checked)} />
+              Only lines that change
+            </label>
+          </div>
+          <TableWrap>
+            <Table className="min-w-[44rem]">
+              <THead>
+                <Tr>
+                  <Th>Row</Th><Th>Product</Th><Th>Category</Th><Th>Batch</Th><Th>Location</Th>
+                  <Th className="text-right">System</Th><Th className="text-right">Counted</Th>
+                  <Th className="text-right">Difference</Th>
+                </Tr>
+              </THead>
+              <tbody>
+                {rows.map((row) => (
+                  <Tr key={row.line}>
+                    <Td className="tabular-nums text-slate-600">{row.row}</Td>
+                    <Td className="font-medium text-slate-900">
+                      {row.item_name}
+                      {row.sku && <span className="block text-xs font-normal text-slate-500">{row.sku}</span>}
+                    </Td>
+                    <Td className="text-slate-700">{row.category_name || "—"}</Td>
+                    <Td>{row.batch_no}<span className="block text-xs text-slate-500">exp {row.expiry}</span></Td>
+                    <Td>{row.location_name}</Td>
+                    <Td className="text-right tabular-nums">{row.system_quantity}</Td>
+                    <Td className="text-right tabular-nums">{row.counted_quantity}</Td>
+                    <Td className={`text-right font-medium tabular-nums ${
+                      row.difference === 0 ? "text-slate-500" : row.difference > 0 ? "text-emerald-700" : "text-amber-800"}`}>
+                      {row.difference > 0 ? `+${row.difference}` : row.difference}
+                    </Td>
+                  </Tr>
+                ))}
+              </tbody>
+            </Table>
+          </TableWrap>
+        </div>
+      )}
+
+      {preview.status === "applied" && (preview.counts ?? []).length > 0 && (
+        <p className="border-t border-slate-100 px-4 py-3 text-sm text-slate-700 sm:px-5">
+          Posted as {preview.counts.map((count) => count.reference).join(", ")} — the adjustments are in the movement log.
+        </p>
+      )}
+
+      {preview.status === "previewed" && (
+        <div className="flex flex-wrap justify-end gap-2 border-t border-slate-200 p-4 sm:px-5">
+          <Button variant="secondary" onClick={onDiscard} disabled={busy}>Discard</Button>
+          <Button onClick={onApply} disabled={busy || !preview.is_applicable}>Apply count…</Button>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function ImportHistory({ history, current, onOpen }) {
+  if (history.isLoading) return <Skeleton className="h-24" />;
+  if (history.isError) return <ErrorState title="Could not load earlier imports." onRetry={history.refetch} />;
+  const rows = history.data ?? [];
+  if (!rows.length) return null;
+  return (
+    <section aria-labelledby="count-history-title" className="min-w-0">
+      <h2 id="count-history-title" className="mb-2 font-semibold text-slate-900">Recent imports</h2>
+      <TableWrap>
+        <Table className="min-w-[40rem]">
+          <THead>
+            <Tr>
+              <Th>Import</Th><Th>File</Th><Th>Status</Th><Th>Uploaded</Th>
+              <Th className="text-right">Counted</Th><Th className="text-right">Problems</Th><Th />
+            </Tr>
+          </THead>
+          <tbody>
+            {rows.map((row) => {
+              const [label, tone] = IMPORT_STATUS[row.status] ?? [row.status, "neutral"];
+              return (
+                <Tr key={row.id} className={row.id === current ? "bg-brand-50/60" : ""}>
+                  <Td className="font-medium text-slate-900">{row.reference}</Td>
+                  <Td className="max-w-[14rem] truncate">{row.filename || "—"}</Td>
+                  <Td><Badge tone={tone}>{label}</Badge></Td>
+                  <Td>{row.uploaded_by_name}<span className="block text-xs text-slate-500">{new Date(row.created_at).toLocaleString()}</span></Td>
+                  <Td className="text-right tabular-nums">{row.summary?.counted ?? 0}</Td>
+                  <Td className="text-right tabular-nums">{(row.errors ?? []).length}</Td>
+                  <Td className="text-right">
+                    <Button variant="link" size="xs" onClick={() => onOpen(row)}>Open</Button>
+                  </Td>
+                </Tr>
+              );
+            })}
+          </tbody>
+        </Table>
+      </TableWrap>
+    </section>
+  );
+}

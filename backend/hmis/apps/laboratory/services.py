@@ -19,7 +19,9 @@ from decimal import Decimal, InvalidOperation
 from django.db import transaction
 from django.utils import timezone
 
-from apps.billing.services import add_charge
+from apps.billing.departments import department_for_source
+from apps.billing.notifications import announce
+from apps.billing.services import add_charge, refresh_ledger
 
 from .models import (
     LabOrder, LabOrderTest, LabParameter, LabResultAmendment, LabResultValue, TYPE_OPTIONS,
@@ -324,6 +326,7 @@ def add_tests(*, order, tests, author=None, source="requested", bill=True):
     keep books.
     """
     added = []
+    raised = []
     for test in tests:
         item, made = LabOrderTest.objects.get_or_create(
             order=order, test=test,
@@ -339,15 +342,29 @@ def add_tests(*, order, tests, author=None, source="requested", bill=True):
         )
         if made:
             if bill:
-                raise_charge_for(item, author=author)
+                # `notify=False` per test: a doctor ordering an FBC, an RFT
+                # and an LFT together has taken one billing decision, and the
+                # cash desk wants one line about it — not three. The
+                # announcement below carries the total.
+                charge = raise_charge_for(item, author=author, notify=False)
+                if charge is not None:
+                    raised.append(charge)
             added.append(item)
+    if raised:
+        announce(
+            event="charge_raised", patient=order.patient,
+            amount=sum((c.amount for c in raised), Decimal("0")),
+            actor=author or order.requested_by or order.created_by,
+            detail=f"Laboratory — {len(raised)} test(s) on {order.order_number}",
+            outstanding=refresh_ledger(order.patient).outstanding_balance,
+        )
     if added and order.status == "requested":
         order.status = "in_progress"
         order.save(update_fields=["status", "updated_at"])
     return added
 
 
-def raise_charge_for(order_test, *, author=None):
+def raise_charge_for(order_test, *, author=None, notify=True):
     """
     The money side of ordering a test: one charge, priced from the snapshot.
 
@@ -367,8 +384,14 @@ def raise_charge_for(order_test, *, author=None):
         # Attributed to whoever asked for it — the doctor ordering is what
         # creates the debt, and the bill has to say so.
         created_by=author or order.requested_by or order.created_by,
+        # The laboratory earned this, whoever ordered it. `add_charge` would
+        # resolve the same department from the source type, but saying it here
+        # means the call site reads as what it is rather than relying on a map
+        # somewhere else to be right.
+        department=department_for_source("lab_test"),
         source_type="lab_test",
         source_id=order_test.pk,
+        notify=notify,
     )
     order_test.charge = charge
     order_test.save(update_fields=["charge", "updated_at"])

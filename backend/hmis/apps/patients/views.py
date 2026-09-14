@@ -3,7 +3,7 @@ import uuid as uuid_module
 
 from django.http import Http404
 from django.shortcuts import get_object_or_404
-from rest_framework import viewsets
+from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import PermissionDenied
 from rest_framework.response import Response
@@ -12,10 +12,36 @@ from rest_framework.filters import SearchFilter
 
 from . import models, serializers
 from apps.accounts.permissions import (
-    PATIENT_LOOKUP_ROLES, ClinicalRecordAccess, IsReception, RoleRequired,
+    PATIENT_LOOKUP_ROLES, ClinicalRecordAccess, IsReception, IsSuperAdmin, RoleRequired,
 )
+from apps.core.config import describe, references_to
+from apps.core.services import audit_event
 from .access import doctor_patient_q, patient_queryset_for
 from .overview import build_overview
+
+#: What makes a patient part of the hospital's permanent record.
+#:
+#: Every one of these is a `PROTECT` foreign key, so the database would refuse
+#: the delete anyway — this list is what turns that refusal into an answer a
+#: person can act on, the same way `ProtectedConfigMixin` does for
+#: configuration (rule 31). Financial and audit history is never cascaded away
+#: to make a delete succeed.
+#:
+#: What is *not* here cascades with the patient, and is meant to: the ledger
+#: row, vitals, consultation and nursing notes, the nine health-record tiles,
+#: appointments and prescriptions. None of those outlives the person they
+#: describe. `sales.Sale.patient` is SET_NULL and the sale survives.
+PROTECTED_HISTORY = (
+    "charges",              # every bill ever raised
+    "payments",             # every payment ever taken
+    "adjustments",          # discounts, waivers, refunds
+    "refunds",              # money handed back
+    "deferrals",            # pay-later authorisations
+    "visits",               # and, through them, every route and hand-off
+    "lab_orders",           # laboratory orders and their results
+    "admissions",           # ward stays
+    "investigation_orders",
+)
 
 
 class PatientViewSet(viewsets.ModelViewSet):
@@ -61,7 +87,14 @@ class PatientViewSet(viewsets.ModelViewSet):
         return obj
 
     def get_permissions(self):
-        if self.action in {"create", "update", "partial_update", "destroy"}:
+        if self.action == "destroy":
+            # Permanently deleting a patient is the one irreversible action in
+            # the application, and it was reachable by reception and by any
+            # administrator until now. It is the Super Admin's alone —
+            # `IsSuperAdmin`, not `IsAdmin`, so an ordinary `hospital_admin`
+            # is refused like everybody else.
+            return [IsSuperAdmin()]
+        if self.action in {"create", "update", "partial_update"}:
             return [IsReception()]
         if self.action == "overview":
             # The overview is the full chart in one payload — notes, vitals,
@@ -80,6 +113,69 @@ class PatientViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         serializer.save(created_by=self.request.user)
+
+    def destroy(self, request, *args, **kwargs):
+        """
+        `DELETE /api/patients/<uuid>/` — permanently remove a patient, Super
+        Admin only, and only where nothing in the hospital's record points at
+        them.
+
+        Three gates, in order:
+
+        1. **Who.** `IsSuperAdmin` above. An ordinary administrator, reception,
+           the cash desk and every clinical role are refused here regardless of
+           what the React app chooses to show.
+        2. **Deliberateness.** The request body must carry the patient's own
+           hospital number in `confirm` — `NMHS-P000001`, typed out. A DELETE
+           fired at the wrong URL cannot succeed by accident, and the number
+           has to be read off the record in front of you.
+        3. **History.** Anything in `PROTECTED_HISTORY` and the answer is 409
+           with the counts, naming what stands in the way. Money, visits,
+           laboratory orders and ward stays are the hospital's record, not the
+           patient's property, and they are never deleted to let a delete
+           through — the database's own `PROTECT` says the same thing, one
+           layer down.
+
+        What *is* removed, when all three pass, is everything that cascades:
+        the ledger row, vitals, notes, the nine health-record tiles,
+        appointments and prescriptions. A patient with any of those but none of
+        the protected history is a registration mistake, which is exactly the
+        case this endpoint is for.
+
+        The audit row is written **before** the delete and keeps the identity
+        in its `details`, because `AuditLog.object_id` points at a row that is
+        about to stop existing. Deleting a patient is itself part of the
+        record.
+        """
+        patient = self.get_object()
+        confirmation = str(request.data.get("confirm")
+                           or request.data.get("patient_number") or "").strip()
+        if confirmation.upper() != (patient.patient_number or "").upper():
+            return Response(
+                {"detail": "Type the patient's hospital number to confirm this deletion.",
+                 "code": "confirmation_required",
+                 "expected_field": "confirm"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        blocking = references_to(patient, PROTECTED_HISTORY)
+        if blocking:
+            return Response(
+                {"detail": f"This patient has {describe(blocking)} on record, which the "
+                           f"hospital keeps. Nothing was deleted.",
+                 "code": "history_exists",
+                 "references": blocking},
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        audit_event(
+            actor=request.user, action="patients.deleted", request=request,
+            details={"patient_number": patient.patient_number, "uuid": str(patient.uuid),
+                     "name": str(patient), "sex": patient.sex,
+                     "registered_at": patient.created_at.isoformat()},
+        )
+        patient.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
     @action(detail=True, methods=["get"])
     def overview(self, request, pk=None):

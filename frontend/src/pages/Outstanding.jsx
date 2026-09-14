@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import api from "../api/client";
-import { patientNumber } from "../components/patientIdentity.js";
+import { patientNumber, patientUuidOf } from "../components/patientIdentity.js";
 import { Page, PageHeader, MetaStat, Button, SearchInput } from "../components/ui.jsx";
 
 // Who owes money, biggest first. The list is filtered in the database
@@ -75,7 +75,7 @@ export default function Outstanding() {
           <div key={ledger.id} className="flex flex-wrap items-center justify-between gap-3 px-5 py-3.5">
             <div className="min-w-0">
               <Link
-                to={`/patients/${ledger.patient}/billing`}
+                to={`/patients/${patientUuidOf(ledger)}/billing`}
                 className="inline-flex min-h-[32px] items-center rounded font-medium text-slate-800 underline-offset-2 transition hover:text-brand-700 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500"
               >
                 {ledger.patient_name}

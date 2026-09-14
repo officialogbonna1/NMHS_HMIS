@@ -1,3 +1,4 @@
+import { directionsOf } from "../components/prescriptionDirections.js";
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
@@ -43,10 +44,13 @@ const APPOINTMENT_TONE = {
   cancelled: "bg-slate-100 text-slate-400 line-through",
 };
 
-export default function PatientOverview({ patientId }) {
+export default function PatientOverview({ patientId, patientUuid }) {
   const { data, isLoading, error } = useQuery({
+    // Keyed on the integer pk — the identity ReferPatient, DepartmentStation,
+    // LabResultEntry and GenericTileModal all invalidate this cache by — while
+    // the request itself goes to the UUID address.
     queryKey: ["patient-overview", String(patientId)],
-    queryFn: () => api.get(`/patients/${patientId}/overview/`).then((r) => r.data),
+    queryFn: () => api.get(`/patients/${patientUuid}/overview/`).then((r) => r.data),
   });
 
   if (isLoading) return <p className="text-slate-600">Loading the chart…</p>;
@@ -104,7 +108,7 @@ export default function PatientOverview({ patientId }) {
 
         <Card
           title="Latest vitals"
-          action={<Button variant="link" size="xs" to={`/patients/${patientId}/vitals`}>All readings →</Button>}
+          action={<Button variant="link" size="xs" to={`/patients/${patientUuid}/vitals`}>All readings →</Button>}
         >
           {latest ? (
             <>
@@ -177,7 +181,7 @@ export default function PatientOverview({ patientId }) {
       <section className="grid gap-4 md:grid-cols-2">
         <Card
           title="Allergies"
-          action={<Button variant="link" size="xs" to={`/patients/${patientId}/record`}>Edit record →</Button>}
+          action={<Button variant="link" size="xs" to={`/patients/${patientUuid}/record`}>Edit record →</Button>}
         >
           <List
             items={data.allergies}
@@ -311,7 +315,7 @@ export default function PatientOverview({ patientId }) {
 
       <Card
         title="Consultation notes"
-        action={<Button variant="link" size="xs" to={`/patients/${patientId}/notes`}>Open notes →</Button>}
+        action={<Button variant="link" size="xs" to={`/patients/${patientUuid}/notes`}>Open notes →</Button>}
       >
         <List
           items={data.consultation_notes}
@@ -330,7 +334,7 @@ export default function PatientOverview({ patientId }) {
       <section className="grid gap-4 md:grid-cols-2">
         <Card
           title="Prescriptions"
-          action={<Button variant="link" size="xs" to={`/patients/${patientId}/prescribe`}>Prescribe →</Button>}
+          action={<Button variant="link" size="xs" to={`/patients/${patientUuid}/prescribe`}>Prescribe →</Button>}
         >
           <List
             items={data.prescriptions}
@@ -339,7 +343,7 @@ export default function PatientOverview({ patientId }) {
               <div className="flex items-start justify-between gap-2">
                 <div>
                   <span className="font-medium">{p.item} ×{p.quantity}</span>
-                  {p.dosage_instructions && <p className="text-sm text-slate-600">{p.dosage_instructions}</p>}
+                  {directionsOf(p) && <p className="text-sm text-slate-600">{directionsOf(p)}</p>}
                   <p className="text-xs text-slate-500">
                     Dr. {p.doctor} · {new Date(p.created_at).toLocaleDateString()}
                     {p.dispensed_by && ` · dispensed by ${p.dispensed_by}`}

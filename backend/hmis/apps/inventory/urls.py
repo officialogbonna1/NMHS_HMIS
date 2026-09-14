@@ -12,6 +12,8 @@ router.register("stock-locations", views.StockLocationViewSet)
 router.register("stock-records", views.StockRecordViewSet)
 router.register("stock-transfers", views.StockTransferViewSet)
 router.register("stock-counts", views.StockCountViewSet)
+# The CSV count: preview an uploaded sheet, then apply it once.
+router.register("stock-count-imports", views.StockCountImportViewSet)
 router.register("stock-movements", views.StockMovementViewSet)
 
 urlpatterns = router.urls

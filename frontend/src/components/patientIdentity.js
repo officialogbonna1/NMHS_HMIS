@@ -15,3 +15,28 @@ export function patientNumber(p) {
   if (!p) return "";
   return p.patient_number ?? p.file_number ?? p.patient_file_number ?? "";
 }
+
+// Which key holds the *browser* identity, in one place — the mirror of
+// `patientNumber()` above.
+//
+// A patient record sends it as `uuid`; a row that merely mentions a patient (a
+// queue entry, a ledger, a recorded reading, an adjustment) sends it as
+// `patient_uuid`. This is the value that belongs in a `/patients/<…>` URL.
+//
+// It is deliberately NOT the integer `id`: that is the database's name for the
+// row and it still drives every `?patient=` filter and FK write body, which is
+// why both are carried side by side rather than one replacing the other.
+//
+// Holding a UUID is not permission to read a chart — the API applies the same
+// role and assignment filter to it as to the integer pk.
+export function patientUuidOf(row) {
+  if (!row) return "";
+  return row.uuid ?? row.patient_uuid ?? "";
+}
+
+// True when a route parameter is a UUID rather than the integer pk an older
+// bookmark or an already-sent notification still carries.
+export function looksLikeUuid(value) {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+    String(value ?? ""));
+}

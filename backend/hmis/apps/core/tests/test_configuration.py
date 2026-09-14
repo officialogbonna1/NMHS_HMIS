@@ -81,9 +81,15 @@ class HmisWritesReachDjangoAdmin(ConfigurationTestCase):
         self.assertEqual(item.unit_label, "tab")
 
     def test_categories_units_services_and_locations_all_land_as_rows(self):
-        department = Department.objects.create(name="Radiology", code="radiology")
+        # Radiology is seeded now (departments/0002), so this takes the row
+        # rather than making a second one under the same code.
+        department = Department.objects.get(code="radiology")
         cases = [
-            ("/api/item-categories/", {"name": "Antibiotics"}, ItemCategory, "name", "Antibiotics"),
+            # A name the seed does not ship (`inventory/0008`): this case is
+            # about a row created here being the row Django admin reads, and
+            # "Antibiotics" now already exists, which would fail on uniqueness
+            # for a reason that has nothing to do with what is being tested.
+            ("/api/item-categories/", {"name": "Oncology"}, ItemCategory, "name", "Oncology"),
             ("/api/units/", {"name": "Bottle", "abbreviation": "btl"},
              UnitOfMeasure, "name", "Bottle"),
             ("/api/services/", {"name": "Chest X-ray", "code": "cxr",

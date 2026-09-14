@@ -1,8 +1,8 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useParams, useNavigate, Routes, Route, useLocation } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import api from "../api/client";
-import { patientNumber } from "../components/patientIdentity.js";
+import { looksLikeUuid, patientNumber } from "../components/patientIdentity.js";
 import { PrintButton, chartDocuments } from "../components/printing.jsx";
 import HealthRecordTile from "../components/HealthRecordTile.jsx";
 import GenericTileModal from "../components/GenericTileModal.jsx";
@@ -16,7 +16,9 @@ import ReferralResultsTab from "./ReferralResultsTab.jsx";
 import AdmissionTab from "./AdmissionTab.jsx";
 import PharmacyTab from "./PharmacyTab.jsx";
 import { useAuth } from "../auth/AuthContext.jsx";
-import { Page, Skeleton, Breadcrumb, Button, TabBar, Tab } from "../components/ui.jsx";
+import { isSuperAdmin } from "../auth/roles.js";
+import DeletePatientModal from "../components/DeletePatientModal.jsx";
+import { Page, Skeleton, Breadcrumb, Button, TabBar, Tab, ErrorState } from "../components/ui.jsx";
 import { Icon } from "../components/icons.jsx";
 
 const TILES = [
@@ -34,7 +36,20 @@ const TILES = [
 // Mirrors the manual's Health Record screen: tabs for Health Record /
 // Medical Notes / Vitals, with the nine tiles (Allergies, Medications, etc).
 export default function PatientDetail() {
-  const { id } = useParams();
+  // Three identifiers, three jobs — see `components/patientIdentity.js`.
+  //
+  //   routeParam   what the browser is showing. A UUID normally; the integer pk
+  //                when an old bookmark or an already-sent notification is
+  //                being followed, which is why it is not assumed to be either.
+  //   patientUuid  the browser and patient-API identity — every chart link and
+  //                every `/patients/<…>/` fetch below.
+  //   patientId    the integer pk. Still the internal identity: it keys the
+  //                caches other pages invalidate, and it is what the nested
+  //                endpoints' `?patient=` filters and FK write bodies take.
+  //
+  // The chart resolves the pair once, here, and hands each tab the one it
+  // actually needs, rather than every tab guessing.
+  const { patientUuid: routeParam } = useParams();
   const navigate = useNavigate();
   const location = useLocation();
   const { user } = useAuth();
@@ -55,11 +70,34 @@ export default function PatientDetail() {
   // It is the only chart tab a pharmacist gets: they need "what did I give
   // this patient?", not the clinical record behind it.
   const canSeePharmacy = isClinical || role === "pharmacist";
+  // Permanently deleting a patient is the Super Admin's alone — deliberately
+  // not `hasRole`, which lets every ADMIN_ROLE through. Hiding the button is
+  // housekeeping; `IsSuperAdmin` on the API is the control.
+  const canDelete = isSuperAdmin(user);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
 
-  const { data: patient } = useQuery({
-    queryKey: ["patient", id],
-    queryFn: () => api.get(`/patients/${id}/`).then((r) => r.data),
+  // `/api/patients/<x>/` resolves a UUID or the legacy integer pk, so one
+  // fetch serves both kinds of URL — and it is the API, not this component,
+  // that decides whether this role may see this patient.
+  const { data: patient, isError } = useQuery({
+    queryKey: ["patient", routeParam],
+    queryFn: () => api.get(`/patients/${routeParam}/`).then((r) => r.data),
+    retry: false,
   });
+
+  const patientId = patient?.id;
+  const patientUuid = patient?.uuid ?? routeParam;
+
+  // An old `/patients/13` bookmark, or a notification raised before the URL
+  // moved, still opens the chart — and then quietly becomes the UUID form, so
+  // the address bar and everything copied out of it are canonical from here
+  // on. `replace` keeps the back button pointing where the reader came from.
+  useEffect(() => {
+    if (!patient?.uuid || looksLikeUuid(routeParam)) return;
+    navigate(location.pathname.replace(`/patients/${routeParam}`,
+                                       `/patients/${patient.uuid}`) + location.search,
+             { replace: true });
+  }, [patient?.uuid, routeParam, location.pathname, location.search, navigate]);
 
   // Everything a department has sent back about this patient, each on its
   // own tab so a doctor can go straight to the answer they are chasing
@@ -135,13 +173,18 @@ export default function PatientDetail() {
                   button that prints the same card. */}
               <PrintButton
                 role={role}
-                documents={chartDocuments({ role, tab, context: { patientId: id, patient } })}
-                context={{ patientId: id, patient }}
+                documents={chartDocuments({ role, tab, context: { patientId, patient } })}
+                context={{ patientId, patient }}
               />
               {canPrescribe && (
-                <Button onClick={() => navigate(`/patients/${id}/prescribe`)}>
+                <Button onClick={() => navigate(`/patients/${patientUuid}/prescribe`)}>
                   <Icon name="plus" className="h-4 w-4" aria-hidden="true" />
                   Prescribe
+                </Button>
+              )}
+              {canDelete && (
+                <Button variant="dangerOutline" onClick={() => setConfirmingDelete(true)}>
+                  Delete patient
                 </Button>
               )}
             </div>
@@ -160,40 +203,67 @@ export default function PatientDetail() {
       )}
 
       {(isClinical || canSeeVitals || canBill || canSeePharmacy) && <TabBar label="Chart sections">
-        {isClinical && <TabLink to={`/patients/${id}`} active={tab === "overview"}>Overview</TabLink>}
-        {isClinical && <TabLink to={`/patients/${id}/record`} active={tab === "record"}>Health Record</TabLink>}
-        {isClinical && <TabLink to={`/patients/${id}/notes`} active={tab === "notes"}>Medical Notes</TabLink>}
-        {canSeeVitals && <TabLink to={`/patients/${id}/vitals`} active={tab === "vitals"}>Vitals</TabLink>}
-        {isClinical && <TabLink to={`/patients/${id}/lab`} active={tab === "lab"}>Lab</TabLink>}
-        {isClinical && <TabLink to={`/patients/${id}/ultrasound`} active={tab === "ultrasound"}>Ultrasound</TabLink>}
-        {isClinical && <TabLink to={`/patients/${id}/eye`} active={tab === "eye"}>Eye</TabLink>}
-        {isClinical && <TabLink to={`/patients/${id}/procedure`} active={tab === "procedure"}>Procedures</TabLink>}
-        {canSeeCare && <TabLink to={`/patients/${id}/admission`} active={tab === "admission"}>Admission</TabLink>}
-        {canSeePharmacy && <TabLink to={`/patients/${id}/pharmacy`} active={tab === "pharmacy"}>Pharmacy</TabLink>}
-        {canBill && <TabLink to={`/patients/${id}/billing`} active={tab === "billing"}>Billing</TabLink>}
+        {isClinical && <TabLink to={`/patients/${patientUuid}`} active={tab === "overview"}>Overview</TabLink>}
+        {isClinical && <TabLink to={`/patients/${patientUuid}/record`} active={tab === "record"}>Health Record</TabLink>}
+        {isClinical && <TabLink to={`/patients/${patientUuid}/notes`} active={tab === "notes"}>Medical Notes</TabLink>}
+        {canSeeVitals && <TabLink to={`/patients/${patientUuid}/vitals`} active={tab === "vitals"}>Vitals</TabLink>}
+        {isClinical && <TabLink to={`/patients/${patientUuid}/lab`} active={tab === "lab"}>Lab</TabLink>}
+        {isClinical && <TabLink to={`/patients/${patientUuid}/ultrasound`} active={tab === "ultrasound"}>Ultrasound</TabLink>}
+        {isClinical && <TabLink to={`/patients/${patientUuid}/eye`} active={tab === "eye"}>Eye</TabLink>}
+        {isClinical && <TabLink to={`/patients/${patientUuid}/procedure`} active={tab === "procedure"}>Procedures</TabLink>}
+        {canSeeCare && <TabLink to={`/patients/${patientUuid}/admission`} active={tab === "admission"}>Admission</TabLink>}
+        {canSeePharmacy && <TabLink to={`/patients/${patientUuid}/pharmacy`} active={tab === "pharmacy"}>Pharmacy</TabLink>}
+        {canBill && <TabLink to={`/patients/${patientUuid}/billing`} active={tab === "billing"}>Billing</TabLink>}
       </TabBar>}
 
       {!isClinical && !canSeeVitals && !canBill && !canSeePharmacy && <div className="rounded-xl border border-slate-200 bg-slate-50 p-5 text-sm text-slate-600">This role can view only the patient’s basic registration details. Use Appointments and Routing to continue the front-desk workflow.</div>}
 
-      {isClinical && tab === "overview" && <PatientOverview patientId={id} />}
+      {/* A tab cannot open before the integer pk is known: the nested
+          endpoints behind these panels filter on `?patient=<pk>` and the
+          caches other pages invalidate are keyed on it. One skeleton while
+          the chart resolves the URL, rather than eleven components each
+          guessing what the address bar means. */}
+      {isError ? (
+        <ErrorState
+          title="This chart could not be opened"
+          description="The address may be wrong, or this patient is not one you have access to. Try finding them on the Patients page."
+        />
+      ) : !patientId ? (
+        <div className="space-y-3">
+          <Skeleton className="h-24 w-full rounded-xl" />
+          <Skeleton className="h-24 w-full rounded-xl" />
+        </div>
+      ) : (
+        <>
+      {isClinical && tab === "overview" && (
+        <PatientOverview patientId={patientId} patientUuid={patientUuid} />
+      )}
       {isClinical && tab === "record" && (
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           {TILES.map((t) => (
-            <TileLoader key={t.key} patientId={id} tileKey={t.key} title={t.title} icon={t.icon} />
+            <TileLoader key={t.key} patientId={patientId} tileKey={t.key} title={t.title} icon={t.icon} />
           ))}
         </div>
       )}
-      {isClinical && tab === "notes" && <MedicalNotesTab patientId={id} />}
-      {canSeeVitals && tab === "vitals" && <VitalsTab patientId={id} />}
-      {isClinical && tab === "lab" && <LabResultsTab patientId={id} />}
+      {isClinical && tab === "notes" && <MedicalNotesTab patientId={patientId} />}
+      {canSeeVitals && tab === "vitals" && <VitalsTab patientId={patientId} />}
+      {isClinical && tab === "lab" && <LabResultsTab patientId={patientId} />}
       {isClinical && ["ultrasound", "eye", "procedure"].includes(tab) && (
-        <ReferralResultsTab patientId={id} kind={tab} />
+        <ReferralResultsTab patientId={patientId} patientUuid={patientUuid} kind={tab} />
       )}
-      {canSeeCare && tab === "admission" && <AdmissionTab patientId={id} />}
+      {canSeeCare && tab === "admission" && <AdmissionTab patientId={patientId} />}
       {canSeePharmacy && tab === "pharmacy" && (
-        <PharmacyTab patientId={id} canPrescribe={canPrescribe} />
+        <PharmacyTab patientId={patientId} patientUuid={patientUuid} canPrescribe={canPrescribe} />
       )}
-      {canBill && tab === "billing" && <PatientBillingTab patientId={id} />}
+      {canBill && tab === "billing" && (
+        <PatientBillingTab patientId={patientId} patientUuid={patientUuid} />
+      )}
+        </>
+      )}
+
+      {confirmingDelete && patient && (
+        <DeletePatientModal patient={patient} onClose={() => setConfirmingDelete(false)} />
+      )}
     </Page>
   );
 }

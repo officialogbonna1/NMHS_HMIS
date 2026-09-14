@@ -7,6 +7,8 @@ import { BILLING_CATEGORIES } from "./BillingItemsAdmin.jsx";
 import { BillSheet, ReceiptSheet } from "../components/PrintDocuments.jsx";
 import { useAuth } from "../auth/AuthContext.jsx";
 import { useToast } from "../components/Toaster.jsx";
+import CancelServiceModal from "../components/CancelServiceModal.jsx";
+import { chargeActions } from "../components/refundPolicy.js";
 
 const CAN_WAIVE_ROLES = ["admin", "hospital_admin", "cashier", "accountant"];
 
@@ -20,14 +22,16 @@ const STATUS_TONE = {
   cancelled: "bg-slate-100 text-slate-400 line-through",
 };
 
-export default function PatientBillingTab({ patientId }) {
+export default function PatientBillingTab({ patientId, patientUuid }) {
   // Which sheet is open, and the payment a receipt would be for.
   const [printing, setPrinting] = useState(null);
   const [receipt, setReceipt] = useState(null);
 
   const { data: patient } = useQuery({
+    // The patient record is read at its UUID address; the charges, payments
+    // and adjustments below are all `?patient=<pk>` and stay that way.
     queryKey: ["patient", String(patientId)],
-    queryFn: () => api.get(`/patients/${patientId}/`).then((r) => r.data),
+    queryFn: () => api.get(`/patients/${patientUuid}/`).then((r) => r.data),
   });
   const { user } = useAuth();
   const canWaive = CAN_WAIVE_ROLES.includes(user?.role);
@@ -149,14 +153,18 @@ function buildTransactionHistory(charges, payments, adjustments) {
 }
 
 function TransactionRow({ tx, onDone, canWaive }) {
+  const { user } = useAuth();
+  // "cancel" | "cancel_and_refund" — which dialog is open.
+  const [cancelling, setCancelling] = useState(null);
   const waive = useMutation({
     mutationFn: (reason) => api.post(`/charges/${tx.id}/waive/`, { reason }),
     onSuccess: onDone,
   });
-  const cancelCharge = useMutation({
-    mutationFn: () => api.post(`/charges/${tx.id}/cancel/`),
-    onSuccess: onDone,
-  });
+  // Cancelling from the chart is the Service Cancellations desk's decision in
+  // miniature: the same policy says which kind applies, and the same dialog
+  // takes the reason. This used to POST with no reason at all, which the
+  // server refuses — and the refusal went nowhere, so the button did nothing.
+  const actions = tx.kind === "charge" ? chargeActions(tx.raw, user) : null;
 
   return (
     <div className="px-4 py-3 flex items-center justify-between gap-4 text-sm">
@@ -172,22 +180,30 @@ function TransactionRow({ tx, onDone, canWaive }) {
           {tx.debit ? "-" : "+"}{currency(tx.amount)}
         </span>
         {canWaive && tx.kind === "charge" && ["unpaid", "partial"].includes(tx.status) && (
-          <>
-            <Button
-              variant="link" size="xs"
-              onClick={() => { const reason = prompt("Reason for waiving this charge:"); if (reason) waive.mutate(reason); }}
-            >
-              Waive
-            </Button>
-            <Button
-              variant="linkDanger" size="xs"
-              onClick={() => confirm("Cancel this charge?") && cancelCharge.mutate()}
-            >
-              Cancel
-            </Button>
-          </>
+          <Button
+            variant="link" size="xs"
+            onClick={() => { const reason = prompt("Reason for waiving this charge:"); if (reason) waive.mutate(reason); }}
+          >
+            Waive
+          </Button>
+        )}
+        {actions?.visible && actions.cancel && (
+          <Button variant="linkDanger" size="xs" onClick={() => setCancelling("cancel")}>
+            Cancel service
+          </Button>
+        )}
+        {actions?.visible && actions.cancelAndRefund && (
+          <Button variant="linkDanger" size="xs" onClick={() => setCancelling("cancel_and_refund")}>
+            Cancel &amp; refund
+          </Button>
         )}
       </div>
+      {cancelling && (
+        <CancelServiceModal
+          charge={tx.raw} mode={cancelling}
+          onClose={() => setCancelling(null)} onCancelled={onDone}
+        />
+      )}
     </div>
   );
 }

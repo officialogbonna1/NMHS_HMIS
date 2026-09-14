@@ -2,7 +2,7 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import api from "../api/client";
-import { patientNumber } from "../components/patientIdentity.js";
+import { patientNumber, patientUuidOf } from "../components/patientIdentity.js";
 import { PatientCardSheet } from "../components/PrintDocuments.jsx";
 import { COUNTRIES, RELATIONSHIPS, statesFor, statesKnownFor } from "../data/geography.js";
 import {
@@ -205,7 +205,7 @@ export default function PatientsNew() {
             🖨 Print patient card
           </button>
           <button
-            onClick={() => navigate(`/patients/${registered.id}`)}
+            onClick={() => navigate(`/patients/${patientUuidOf(registered)}`)}
             className="rounded-lg border border-slate-300 px-4 py-3 text-sm font-medium text-slate-700 transition hover:border-slate-400 hover:bg-slate-50 sm:py-2.5"
           >
             Open their chart

@@ -26,20 +26,52 @@ class AuditLogAdmin(admin.ModelAdmin):
         return False
 
 
+class ArchivedFilter(admin.SimpleListFilter):
+    title = "archived"
+    parameter_name = "archived"
+
+    def lookups(self, request, model_admin):
+        return [("no", "Inbox"), ("yes", "Archived")]
+
+    def queryset(self, request, queryset):
+        if self.value() == "yes":
+            return queryset.archived()
+        if self.value() == "no":
+            return queryset.active()
+        return queryset
+
+
 @admin.register(Notification)
 class NotificationAdmin(admin.ModelAdmin):
-    list_display = ["created_at", "recipient", "title", "category", "is_read", "action_url"]
-    list_filter = ["category", "is_read", "created_at"]
+    """
+    Notifications are archived, never deleted — here as on the HMIS screen.
+    What somebody was told is kept; archiving only takes it out of their inbox.
+    """
+    list_display = ["created_at", "recipient", "title", "category", "is_read", "archived_at",
+                    "action_url"]
+    list_filter = ["category", "is_read", ArchivedFilter, "created_at"]
     search_fields = ["title", "message", "recipient__username"]
     list_select_related = ["recipient"]
     autocomplete_fields = ["recipient"]
     date_hierarchy = "created_at"
     list_per_page = 50
-    actions = ["mark_read"]
+    readonly_fields = ["archived_at"]
+    actions = ["mark_read", "archive", "unarchive"]
+
+    def has_delete_permission(self, request, obj=None):
+        return False
 
     @admin.action(description="Mark selected as read")
     def mark_read(self, request, queryset):
         self.message_user(request, f"{queryset.update(is_read=True)} marked read.")
+
+    @admin.action(description="Archive selected")
+    def archive(self, request, queryset):
+        self.message_user(request, f"{queryset.archive()} archived.")
+
+    @admin.action(description="Restore selected to the inbox")
+    def unarchive(self, request, queryset):
+        self.message_user(request, f"{queryset.restore()} restored.")
 
 
 @admin.register(HospitalSettings)

@@ -1,11 +1,15 @@
 import { useState } from "react";
-import { useSearchParams } from "react-router-dom";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { Link, useSearchParams } from "react-router-dom";
+import { keepPreviousData, useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import api from "../api/client";
-import { Alert, Button, MetaStat, Page, PageHeader, TabBar, Tab } from "../components/ui.jsx";
 import {
-  MovementLog, PhysicalCount, StockOnHand, TransferStock, useLocations,
+  Alert, Badge, Button, EmptyState, ErrorState, Input, MetaStat, Page, PageHeader, Select, Skeleton,
+  TabBar, Tab, Table, TableWrap, Td, Th, THead, Tr,
+} from "../components/ui.jsx";
+import {
+  CountImportExport, MovementLog, PhysicalCount, StockOnHand, TransferStock, useLocations,
 } from "../components/StockPanels.jsx";
+import { directionsOf, productLabel } from "../components/prescriptionDirections.js";
 import { useToast } from "../components/Toaster.jsx";
 import { useAuth } from "../auth/AuthContext.jsx";
 import { PrintButton } from "../components/printing.jsx";
@@ -22,14 +26,27 @@ const STATUS_TONE = {
   cancelled: "bg-slate-100 text-slate-400 line-through",
 };
 
-const TABS = ["queue", "dispensed", "payments", "stock", "transfer", "count", "movements"];
+// The navigation opens several of these directly (`/pharmacy?tab=…`), so a
+// tab's key is part of an address and is not renamed lightly.
+const TABS = [
+  ["overview", "Overview"],
+  ["queue", "Prescriptions"],
+  ["dispensed", "Dispensed & payment"],
+  ["payments", "Pharmacy payments"],
+  ["products", "Products"],
+  ["stock", "Pharmacy stock"],
+  ["transfer", "Request from store"],
+  ["count", "Physical count"],
+  ["import", "Import / export"],
+  ["movements", "Movement history"],
+];
 
 export default function Pharmacy() {
   // The tab is in the URL so the dashboard's stock alert can land on the
   // shelf it is warning about rather than on the dispensing queue.
   const [params, setParams] = useSearchParams();
   const requested = params.get("tab");
-  const tab = TABS.includes(requested) ? requested : "queue";
+  const tab = TABS.some(([key]) => key === requested) ? requested : "queue";
   const setTab = (key) => setParams(key === "queue" ? {} : { tab: key }, { replace: true });
   const { data: locations } = useLocations();
   // The pharmacy's own shelf. Everything on the stock tabs below is pinned to
@@ -51,18 +68,16 @@ export default function Pharmacy() {
       />
 
       <TabBar label="Pharmacy sections">
-        <Tab active={tab === "queue"} onClick={() => setTab("queue")}>Dispensing queue</Tab>
-        <Tab active={tab === "dispensed"} onClick={() => setTab("dispensed")}>Dispensed &amp; payment</Tab>
-        <Tab active={tab === "payments"} onClick={() => setTab("payments")}>Pharmacy payments</Tab>
-        <Tab active={tab === "stock"} onClick={() => setTab("stock")}>Pharmacy stock</Tab>
-        <Tab active={tab === "transfer"} onClick={() => setTab("transfer")}>Request from store</Tab>
-        <Tab active={tab === "count"} onClick={() => setTab("count")}>Physical count</Tab>
-        <Tab active={tab === "movements"} onClick={() => setTab("movements")}>Movement history</Tab>
+        {TABS.map(([key, label]) => (
+          <Tab key={key} active={tab === key} onClick={() => setTab(key)}>{label}</Tab>
+        ))}
       </TabBar>
 
+      {tab === "overview" && <PharmacyOverview counter={counter} goTo={setTab} />}
       {tab === "queue" && <DispensingQueue />}
       {tab === "dispensed" && <DispensedList />}
       {tab === "payments" && <PharmacyPayments />}
+      {tab === "products" && <ProductsCatalogue counter={counter} />}
 
       {/* The same panels Administration → Inventory renders, pinned to the
           dispensing shelf. One implementation, two workspaces: a pharmacist
@@ -84,6 +99,9 @@ export default function Pharmacy() {
       )}
       {tab === "count" && (
         <PhysicalCount locations={locations} store={store} lockedLocation={counter} />
+      )}
+      {tab === "import" && (
+        <CountImportExport locations={locations} lockedLocation={counter} />
       )}
       {tab === "movements" && (
         <MovementLog locations={locations} lockedLocation={counter} />
@@ -145,13 +163,21 @@ function DispensingQueue() {
         <div key={p.id} className="border rounded-lg bg-white p-4 flex items-center justify-between gap-4">
           <div>
             <div className="flex items-center gap-2">
-              <span className="font-medium">{p.item_name} ×{p.quantity} {p.item_unit}</span>
+              <span className="font-medium">
+                {productLabel({ strength: p.item_strength, dosage_form: p.item_form }, p.item_name)} ×{p.quantity} {p.item_unit}
+              </span>
               <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${STATUS_TONE[p.status]}`}>Awaiting dispensing</span>
             </div>
+            {p.item_category && (
+              <p className="text-sm text-slate-700 mt-1">
+                Category: <span className="font-medium">{p.item_category}</span>
+              </p>
+            )}
             <p className="text-sm text-slate-600 mt-1">
               {p.patient_name} · prescribed by Dr. {p.doctor_name} · {new Date(p.created_at).toLocaleString()}
             </p>
-            {p.dosage_instructions && <p className="text-sm text-slate-700 mt-1">{p.dosage_instructions}</p>}
+            {directionsOf(p) && <p className="text-sm text-slate-800 mt-1">{directionsOf(p)}</p>}
+            {p.notes && <p className="text-sm text-slate-600 mt-0.5">Note: {p.notes}</p>}
           </div>
           <div className="flex items-center gap-3 text-sm shrink-0">
             <button
@@ -342,7 +368,10 @@ function PharmacyPayments() {
         {payments.map((p) => (
           <div key={p.id} className="px-4 py-3 flex items-center justify-between text-sm">
             <div>
-              <p className="font-medium">{p.patient_name}</p>
+              <p className="font-medium">
+                {p.patient_name ?? "Walk-in customer"}
+                {p.reference && <span className="font-normal text-slate-600"> · {p.reference}</span>}
+              </p>
               <p className="text-xs text-slate-500 mt-0.5">
                 {new Date(p.created_at).toLocaleString()} · {p.method} · {p.received_by_name}
               </p>
@@ -351,6 +380,148 @@ function PharmacyPayments() {
           </div>
         ))}
       </div>
+    </div>
+  );
+}
+
+/**
+ * The pharmacy's front page: what is waiting, what the till took today, and a
+ * way into each job. Every figure is a read the pharmacist already makes
+ * elsewhere — nothing here is counted twice.
+ */
+function PharmacyOverview({ counter, goTo }) {
+  const pending = useQuery({
+    queryKey: ["prescriptions", "status", "pending", "count"],
+    queryFn: () => api.get("/prescriptions/", { params: { status: "pending", page_size: 1 } })
+      .then((r) => r.data.count ?? (r.data.results ?? r.data).length),
+  });
+  const pos = useQuery({
+    queryKey: ["pos-summary", "today"],
+    queryFn: () => api.get("/sales/summary/", { params: { preset: "today" } }).then((r) => r.data),
+  });
+
+  const cards = [
+    { key: "queue", label: "Prescriptions to dispense", value: pending.data ?? "—",
+      hint: "Written by doctors, waiting at the counter", onClick: () => goTo("queue") },
+    { key: "pos", label: "POS sales today", value: pos.data?.sales.count ?? "—",
+      hint: pos.data ? `${currency(pos.data.sales.total)} paid · ${currency(pos.data.refunds.amount)} returned` : "Walk-in and registered",
+      to: "/pharmacy/sales" },
+    { key: "shelf", label: "Units on the pharmacy shelf", value: counter?.total_units ?? "—",
+      hint: "Every batch, unexpired or not — see Stock", onClick: () => goTo("stock") },
+  ];
+  const actions = [
+    ["Dispense prescriptions", () => goTo("queue")],
+    ["Request stock from the store", () => goTo("transfer")],
+    ["Count the shelf", () => goTo("count")],
+    ["Import / export a count", () => goTo("import")],
+  ];
+
+  return (
+    <div className="space-y-5">
+      <section aria-label="Pharmacy today" className="grid gap-3 sm:grid-cols-3">
+        {cards.map((card) => {
+          const body = (
+            <>
+              <p className="text-sm text-slate-600">{card.label}</p>
+              <p className="mt-1 text-2xl font-semibold tabular-nums text-slate-900">{card.value}</p>
+              <p className="mt-1 text-xs text-slate-500">{card.hint}</p>
+            </>
+          );
+          const className = "block min-w-0 rounded-xl border border-slate-200 bg-white p-4 text-left transition hover:border-brand-300 hover:shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500";
+          return card.to
+            ? <Link key={card.key} to={card.to} className={className}>{body}</Link>
+            : <button key={card.key} type="button" onClick={card.onClick} className={className}>{body}</button>;
+        })}
+      </section>
+      <section aria-label="Pharmacy work" className="rounded-xl border border-slate-200 bg-white p-4 sm:p-5">
+        <h2 className="font-semibold text-slate-900">Go to</h2>
+        <div className="mt-3 flex flex-wrap gap-2">
+          <Button to="/pharmacy/pos">Open the POS till</Button>
+          {actions.map(([label, onClick]) => (
+            <Button key={label} variant="secondary" onClick={onClick}>{label}</Button>
+          ))}
+        </div>
+      </section>
+    </div>
+  );
+}
+
+/**
+ * The catalogue as the pharmacy reads it — what each product is, how it is
+ * found at the till, and what stands on this shelf. Read-only on purpose:
+ * configuring products is Administration's (rule 29).
+ */
+function ProductsCatalogue({ counter }) {
+  const [term, setTerm] = useState("");
+  const [categoryId, setCategoryId] = useState("");
+  const categories = useQuery({
+    queryKey: ["item-categories", "picker"],
+    queryFn: () => api.get("/item-categories/", { params: { page_size: 200 } }).then((r) => r.data.results ?? r.data),
+  });
+  const items = useQuery({
+    queryKey: ["items", "catalogue", term.trim(), categoryId],
+    queryFn: () => api.get("/items/", {
+      params: { page_size: 200, is_active: true, ...(term.trim() ? { search: term.trim() } : {}),
+                ...(categoryId ? { category: categoryId } : {}) },
+    }).then((r) => r.data.results ?? r.data),
+    placeholderData: keepPreviousData,
+  });
+  const rows = items.data ?? [];
+  const onShelf = (item) => (item.by_location ?? []).find((entry) => entry.location === counter?.id)?.quantity ?? 0;
+
+  return (
+    <div className="space-y-4">
+      <Alert tone="info">
+        Products are configured by Administration. Ask an administrator to add a product or change its
+        details; stock reaches this shelf by transfer from the store.
+      </Alert>
+      <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+        <Input aria-label="Search products" placeholder="Name, SKU, barcode or category…"
+               value={term} onChange={(e) => setTerm(e.target.value)} className="lg:col-span-2" />
+        <Select aria-label="Category" value={categoryId} onChange={(e) => setCategoryId(e.target.value)}>
+          <option value="">Every category</option>
+          {(categories.data ?? []).map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+        </Select>
+      </div>
+      {items.isError && <ErrorState title="Could not load the catalogue." onRetry={items.refetch} />}
+      {items.isLoading && <Skeleton className="h-40" />}
+      {items.data && rows.length === 0 && (
+        <EmptyState icon="box" title="No products match" description="Change the search or the category." />
+      )}
+      {rows.length > 0 && (
+        <TableWrap>
+          <Table className="min-w-[48rem]">
+            <THead>
+              <Tr>
+                <Th>Product</Th><Th>SKU / barcode</Th><Th>Category</Th><Th>Unit</Th>
+                <Th className="text-right">On this shelf</Th><Th className="text-right">Hospital total</Th>
+              </Tr>
+            </THead>
+            <tbody>
+              {rows.map((item) => (
+                <Tr key={item.id}>
+                  <Td className="font-medium text-slate-900">
+                    {item.name}
+                    {(item.strength || item.dosage_form) && (
+                      <span className="block text-sm font-normal text-slate-600">
+                        {[item.strength, item.dosage_form].filter(Boolean).join(" · ")}
+                      </span>
+                    )}
+                  </Td>
+                  <Td>{item.sku || "—"}{item.barcode && <span className="block text-xs text-slate-500">{item.barcode}</span>}</Td>
+                  <Td>{item.category_name || "—"}</Td>
+                  <Td>{item.unit_label}</Td>
+                  <Td className="text-right tabular-nums">{onShelf(item)}</Td>
+                  <Td className="text-right tabular-nums">
+                    {item.total_quantity}
+                    {item.is_low_stock && <Badge tone="warning" className="ml-2">Low</Badge>}
+                  </Td>
+                </Tr>
+              ))}
+            </tbody>
+          </Table>
+        </TableWrap>
+      )}
     </div>
   );
 }

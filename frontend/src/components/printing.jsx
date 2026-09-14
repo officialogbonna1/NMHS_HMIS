@@ -29,11 +29,15 @@ import {
  * `switch` in each page:
  *
  * 1. **`roles` mirrors the backend.** Every document reads an endpoint its
- *    role already passes (`ClinicalSummarySheet` → `/patients/<id>/overview/`,
+ *    role already passes (`ClinicalSummarySheet` → `/patients/<pk>/overview/`,
  *    ClinicalRecordAccess; `DispensingSheet` → `/prescriptions/`, doctor and
  *    pharmacist). Widening a list here does not widen anything: the API
  *    refuses, and the sheet says it could not load. The list exists so a role
  *    is never offered a button that would only fail.
+ *    `context.patientId` here is deliberately the **integer pk**, not the
+ *    UUID the browser URL carries: a sheet builds no link, and the lists it
+ *    prints from (`?patient=`, `/charges/`, `/vitals/`) all filter on the pk.
+ *    See `components/patientIdentity.js` on which identifier goes where.
  * 2. **`needs` is honesty about context.** A document that has no record to
  *    print is not offered. That is what stops "Print lab request" appearing
  *    on a chart with no laboratory order behind it.

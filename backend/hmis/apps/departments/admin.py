@@ -19,8 +19,9 @@ class DepartmentAdmin(ProtectedConfigAdmin, admin.ModelAdmin):
     list_filter = ["is_active"]
     search_fields = ["name", "code"]
     actions = ["activate", "deactivate"]
-    # A department that has routed a patient or prices a service is history.
-    protected_relations = ("routes", "services", "lab_tests")
+    # A department that has routed a patient, prices a service or has taken
+    # money is history. Django admin is held to the same rule the API is.
+    protected_relations = ("routes", "services", "lab_tests", "charge_set")
 
     @admin.display(description="Services")
     def service_count(self, obj):

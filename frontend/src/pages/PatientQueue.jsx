@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import api from "../api/client";
-import { patientNumber } from "../components/patientIdentity.js";
+import { patientNumber, patientUuidOf } from "../components/patientIdentity.js";
 import PatientPicker from "../components/PatientPicker.jsx";
 import { readError } from "../api/errors";
 import { useAuth } from "../auth/AuthContext.jsx";
@@ -223,7 +223,7 @@ function RouteRow({ route, canRoute, canWork }) {
             Cancel
           </Button>
         )}
-        <Button variant="link" size="sm" to={`/patients/${route.patient_id ?? ""}`}>
+        <Button variant="link" size="sm" to={`/patients/${patientUuidOf(route)}`}>
           Open patient
           <Icon name="chevronRight" className="h-4 w-4" aria-hidden="true" />
         </Button>

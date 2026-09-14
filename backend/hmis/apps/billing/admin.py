@@ -2,7 +2,8 @@ from django.contrib import admin
 
 from apps.core.config import ProtectedConfigAdmin
 
-from .models import BillingItem, PatientLedger, Charge, Payment, Adjustment, PaymentDeferral
+from .models import (BillingItem, PatientLedger, Charge, Payment, Adjustment, PaymentDeferral,
+                     PaymentAllocation, Refund, RefundAllocation)
 
 
 @admin.register(BillingItem)
@@ -95,3 +96,57 @@ class PatientLedgerAdmin(_MoneyAdmin):
     @admin.display(description="Outstanding")
     def outstanding_balance(self, obj):
         return obj.outstanding_balance
+
+
+@admin.register(PaymentAllocation)
+class PaymentAllocationAdmin(admin.ModelAdmin):
+    """
+    Which charge each payment settled. Written by
+    `billing.services.allocate_to_charges` inside the same transaction as the
+    allocation it records — an audit row, so it is read here and nowhere
+    edited, the same rule the rest of the money models follow.
+
+    It does not use `_MoneyAdmin`: an allocation has no patient of its own,
+    only the two rows it joins.
+    """
+    list_display = ["created_at", "payment", "charge", "amount"]
+    list_select_related = ["payment", "charge"]
+    search_fields = ["charge__description", "charge__patient__patient_number"]
+    date_hierarchy = "created_at"
+    list_per_page = 50
+
+    def has_change_permission(self, request, obj=None): return False
+    def has_delete_permission(self, request, obj=None): return False
+    def has_add_permission(self, request): return False
+
+
+@admin.register(Refund)
+class RefundAdmin(_MoneyAdmin):
+    """
+    Money handed back. Read-only here like every other money row: a refund is
+    written by `billing.services.refund_payment`, which also reopens the bills
+    it came off and writes the ledger adjustment beside it. Typing one in here
+    would move the refund without any of that.
+    """
+    list_display = ["created_at", "patient", "amount", "payment", "method",
+                    "processed_by", "authorized_by"]
+    list_filter = ["method", "created_at"]
+    search_fields = ["patient__first_name", "patient__last_name",
+                     "patient__patient_number", "reason", "reference"]
+
+
+@admin.register(RefundAllocation)
+class RefundAllocationAdmin(admin.ModelAdmin):
+    """
+    Which bill each refund came back off — the mirror of PaymentAllocation,
+    and read-only for the same reason.
+    """
+    list_display = ["created_at", "refund", "charge", "amount"]
+    list_select_related = ["refund", "charge"]
+    search_fields = ["charge__description", "charge__patient__patient_number"]
+    date_hierarchy = "created_at"
+    list_per_page = 50
+
+    def has_change_permission(self, request, obj=None): return False
+    def has_delete_permission(self, request, obj=None): return False
+    def has_add_permission(self, request): return False

@@ -24,7 +24,8 @@ def check_expiring_batches():
     dispensing shelf are walked by different people, so a warning that does
     not say which shelf is a warning somebody else has to chase.
     """
-    today = timezone.now().date()
+    # Local date, not UTC — the same clock the expiry dates were entered on.
+    today = timezone.localdate()
     # The same window the dashboards use — one setting, not a constant here
     # and a different number there.
     cutoff = today + timedelta(days=HospitalSettings.load().expiry_warning_days)

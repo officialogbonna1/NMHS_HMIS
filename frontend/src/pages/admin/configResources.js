@@ -26,6 +26,7 @@ export const CONFIG_RESOURCES = {
     searchPlaceholder: "Search products…",
     columns: [
       { key: "name", label: "Product", strong: true },
+      { key: "sku", label: "SKU" },
       { key: "category_name", label: "Category" },
       { key: "unit_label", label: "Unit" },
       { key: "total_quantity", label: "On hand", align: "right" },
@@ -33,6 +34,10 @@ export const CONFIG_RESOURCES = {
     ],
     fields: [
       { name: "name", label: "Name", type: "text", required: true },
+      { name: "sku", label: "SKU", type: "text",
+        hint: "Optional stock-keeping code, e.g. PH-PARA-500. Unique when set." },
+      { name: "barcode", label: "Barcode", type: "text",
+        hint: "Optional. What the POS scanner reads. Unique when set." },
       { name: "category", label: "Category", type: "reference", endpoint: "item-categories",
         hint: "Manage the list under Categories." },
       { name: "unit", label: "Unit of measure", type: "reference", endpoint: "units" },
@@ -50,9 +55,12 @@ export const CONFIG_RESOURCES = {
     group: "Inventory",
     icon: "tag",
     endpoint: "item-categories",
-    blurb: "How the catalogue is grouped. A category is retired, never deleted, "
-      + "once products are filed under it.",
+    blurb: "How the catalogue is grouped — Pain Relief, Antibiotics, Consumables. "
+      + "Used by the pharmacy POS, the stock screens, the drug picker and the "
+      + "dispensing queue. A category is retired, never deleted, once products "
+      + "are filed under it.",
     adminOnly: true,
+    searchPlaceholder: "Search categories…",
     columns: [
       { key: "name", label: "Category", strong: true },
       { key: "description", label: "Description" },

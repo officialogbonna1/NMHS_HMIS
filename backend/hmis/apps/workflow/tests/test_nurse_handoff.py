@@ -189,7 +189,7 @@ class NurseHandoffTests(TestCase):
         self.assertIn("Queued for consultation", note.title)
         self.assertIn(str(self.patient), note.title)
         self.assertEqual(note.message, "Febrile, complains of headache")
-        self.assertEqual(note.action_url, f"/patients/{self.patient.id}")
+        self.assertEqual(note.action_url, f"/patients/{self.patient.uuid}")
 
     def test_only_a_nurse_can_forward(self):
         route_id = self._route_for_vitals()

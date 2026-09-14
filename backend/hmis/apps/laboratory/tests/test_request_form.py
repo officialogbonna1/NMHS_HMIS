@@ -35,7 +35,7 @@ class LabRequestFormTests(TestCase):
 
         self.patient = Patient.objects.create(first_name="Ngozi", last_name="Ike", sex="F",
                                               created_by=self.reception)
-        self.department = Department.objects.create(code="lab", name="Laboratory")
+        self.department = Department.objects.get(code="laboratory")
         self.visit = Visit.objects.create(patient=self.patient, opened_by=self.reception,
                                           attending_doctor=self.doctor)
         self.route = PatientRoute.objects.create(

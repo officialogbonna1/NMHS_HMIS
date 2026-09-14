@@ -41,9 +41,16 @@ class DepartmentViewSet(AdminWriteViewSet):
     serializer_class = DepartmentSerializer
     filterset_fields = ["is_active"]
     search_fields = ["name", "code"]
-    # A department that has routed a patient, priced a service or holds a ward
-    # is part of the record. Deactivate it; the history keeps reading.
-    protected_relations = ("routes", "services", "lab_tests", "ward_set")
+    # A department that has routed a patient, priced a service, holds a ward
+    # or has taken money is part of the record. Deactivate it; the history
+    # keeps reading.
+    #
+    # `charge_set` was the omission that mattered: `Charge.department` used to
+    # be SET_NULL and was not listed here, so deleting a department silently
+    # wiped the department off every charge it had ever earned. It is PROTECT
+    # now as well, so the database refuses too — but the 409 with the counts
+    # is what an administrator should actually see.
+    protected_relations = ("routes", "services", "lab_tests", "ward_set", "charge_set")
 
 
 class ServiceViewSet(AdminWriteViewSet):

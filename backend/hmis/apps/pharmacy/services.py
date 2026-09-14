@@ -26,6 +26,7 @@ from django.utils import timezone
 from apps.inventory.models import StockRecord, dispensing_location
 from apps.inventory.services import apply_stock_change, quantity_on_hand
 from apps.pharmacy.models import Prescription
+from apps.billing.departments import department_for_source
 from apps.billing.services import add_charge
 
 
@@ -49,8 +50,22 @@ def available_quantity(item, location=None):
     return quantity_on_hand(item=item, location=location or dispensing_location())
 
 
+def _directions(*, frequency="", duration="", route="", notes=""):
+    """
+    How the drug is to be taken, beside the dose. Every part optional; a route,
+    when given, must be one the pharmacy label knows how to print.
+    """
+    route = str(route or "").strip()
+    if route and route not in dict(Prescription.ROUTE_CHOICES):
+        raise ValidationError(f'"{route}" is not a route of administration the pharmacy recognises.')
+    return {"frequency": str(frequency or "").strip()[:60],
+            "duration": str(duration or "").strip()[:60],
+            "route": route, "notes": str(notes or "").strip()}
+
+
 @transaction.atomic
-def create_prescription(*, patient, doctor, item, quantity, dosage_instructions=""):
+def create_prescription(*, patient, doctor, item, quantity, dosage_instructions="",
+                        frequency="", duration="", route="", notes=""):
     """
     A doctor's request to the pharmacy. Stock is checked so a doctor is told
     straight away that a drug can't be filled, but nothing is deducted or
@@ -67,6 +82,7 @@ def create_prescription(*, patient, doctor, item, quantity, dosage_instructions=
     return Prescription.objects.create(
         patient=patient, doctor=doctor, item=item, quantity=quantity,
         dosage_instructions=dosage_instructions, status="pending",
+        **_directions(frequency=frequency, duration=duration, route=route, notes=notes),
     )
 
 
@@ -97,6 +113,8 @@ def create_prescriptions(*, patient, doctor, lines):
         create_prescription(
             patient=patient, doctor=doctor, item=line["item"], quantity=line["quantity"],
             dosage_instructions=line.get("dosage_instructions", ""),
+            frequency=line.get("frequency", ""), duration=line.get("duration", ""),
+            route=line.get("route", ""), notes=line.get("notes", ""),
         )
         for line in lines
     ]
@@ -164,6 +182,9 @@ def dispense_prescription(*, prescription, pharmacist):
     add_charge(
         patient=prescription.patient, description=f"Medication: {prescription.item.name}",
         amount=dispensed_value, created_by=pharmacist,
+        # Dispensing is pharmacy revenue. Stated here as well as resolved in
+        # `add_charge`, so the call site says which unit earned the money.
+        department=department_for_source("prescription"),
         source_type="prescription", source_id=prescription.id,
     )
     return prescription
@@ -184,7 +205,8 @@ def cancel_prescription(*, prescription, actor, reason=""):
 
 
 @transaction.atomic
-def create_prescription_and_dispense(*, patient, doctor, item, quantity, dosage_instructions=""):
+def create_prescription_and_dispense(*, patient, doctor, item, quantity, dosage_instructions="",
+                                     **directions):
     """
     Write and fill in one step, for the counter sale case where the same
     person does both. Normal ward flow goes through `create_prescription()`
@@ -193,10 +215,22 @@ def create_prescription_and_dispense(*, patient, doctor, item, quantity, dosage_
     """
     prescription = create_prescription(
         patient=patient, doctor=doctor, item=item, quantity=quantity,
-        dosage_instructions=dosage_instructions,
+        dosage_instructions=dosage_instructions, **directions,
     )
     return dispense_prescription(prescription=prescription, pharmacist=doctor)
 
 
 def _today():
-    return timezone.now().date()
+    """
+    Today, in the hospital's own timezone.
+
+    `timezone.now().date()` is the **UTC** date. With `TIME_ZONE` set to
+    Africa/Lagos (UTC+1), the two disagree between local midnight and 01:00 —
+    UTC is still on yesterday — and the expiry filter above
+    (`expiry_date__lt=_today()`) then keeps a lot that expired yesterday.
+    During that hour the pharmacy would dispense expired stock.
+
+    `localdate()` is the same clock the batch's `expiry_date` was entered
+    against, and the same one the rest of the codebase reads.
+    """
+    return timezone.localdate()

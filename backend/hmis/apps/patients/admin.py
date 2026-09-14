@@ -1,13 +1,42 @@
-from django.contrib import admin
+from django import forms
+from django.contrib import admin, messages
+from django.contrib.admin.utils import unquote
+from django.core.exceptions import PermissionDenied
+from django.db import transaction
+from django.shortcuts import redirect
+from django.template.response import TemplateResponse
+from django.urls import path
+
+from apps.accounts.permissions import is_super_admin
+from apps.core.config import describe
 
 from .models import (
     Patient, Allergy, Medication, MedicalCondition, MedicalDevice,
     SurgicalHistory, FamilyMedicalHistory, SocialHistory, Vaccination, MedicalTest,
 )
+from .services import money_on_record, purge_history, purge_patient, purge_preview
 
 # Patients are people the hospital treats; Users are staff who log in. They
 # are separate models on purpose — a patient has no account and never signs
 # in — which is why the admin's Users list only ever showed staff.
+
+
+class PurgePatientForm(forms.Form):
+    """Asks twice: which patient you mean, and why."""
+    confirm = forms.CharField(label="Hospital number",
+                              help_text="Type this patient's hospital number to confirm.")
+    reason = forms.CharField(widget=forms.Textarea(attrs={"rows": 3, "cols": 60}),
+                             help_text="Kept in the audit log with what was removed.")
+
+    def __init__(self, *args, patient, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.patient = patient
+
+    def clean_confirm(self):
+        value = self.cleaned_data["confirm"]
+        if value.upper() != (self.patient.patient_number or "").upper():
+            raise forms.ValidationError("That is not this patient's hospital number.")
+        return value
 
 
 class _RecordInline(admin.TabularInline):
@@ -77,6 +106,68 @@ class PatientAdmin(admin.ModelAdmin):
     @admin.display(description="Age", ordering="birthdate")
     def age_display(self, obj):
         return obj.age_display or "—"
+
+    # Deleting a patient here is purging them (`patients/services.py`): the
+    # Super Admin alone, with the hospital number typed and a reason, taking
+    # the history the API refuses to. Django's own delete page cannot do it —
+    # Vitals and every money admin answer `has_delete_permission = False`,
+    # which it reads as a refusal for the cascade — and would write no audit
+    # row if it could, so Delete leads to the purge page and there is no bulk
+    # delete.
+
+    def has_delete_permission(self, request, obj=None):
+        return is_super_admin(request.user) and super().has_delete_permission(request, obj)
+
+    def get_actions(self, request):
+        actions = super().get_actions(request)
+        actions.pop("delete_selected", None)
+        return actions
+
+    def get_urls(self):
+        # Before the defaults: their `<path:object_id>/` catch-all would
+        # otherwise swallow `…/purge/`.
+        purge = path("<path:object_id>/purge/", self.admin_site.admin_view(self.purge_view),
+                     name="patients_patient_purge")
+        return [purge, *super().get_urls()]
+
+    def delete_view(self, request, object_id, extra_context=None):
+        return redirect("admin:patients_patient_purge", object_id)
+
+    def purge_view(self, request, object_id):
+        patient = self.get_object(request, unquote(object_id))
+        if patient is None:
+            return self._get_obj_does_not_exist_redirect(request, self.opts, object_id)
+        if not self.has_delete_permission(request, patient):
+            raise PermissionDenied
+
+        form = PurgePatientForm(request.POST or None, patient=patient)
+        if request.method == "POST" and form.is_valid():
+            label = f"{patient.patient_number} {patient}"
+            with transaction.atomic():
+                self.log_deletion(request, patient, label)
+                removed = purge_patient(patient=patient, actor=request.user,
+                                        reason=form.cleaned_data["reason"],
+                                        confirmation=form.cleaned_data["confirm"],
+                                        request=request)
+            with_history = f", with {describe(removed)}" if removed else ""
+            self.message_user(request, f"{label} was permanently deleted{with_history}.",
+                              messages.SUCCESS)
+            return redirect("admin:patients_patient_changelist")
+
+        history = purge_history(patient)
+        context = {
+            **self.admin_site.each_context(request),
+            "opts": self.opts,
+            "title": f"Permanently delete {patient}?",
+            "patient": patient,
+            "form": form,
+            "history": history,
+            "history_text": describe(history),
+            "money": money_on_record(patient),
+            "deleted": purge_preview(patient),
+        }
+        request.current_app = self.admin_site.name
+        return TemplateResponse(request, "admin/patients/patient/purge.html", context)
 
 
 class _TileAdmin(admin.ModelAdmin):

@@ -104,9 +104,12 @@ class CashDeskDashboardTests(TestCase):
         self.assertEqual(Decimal(str(self._cards()["outstanding"]["value"])), Decimal("3000"))
 
     def test_every_card_opens_a_page_the_cashier_can_reach(self):
-        allowed = {"/billing", "/transactions", "/patients", "/notifications"}
+        # The query string is part of the link, not part of the route: the
+        # money cards open /finance already showing today.
+        allowed = {"/billing", "/transactions", "/patients", "/notifications",
+                   "/outstanding", "/finance"}
         for card in self.client.get("/api/dashboard/").data["cards"]:
-            self.assertIn(card["href"], allowed, card["label"])
+            self.assertIn(card["href"].split("?")[0], allowed, card["label"])
 
     def test_a_fresh_unpaid_charge_raises_an_alert(self):
         self._charge("5000")

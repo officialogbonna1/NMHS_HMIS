@@ -26,10 +26,11 @@ from rest_framework.test import APIClient
 FRONTEND_ROUTES = {
     "/", "/appointments", "/billing", "/billing-items", "/departments",
     "/inventory", "/login", "/notifications", "/nursing", "/patients",
-    "/patients/new", "/pharmacy", "/queue", "/refer", "/send-to-doctor",
+    "/patients/new", "/pharmacy", "/pharmacy/pos", "/pharmacy/sales", "/queue", "/refer",
+    "/send-to-doctor",
     "/transactions", "/users", "/vitals",
     "/laboratory", "/lab-catalogue", "/ultrasound", "/eye", "/admissions",
-    "/outstanding", "/waivers",
+    "/outstanding", "/waivers", "/refunds", "/service-cancellations",
     "/patients/:id", "/patients/:id/billing", "/patients/:id/notes",
     "/patients/:id/prescribe", "/patients/:id/record", "/patients/:id/vitals",
     "/patients/:id/lab", "/patients/:id/ultrasound", "/patients/:id/eye",
@@ -37,8 +38,16 @@ FRONTEND_ROUTES = {
 }
 
 
+#: `/patients/550e8400-…/lab` — the browser identity a chart link carries now.
+#: The integer form is still matched: notification rows written before the URL
+#: moved keep it, and reach the chart through the compatibility redirect.
+UUID_SEGMENT = re.compile(
+    r"/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
+
+
 def routable(url):
     """Does this URL match one of the app's routes, with ids substituted?"""
+    url = UUID_SEGMENT.sub("/:id", url)
     return re.sub(r"/\d+", "/:id", url) in FRONTEND_ROUTES
 
 
