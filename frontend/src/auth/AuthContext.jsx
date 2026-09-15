@@ -1,4 +1,5 @@
 import { createContext, useContext, useEffect, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import api from "../api/client";
 
 // Exported so a test can mount a component under a chosen role without
@@ -9,6 +10,10 @@ export const AuthContext = createContext(null);
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
+  // Server data is cached per browser tab, not per person. Without clearing it
+  // the next account to sign in on a shared workstation is shown the last
+  // one's notifications, unread badge and patients until each query refetches.
+  const queryClient = useQueryClient();
 
   useEffect(() => {
     const token = localStorage.getItem("authToken");
@@ -26,6 +31,7 @@ export function AuthProvider({ children }) {
   async function login(username, password) {
     const { data } = await api.post("/auth/login/", { username, password });
     localStorage.setItem("authToken", data.token);
+    queryClient.clear();
     setUser(data.user);
     return data.user;
   }
@@ -35,6 +41,7 @@ export function AuthProvider({ children }) {
       await api.post("/auth/logout/");
     } finally {
       localStorage.removeItem("authToken");
+      queryClient.clear();
       setUser(null);
     }
   }

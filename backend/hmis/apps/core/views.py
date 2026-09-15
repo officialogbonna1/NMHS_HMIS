@@ -43,7 +43,9 @@ class NotificationViewSet(viewsets.ModelViewSet):
         return self.request.query_params.get("archived") in ("true", "1")
 
     def _mine(self):
-        return Notification.objects.filter(recipient=self.request.user)
+        # Addressed to the caller and raised for the role they hold now —
+        # `NotificationQuerySet.for_user`, which the dashboard reads too.
+        return Notification.objects.for_user(self.request.user)
 
     def _own(self, pk):
         """The caller's own notification, or 403 — for anything that changes one."""

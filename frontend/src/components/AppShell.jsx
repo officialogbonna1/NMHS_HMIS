@@ -7,9 +7,9 @@ import { useAuth } from "../auth/AuthContext.jsx";
 // The nav and the route guards read from the same groups, so a link can
 // never appear for a role that RequireAuth will then turn away.
 import {
-  ADMIN_ROLES, BILLING_ROLES, CANCEL_ROLES, FINANCE_REPORT_ROLES,
+  ADMIN_ROLES, BED_BOARD_ROLES, BILLING_ROLES, CANCEL_ROLES, CLINICAL_ROLES, FINANCE_REPORT_ROLES,
   POS_HISTORY_ROLES, POS_ROLES, REFUND_ROLES, PATIENT_LOOKUP_ROLES, QUEUE_ROLES,
-  WARD_ROLES, hasRole,
+  hasRole,
 } from "../auth/roles.js";
 import { Icon } from "./icons.jsx";
 
@@ -29,7 +29,7 @@ const NAV_ITEMS = [
 
   ["/vitals", "Vitals", "activity", VITALS_ROLES, "Clinical"],
   ["/send-to-doctor", "Send to Doctor", "handoff", VITALS_ROLES, "Clinical"],
-  ["/refer", "Refer Patient", "share", ["doctor"], "Clinical"],
+  ["/refer", "Refer Patient", "share", CLINICAL_ROLES, "Clinical"],
   ["/appointments", "Appointments", "calendar", APPOINTMENT_ROLES, "Clinical"],
 
   // Each referral unit gets a station of its own, the way nursing has
@@ -38,7 +38,7 @@ const NAV_ITEMS = [
   ["/lab-catalogue", "Lab Catalogue", "list", ["laboratory"], "Departments"],
   ["/ultrasound", "Ultrasound", "scan", ["radiology"], "Departments"],
   ["/eye", "Eye Clinic", "eye", ["optometrist", "ophthalmologist"], "Departments"],
-  ["/admissions", "Admissions", "bed", WARD_ROLES, "Departments"],
+  ["/admissions", "Admissions", "bed", BED_BOARD_ROLES, "Departments"],
 
   ["/billing", "Billing", "cash", BILLING_ROLES, "Finance"],
   // The report the cash desk and accounts reconcile from. Narrower than

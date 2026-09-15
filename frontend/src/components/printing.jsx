@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Button } from "./ui.jsx";
 import { Icon } from "./icons.jsx";
-import { hasRole, BILLING_ROLES } from "../auth/roles.js";
+import { hasRole, BILLING_ROLES, CLINICAL_ROLES } from "../auth/roles.js";
 import { PatientCardSheet, PatientBillSheet, ReceiptSheet } from "./PrintDocuments.jsx";
 import LabReportSheet from "./LabReportSheet.jsx";
 import {
@@ -49,7 +49,9 @@ import {
 // about their treatment. A patient card is reception's document; a doctor
 // reprinting one at the bedside was always somebody else's errand.
 const DESK_ROLES = ["reception", ...BILLING_ROLES];
-const CLINICAL = ["doctor"];
+// The clinicians who read the chart — each sheet's endpoint admits the same
+// group (ClinicalRecordAccess, /prescriptions/, the laboratory's RESULT_ROLES).
+const CLINICAL = CLINICAL_ROLES;
 const LAB = ["laboratory"];
 const IMAGING = ["radiology"];
 const EYE = ["optometrist", "ophthalmologist"];
@@ -250,7 +252,9 @@ const ROLE_DEFAULT_DOCUMENTS = {
   laboratory: ["lab_request"],
   radiology: ["referral_request"],
   optometrist: ["referral_request"],
-  ophthalmologist: ["referral_request"],
+  // The eye doctor prints from the chart the way a doctor does; the eye
+  // clinic's request form still prints from the station, where it has a route.
+  ophthalmologist: ["clinical_summary", "prescription", "referral_request"],
   // Admin is every desk at once; the card is the one document that is never
   // wrong to have.
   admin: ["patient_card", "clinical_summary"],

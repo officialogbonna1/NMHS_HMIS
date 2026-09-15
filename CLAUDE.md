@@ -1156,6 +1156,55 @@ person explicitly asks for something different.
    discount, recalculate, take payment) and
    `frontend/src/components/PosReceipt.discount.test.jsx`.
 
+43. **The Eye Doctor Desk is the Doctor Desk, reached by `ophthalmologist`.**
+   No second chart, note, vitals, prescription, billing or ward system — the eye
+   doctor ("Ophthalmologist / Eye Doctor") is let into the existing ones, one
+   capability at a time, through role groups in `accounts/permissions.py`:
+
+   - **`CLINICIAN_ROLES = ["doctor", "ophthalmologist"]`** — the chart
+     (`ClinicalRecordAccess`), consultation notes, reading vitals and nursing
+     notes (`ClinicianOrNurse`; recording stays `IsNurse`), prescribing and
+     cancelling their own scripts, referring, the no-counts drug picker (rule 7)
+     and the laboratory's result/worklist/ordering groups. **`IsDoctor` still
+     means the general doctor alone** — appointments, nursing's Send to Doctor,
+     consultation routing and `doctors_for_patient`'s default stay doctor-only.
+     Never widen a capability by rewriting every `"doctor"`.
+   - **Patients are `doctor_patient_q`** for both roles (`patient_queryset_for`).
+     An unclaimed eye referral sits in the shared `/eye` queue (rule 14); the
+     chart opens once they claim it or are named on it, and a patient they have
+     treated stays theirs (rule 9). The optometrist is unchanged.
+   - **Their writes are held to their own list too** — `patients.access
+     .ASSIGNED_WRITE_ROLES` / `may_act_for`: a note, a script, a referral or a
+     lab order for somebody else's patient is 403 `not_your_patient`. The general
+     doctor's writes predate that rule and are deliberately unchanged.
+   - **The ward for their own patients only** — `OWN_PATIENT_WARD_ROLES`: free
+     and occupied beds, an occupant's name only when it is theirs
+     (`BedSerializer.get_occupant`), and admitting, transferring and discharging
+     only their own patient, through the existing admission endpoints.
+   - **The eye examination is part of the note** — `ConsultationNote
+     .eye_examination` (migration `clinical/0003`), so it locks with the note and
+     `ConsultationNoteAmendment.previous_eye_examination` archives it.
+     `clinical/eye_exam.py` is its one definition: the server validates against
+     it (unknown keys and bad values refused, pressure 0–80 mmHg, blanks
+     dropped, nothing mandatory) and serves it to the form at
+     `GET /api/notes/eye-examination-fields/`, which `EyeExaminationFields.jsx`
+     renders — there is no second copy of the field list in JavaScript.
+     History, diagnosis and plan stay the note's own fields. Only
+     `EYE_EXAMINATION_ROLES` (and an admin amending) may write one; a general
+     doctor's note is sent and stored exactly as before.
+   - **`/eye` is their entry point** — `STATIONS.eye.chartActions`: a referral
+     they hold offers Open chart and Eye consultation (`/patients/<uuid>/notes
+     ?new=1`); an unclaimed one offers neither, and their dashboard task and
+     notification for it land on `/eye` rather than a chart they cannot open.
+
+   Held by `apps/patients/tests/test_eye_doctor_access.py`,
+   `apps/clinical/tests/test_eye_examination.py`,
+   `apps/pharmacy/tests/test_eye_prescribing.py`,
+   `apps/inpatient/tests/test_eye_ward_scope.py`,
+   `apps/workflow/tests/test_eye_doctor_desk.py`,
+   `frontend/src/pages/MedicalNotesTab.eye.test.jsx` and
+   `DepartmentStation.eye.test.jsx`.
+
 ## Django admin
 
 Every app has an `admin.py` and every model is registered — `Patients` is
@@ -1190,6 +1239,26 @@ Two rules the admin classes follow, and new ones should:
   refused for somebody else's. An admin bell counting the hospital's traffic
   would never clear, and one press of "mark all as read" would silently
   clear every nurse's and doctor's unread notifications.
+
+- **A feed is the person's, in the role they hold now.** `Notification
+  .raised_for_role` is stamped in `Notification.save()` — the one place a row is
+  created, whatever called `notify()` — and `NotificationQuerySet.for_user(user)`
+  is `recipient=user AND raised_for_role=user.role`. The list, the unread count,
+  mark-all-read, archiving and the dashboard's unread card and recent activity
+  all read `for_user`, so they cannot disagree, and no query parameter reaches
+  past it (`?recipient=`, `?search=`, a detail id). Who is *told* is still the
+  caller's rule (route_targets, doctors_for_patient, FINANCIAL_NOTICE_ROLES…);
+  this only stops an account reading, after a role change, what it was told in
+  the old role — an ophthalmologist does not keep a cashier's refund notices.
+  Those rows are kept and an admin's `?scope=all` still lists them, with the
+  role they were raised for; changing the role back returns them. Migration
+  `core/0006` stamped history with the current role only where no role change
+  was recorded after the row (Django admin's log naming Role, or an HMIS
+  `user.updated`, which does not say what changed). The frontend clears its
+  query cache on login and logout (`AuthProvider`), so the next account on a
+  shared workstation never sees the last one's feed or badge. Held by
+  `apps/core/tests/test_notification_feed_scope.py` and
+  `frontend/src/auth/AuthContext.test.jsx`.
 
 - **Notifications are archived, never deleted.** There is no DELETE on
   `/notifications/`, and `NotificationAdmin.has_delete_permission` is False:

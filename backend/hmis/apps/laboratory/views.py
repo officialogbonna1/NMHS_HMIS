@@ -20,11 +20,11 @@ from rest_framework import filters, status as drf_status, viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
 
-from apps.accounts.permissions import RoleRequired
+from apps.accounts.permissions import CLINICIAN_ROLES, RoleRequired
 from apps.billing.services import cancel_charge
 from apps.core.models import Notification
 from apps.core.services import audit_event, notify
-from apps.patients.access import patient_queryset_for
+from apps.patients.access import may_act_for, patient_queryset_for
 from apps.patients.models import Patient
 from apps.workflow.models import PatientRoute, Visit
 
@@ -41,17 +41,19 @@ from .serializers import (
 LAB_ROLES = ["laboratory"]
 # Who may read the catalogue: a price list and a list of what is offered.
 # Reception quotes it and the cash desk bills from it, so it is not clinical.
-CATALOGUE_ROLES = ["laboratory", "doctor", "nurse", "reception", "cashier", "accountant"]
+CATALOGUE_ROLES = ["laboratory", *CLINICIAN_ROLES, "nurse", "reception", "cashier", "accountant"]
 # Who may read a *result*. Narrower on purpose, and the same boundary the
 # patient overview draws (patients/overview.py): a value is a clinical
 # record, not something the front desk or the cash desk has business in.
-RESULT_ROLES = ["laboratory", "doctor"]
+# The clinicians — the general doctor and the eye doctor — read their own
+# patients' results (`get_queryset`).
+RESULT_ROLES = ["laboratory", *CLINICIAN_ROLES]
 # Who may see that an order exists, what it is for and whether it is paid —
 # without the values. This is what the counter needs to bill it.
-WORKLIST_ROLES = ["laboratory", "doctor", "reception", "cashier", "accountant"]
+WORKLIST_ROLES = ["laboratory", *CLINICIAN_ROLES, "reception", "cashier", "accountant"]
 # Who may raise an order. Reception is here because a walk-in lab request is
 # taken at the front desk in this hospital; the bench can raise one too.
-ORDERING_ROLES = ["doctor", "laboratory", "reception"]
+ORDERING_ROLES = [*CLINICIAN_ROLES, "laboratory", "reception"]
 
 
 def _display(user):
@@ -280,7 +282,7 @@ class LabOrderViewSet(viewsets.ModelViewSet):
         queryset = super().get_queryset()
         if user.role in {"admin", "hospital_admin", "laboratory"}:
             return queryset
-        if user.role == "doctor":
+        if user.role in CLINICIAN_ROLES:
             # The same definition of "my patient" the rest of the chart uses,
             # plus anything this doctor asked for.
             return queryset.filter(
@@ -370,6 +372,9 @@ class LabOrderViewSet(viewsets.ModelViewSet):
         if route.purpose not in ("laboratory", "investigation"):
             return Response({"route": "That referral is not for the laboratory."},
                             status=drf_status.HTTP_400_BAD_REQUEST)
+        if not may_act_for(request.user, route.visit.patient):
+            return Response({"detail": "This patient is not one of yours.", "code": "not_your_patient"},
+                            status=drf_status.HTTP_403_FORBIDDEN)
         order = services.order_for_route(route, author=request.user)
         return Response(LabOrderSerializer(order).data)
 

@@ -9,6 +9,16 @@ entry) updates every one of those places at once.
 """
 from django.db import models
 
+from apps.accounts.permissions import CLINICIAN_ROLES
+
+# Roles whose *writes* are held to their own patient list, as well as their
+# reads. The eye doctor was let into the chart, prescribing, referring and the
+# ward with that boundary from the start: writing a note, a script or an
+# admission for a patient who is not theirs is refused. The general doctor's
+# writes predate the rule and are unchanged — widening it to them is one edit
+# here, and a decision of its own.
+ASSIGNED_WRITE_ROLES = {"ophthalmologist"}
+
 
 def _prefixed(prefix, lookup):
     return f"{prefix}__{lookup}" if prefix else lookup
@@ -46,7 +56,10 @@ def patient_queryset_for(user):
 
     if user.role in {"admin", "hospital_admin", "reception"}:
         return Patient.objects.all()
-    if user.role == "doctor":
+    if user.role in CLINICIAN_ROLES:
+        # The eye doctor holds a patient the same three ways a doctor does —
+        # most often an eye referral they claimed or were named on. An
+        # unclaimed referral is in the shared /eye queue, not on this list.
         return Patient.objects.filter(doctor_patient_q(user)).distinct()
     if user.role == "nurse":
         return Patient.objects.filter(nurse_patient_q(user)).distinct()
@@ -66,7 +79,7 @@ def patient_queryset_for(user):
         return Patient.objects.filter(
             prescriptions__status__in=["pending", "dispensed"]
         ).distinct()
-    if user.role in {"laboratory", "radiology", "optometrist", "ophthalmologist"}:
+    if user.role in {"laboratory", "radiology", "optometrist"}:
         return Patient.objects.filter(investigation_orders__status__in=["requested", "collected", "in_progress"]).distinct()
     if user.role in {"cashier", "accountant"}:
         return Patient.objects.filter(models.Q(charges__status__in=["unpaid", "partial"]) | models.Q(payments__isnull=False)).distinct()
@@ -75,7 +88,23 @@ def patient_queryset_for(user):
     return Patient.objects.none()
 
 
-def doctors_for_patient(patient):
+def holds_patient(user, patient):
+    """Is `patient` on this user's own list — the set `patient_queryset_for` returns."""
+    return patient_queryset_for(user).filter(pk=patient.pk).exists()
+
+
+def may_act_for(user, patient):
+    """
+    May this user write something onto `patient`'s record — a note, a script,
+    a referral, an admission? Always, for a role outside ASSIGNED_WRITE_ROLES
+    (their existing behaviour); only their own patients, for a role inside it.
+    """
+    if getattr(user, "role", None) not in ASSIGNED_WRITE_ROLES:
+        return True
+    return holds_patient(user, patient)
+
+
+def doctors_for_patient(patient, roles=("doctor",)):
     """
     The mirror of `doctor_patient_q`: given a patient, which doctors is that
     patient in front of *right now*. Used to tell a doctor when something
@@ -85,7 +114,13 @@ def doctors_for_patient(patient):
 
     "Right now" is deliberately narrower than the Q: a closed visit or a
     finished route is history, not a claim on the doctor's attention.
+
+    `roles` defaults to the general doctor, because routing reads this to
+    decide who hears about a consultation or a procedure — work only a doctor
+    can pick up (rule 16). A caller telling clinicians about a *reading* on a
+    chart they hold passes CLINICIAN_ROLES.
     """
+    roles = list(roles)
     # Imported here rather than at module scope: workflow's models already
     # depend on patients', and access.py is pulled in early by the viewsets.
     from apps.workflow.models import Visit, PatientRoute
@@ -98,7 +133,7 @@ def doctors_for_patient(patient):
     ids |= set(
         PatientRoute.objects.filter(
             visit__patient=patient, status__in=["queued", "in_progress"],
-            assigned_to__role="doctor",
+            assigned_to__role__in=roles,
         ).values_list("assigned_to_id", flat=True)
     )
     ids |= set(
@@ -111,4 +146,4 @@ def doctors_for_patient(patient):
         return []
 
     from apps.accounts.models import User
-    return list(User.objects.filter(pk__in=ids, is_active=True, role="doctor"))
+    return list(User.objects.filter(pk__in=ids, is_active=True, role__in=roles))

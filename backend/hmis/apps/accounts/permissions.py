@@ -33,6 +33,30 @@ PATIENT_LOOKUP_ROLES = [
 # Who works a ward: the bed board, admissions, transfers and discharges.
 WARD_ROLES = ["ward_manager", "doctor", "nurse"]
 
+# Who treats a patient from a desk of their own: reads the chart, writes the
+# consultation note, prescribes and refers. The general doctor, and the eye
+# doctor (`ophthalmologist`, "Ophthalmologist / Eye Doctor") working the same
+# chart with an eye examination on the note.
+#
+# Deliberately *not* what `IsDoctor` means. That still names the general
+# doctor alone, and the things built on it keep that meaning: appointments,
+# nursing's Send to Doctor, a consultation route. Widen a capability to this
+# group one at a time, where the eye doctor genuinely needs it — never by
+# rewriting every `"doctor"`. Either role reaches only its own patients
+# (`patients.access.patient_queryset_for`).
+CLINICIAN_ROLES = ["doctor", "ophthalmologist"]
+
+# Who works the ward **for their own patients only**. They see which beds are
+# free and occupied, the name on a bed only when it is one of their patients,
+# and admit, move and discharge only those patients. WARD_ROLES above is
+# unchanged and still works the whole ward.
+OWN_PATIENT_WARD_ROLES = ["ophthalmologist"]
+
+# Who records the structured eye examination on a consultation note
+# (`clinical/eye_exam.py`). A general doctor's note never carries one, so it
+# stays exactly the note it was.
+EYE_EXAMINATION_ROLES = ["ophthalmologist"]
+
 # Who handles money at a counter.
 BILLING_ROLES = ["cashier", "accountant", "reception"]
 
@@ -187,11 +211,13 @@ class IsPharmacist(RoleRequired):
 
 
 class ClinicalRecordAccess(RoleRequired):
-    allowed_roles = ["doctor"]
+    """The chart: overview, health-record tiles, consultation notes."""
+    allowed_roles = CLINICIAN_ROLES
 
 
-class DoctorOrNurse(RoleRequired):
-    allowed_roles = ["doctor", "nurse"]
+class ClinicianOrNurse(RoleRequired):
+    """Reading vitals and nursing notes. Recording them stays `IsNurse`."""
+    allowed_roles = [*CLINICIAN_ROLES, "nurse"]
 
 
 class WardStaff(RoleRequired):

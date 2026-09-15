@@ -1,14 +1,23 @@
 import { useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "../auth/AuthContext.jsx";
+import { EYE_EXAMINATION_ROLES } from "../auth/roles.js";
+import EyeExaminationFields from "../components/EyeExaminationFields.jsx";
 import api from "../api/client";
 
 // Mirrors the manual's Medical Notes section: reverse-chronological list,
 // "Add Medical Note" button, any doctor can view all notes but only the
 // author can edit their own (before it locks). Editing a locked note
 // (admin only) creates an amendment snapshot rather than overwriting.
+//
+// The eye doctor writes the same note, with an eye examination under it.
+// `?new=1` opens a new note straight away — the eye clinic station's
+// "Eye consultation" lands here.
 export default function MedicalNotesTab({ patientId }) {
-  const [editingNote, setEditingNote] = useState(undefined); // undefined = closed, null = new, object = editing
+  const [searchParams] = useSearchParams();
+  // undefined = closed, null = new, object = editing
+  const [editingNote, setEditingNote] = useState(searchParams.get("new") ? null : undefined);
   const queryClient = useQueryClient();
 
   const { data: notes } = useQuery({
@@ -53,7 +62,14 @@ export default function MedicalNotesTab({ patientId }) {
               <span>{new Date(note.visit_time).toLocaleString()}</span>
               {note.is_locked && <span className="text-xs text-slate-500">🔒 locked</span>}
             </div>
-            <div className="font-medium mt-1">{note.reason_for_visit}</div>
+            <div className="font-medium mt-1">
+              {note.reason_for_visit}
+              {note.eye_examination && (
+                <span className="ml-2 rounded-full border border-brand-200 bg-brand-50 px-2 py-0.5 text-xs font-medium text-brand-700">
+                  Eye examination
+                </span>
+              )}
+            </div>
             <div className="text-sm text-slate-700 line-clamp-2">{note.note_text}</div>
           </button>
         ))}
@@ -78,14 +94,27 @@ function NoteEditor({ patientId, note, onDone, onCancel }) {
     plan: note?.plan ?? "",
   });
   const [error, setError] = useState(null);
+  // The eye examination travels only on a note that has one, or that the eye
+  // doctor is writing — a general doctor's note is sent exactly as before.
+  const [eyeExamination, setEyeExamination] = useState(note?.eye_examination ?? {});
+  const [eyeErrors, setEyeErrors] = useState(null);
+  const showEye = Boolean(note?.eye_examination)
+    || (canEdit && EYE_EXAMINATION_ROLES.includes(user?.role));
 
   const mutation = useMutation({
-    mutationFn: () =>
-      isNew
-        ? api.post("/notes/", { patient: patientId, ...form })
-        : api.patch(`/notes/${note.id}/`, form),
+    mutationFn: () => {
+      const body = showEye && canEdit ? { ...form, eye_examination: eyeExamination } : form;
+      return isNew
+        ? api.post("/notes/", { patient: patientId, ...body })
+        : api.patch(`/notes/${note.id}/`, body);
+    },
     onSuccess: onDone,
-    onError: (err) => setError(err.response?.data?.detail ?? "Could not save note."),
+    onError: (err) => {
+      const data = err.response?.data;
+      setEyeErrors(data?.eye_examination ?? null);
+      setError(data?.detail
+        ?? (data?.eye_examination ? "Check the eye examination below." : "Could not save note."));
+    },
   });
 
   return (
@@ -113,6 +142,15 @@ function NoteEditor({ patientId, note, onDone, onCancel }) {
           <TextAreaField label="Plan" value={form.plan} disabled={!canEdit}
             onChange={(v) => setForm((f) => ({ ...f, plan: v }))} />
         </div>
+
+        {showEye && (
+          <EyeExaminationFields
+            value={eyeExamination}
+            onChange={setEyeExamination}
+            disabled={!canEdit}
+            errors={eyeErrors}
+          />
+        )}
 
         {note?.amendments?.length > 0 && (
           <div className="border-t pt-4">

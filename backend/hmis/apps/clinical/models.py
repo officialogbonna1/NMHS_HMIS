@@ -49,6 +49,12 @@ class ConsultationNote(LockedRecordMixin, TimeStampedModel):
     note_text = models.TextField(blank=True)
     diagnosis = models.TextField(blank=True)
     plan = models.TextField(blank=True)
+    # The eye doctor's structured findings, on the note they belong to — so
+    # they lock with it and an amendment snapshots them. The allowed keys and
+    # values are `clinical/eye_exam.py`; null on every other note.
+    eye_examination = models.JSONField(
+        null=True, blank=True,
+        help_text="Structured eye examination (see clinical/eye_exam.py). Empty on general notes.")
 
     class Meta:
         ordering = ["-visit_time"]
@@ -88,6 +94,7 @@ class ConsultationNoteAmendment(TimeStampedModel):
     previous_note_text = models.TextField(blank=True)
     previous_diagnosis = models.TextField(blank=True)
     previous_plan = models.TextField(blank=True)
+    previous_eye_examination = models.JSONField(null=True, blank=True)
 
     class Meta:
         ordering = ["-created_at"]

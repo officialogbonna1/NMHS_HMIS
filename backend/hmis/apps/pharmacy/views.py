@@ -10,8 +10,9 @@ from .serializers import PrescriptionSerializer
 # which is what the actions below turn into a 400 with the service's message.
 from .services import (create_prescription, create_prescriptions, dispense_prescription,
                        cancel_prescription)
-from apps.accounts.permissions import IsDoctor, IsPharmacist, RoleRequired
+from apps.accounts.permissions import CLINICIAN_ROLES, IsPharmacist, RoleRequired
 from apps.core.services import audit_event, notify
+from apps.patients.access import may_act_for
 
 # How a drug is to be taken, beside the dose — passed through to the service,
 # which validates the route.
@@ -34,13 +35,16 @@ class PrescriptionViewSet(viewsets.ModelViewSet):
     filterset_fields = ["patient", "doctor", "status", "item"]
 
     def get_permissions(self):
+        # Writing a script is a clinician's — the general doctor or the eye
+        # doctor. Filling it is the pharmacist's alone: prescribing is never
+        # permission to dispense.
         if self.action in {"create", "bulk"}:
-            return [IsDoctor()]
+            return [RoleRequired(CLINICIAN_ROLES)]
         if self.action == "dispense":
             return [IsPharmacist()]
         if self.action == "cancel":
-            return [RoleRequired(["doctor", "pharmacist"])]
-        return [RoleRequired(["doctor", "pharmacist"])]
+            return [RoleRequired([*CLINICIAN_ROLES, "pharmacist"])]
+        return [RoleRequired([*CLINICIAN_ROLES, "pharmacist"])]
 
     def get_queryset(self):
         user = self.request.user
@@ -48,13 +52,15 @@ class PrescriptionViewSet(viewsets.ModelViewSet):
             "patient", "item__category", "item__unit", "doctor", "dispensed_by")
         if user.role in {"admin", "hospital_admin", "pharmacist"}:
             return base
-        if user.role == "doctor":
+        if user.role in CLINICIAN_ROLES:
             return base.filter(doctor=user)
         return Prescription.objects.none()
 
     def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
+        if not may_act_for(request.user, serializer.validated_data["patient"]):
+            return _not_your_patient()
         try:
             prescription = create_prescription(
                 patient=serializer.validated_data["patient"],
@@ -88,6 +94,8 @@ class PrescriptionViewSet(viewsets.ModelViewSet):
         if not patient:
             return Response({"patient": "Choose the patient you are prescribing for."},
                             status=status.HTTP_400_BAD_REQUEST)
+        if not may_act_for(request.user, patient):
+            return _not_your_patient()
 
         raw_lines = request.data.get("lines") or []
         if not isinstance(raw_lines, list) or not raw_lines:
@@ -143,7 +151,7 @@ class PrescriptionViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["post"])
     def cancel(self, request, pk=None):
         prescription = self.get_object()
-        if request.user.role == "doctor" and prescription.doctor_id != request.user.id:
+        if request.user.role in CLINICIAN_ROLES and prescription.doctor_id != request.user.id:
             return Response({"detail": "You can only cancel your own prescriptions."}, status=status.HTTP_403_FORBIDDEN)
         try:
             prescription = cancel_prescription(
@@ -161,6 +169,12 @@ def _as_id(value):
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def _not_your_patient():
+    """A script for a patient outside the prescriber's own list (`may_act_for`)."""
+    return Response({"detail": "This patient is not one of yours.", "code": "not_your_patient"},
+                    status=status.HTTP_403_FORBIDDEN)
 
 
 def _notify_pharmacy_of_script(prescriptions):

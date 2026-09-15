@@ -28,11 +28,25 @@ export const PATIENT_LOOKUP_ROLES = [
   "optometrist", "ophthalmologist", "cashier", "accountant", "ward_manager",
 ];
 
-// Who reads a chart: the health record, notes, the overview.
-export const CLINICAL_ROLES = ["doctor"];
+// Who reads a chart — the health record, notes, the overview — and who
+// prescribes and refers. Mirrors CLINICIAN_ROLES: the general doctor and the
+// eye doctor (`ophthalmologist`), each reaching only their own patients.
+export const CLINICAL_ROLES = ["doctor", "ophthalmologist"];
 
 // Who works a ward. Mirrors WARD_ROLES.
 export const WARD_ROLES = ["ward_manager", "doctor", "nurse"];
+
+// Who works the ward for their own patients only. Mirrors
+// OWN_PATIENT_WARD_ROLES — the server hides other patients' names on the bed
+// board and refuses to admit, move or discharge them.
+export const OWN_PATIENT_WARD_ROLES = ["ophthalmologist"];
+
+// Who opens the bed board at all.
+export const BED_BOARD_ROLES = [...WARD_ROLES, ...OWN_PATIENT_WARD_ROLES];
+
+// Who records the eye examination on a consultation note. Mirrors
+// EYE_EXAMINATION_ROLES; a general doctor's note form never shows it.
+export const EYE_EXAMINATION_ROLES = ["ophthalmologist"];
 
 // Who handles money at a counter. Mirrors BILLING_ROLES.
 export const BILLING_ROLES = ["cashier", "accountant", "reception"];

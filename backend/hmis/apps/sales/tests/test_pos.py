@@ -35,7 +35,7 @@ from apps.inventory.testing import product, stock_the_pharmacy, stock_the_store
 from apps.patients.models import Patient
 from apps.pharmacy.services import available_quantity, create_prescription, dispense_prescription
 from apps.sales import services
-from apps.sales.models import Sale, SaleReturn
+from apps.sales.models import Sale, SaleItem, SaleReturn
 
 D = Decimal
 
@@ -355,6 +355,29 @@ class RegisteredPatientSaleTests(PosTestCase):
         with self.assertRaises(ValidationError):
             self.sell([{"item": self.amoxil.pk, "quantity": 1}], customer_type="patient", patient=None)
 
+    def test_cash_above_the_total_is_change_and_never_puts_the_patient_in_credit(self):
+        sale = self.sell([{"item": self.amoxil.pk, "quantity": 5}], customer_type="patient",
+                         patient=self.patient, payment_method="cash", amount_tendered="1000",
+                         discount={"type": "percent", "value": "10", "reason": "Staff family"})
+        # 1,000 gross, 100 off: 900 due, 1,000 handed over, 100 handed back.
+        self.assertEqual((sale.total_amount, sale.amount_tendered, sale.change_due),
+                         (D("900"), D("1000"), D("100")))
+        charge = Charge.objects.get(pk=sale.charge_id)
+        self.assertEqual((sale.payment.amount, charge.amount_paid, charge.status),
+                         (D("900"), D("900"), "paid"))
+        self.assertEqual(PatientLedger.objects.get(patient=self.patient).outstanding_balance, D("0"))
+
+    def test_cash_short_of_a_patients_discounted_total_bills_nothing(self):
+        written = lambda: (self.footprint(), Adjustment.objects.count(),
+                           PaymentAllocation.objects.count())
+        before = written()
+        with self.assertRaises(ValidationError):
+            # 900 is due after the discount; 899.99 is short of it.
+            self.sell([{"item": self.amoxil.pk, "quantity": 5}], customer_type="patient",
+                      patient=self.patient, payment_method="cash", amount_tendered="899.99",
+                      discount={"type": "percent", "value": "10", "reason": "Staff family"})
+        self.assertEqual(written(), before)
+
 
 # ------------------------------------------------------------------ returns
 
@@ -568,6 +591,62 @@ class PosApiTests(PosTestCase):
             "discount": {"type": "percent", "value": "10", "reason": "Friend"}}, format="json")
         self.assertEqual((response.status_code, response.data["code"]), (403, "forbidden"))
         self.assertEqual(self.held(self.amox), 50)
+
+    # ------------------------------------------------- the amount received
+    # `services._tender` is the one check on it, held here at the API where the
+    # till's disabled button protects nothing: cash short of the *discounted*
+    # total is refused and writes nothing; cash above it is change, never money
+    # kept; a non-cash payment is always exactly the total.
+
+    def discounted_cash(self, tendered):
+        """Paracetamol ×6 is 320.00 across its two lots; 20.00 off leaves 300.00 due."""
+        return self.as_(self.cashier).post("/api/sales/complete/", {
+            "lines": [{"item": self.paracetamol.pk, "quantity": 6}],
+            "payment_method": "cash", "amount_tendered": tendered,
+            "discount": {"type": "amount", "value": "20", "reason": "Promo"}}, format="json")
+
+    def test_cash_short_of_the_discounted_total_is_refused_and_writes_nothing(self):
+        written = lambda: (
+            self.footprint(), Sale.objects.count(), SaleItem.objects.count(),
+            PaymentAllocation.objects.count(), Adjustment.objects.count(),
+            AuditLog.objects.filter(action__in=("pos.sale_completed", "pos.discount_applied")).count())
+        before = written()
+        response = self.discounted_cash("299.99")
+        self.assertEqual(response.status_code, 400, response.data)
+        self.assertIn("short of the 300.00 due", response.data["detail"])
+        self.assertEqual(written(), before)
+        # No receipt to read back.
+        self.assertEqual(self.results(self.as_(self.accountant).get("/api/sales/")), [])
+
+    def test_exactly_the_discounted_total_completes_with_no_change(self):
+        response = self.discounted_cash("300")
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual((response.data["subtotal"], response.data["total_amount"],
+                          response.data["amount_tendered"], response.data["change_due"]),
+                         ("320.00", "300.00", "300.00", "0.00"))
+        self.assertEqual(Payment.objects.get(pk=response.data["payment"]).amount, D("300"))
+
+    def test_the_undiscounted_subtotal_handed_over_is_change_not_a_bigger_payment(self):
+        response = self.discounted_cash("320")
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual((response.data["total_amount"], response.data["amount_tendered"],
+                          response.data["change_due"]), ("300.00", "320.00", "20.00"))
+        # The hospital keeps what was due, and the drawer expects exactly that.
+        self.assertEqual(Payment.objects.get(pk=response.data["payment"]).amount, D("300"))
+        self.assertEqual(D(services.register_summary(self.register)["cash_received"]), D("300"))
+
+    def test_a_non_cash_payment_ignores_any_amount_received(self):
+        for method in [key for key, _ in Payment.METHOD if key != "cash"]:
+            for tendered in ("50", "999"):
+                with self.subTest(method=method, tendered=tendered):
+                    response = self.as_(self.cashier).post("/api/sales/complete/", {
+                        "lines": [{"item": self.amoxil.pk, "quantity": 1}],
+                        "payment_method": method, "amount_tendered": tendered}, format="json")
+                    self.assertEqual(response.status_code, 201, response.data)
+                    self.assertEqual((response.data["payment_method"], response.data["total_amount"],
+                                      response.data["amount_tendered"], response.data["change_due"]),
+                                     (method, "200.00", "200.00", "0.00"))
+                    self.assertEqual(Payment.objects.get(pk=response.data["payment"]).amount, D("200"))
 
     def test_a_cashier_gives_a_line_discount_through_the_api(self):
         response = self.as_(self.cashier).post("/api/sales/complete/", {

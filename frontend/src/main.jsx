@@ -8,8 +8,8 @@ import "./index.css";
 import { AuthProvider } from "./auth/AuthContext.jsx";
 import RequireAuth from "./auth/RequireAuth.jsx";
 import {
-  BILLING_ROLES, CANCEL_ROLES, CHART_ROLES, CLINICAL_ROLES, FINANCE_REPORT_ROLES, REFUND_ROLES,
-  PATIENT_LOOKUP_ROLES, POS_HISTORY_ROLES, POS_ROLES, QUEUE_ROLES, WARD_ROLES,
+  BED_BOARD_ROLES, BILLING_ROLES, CANCEL_ROLES, CHART_ROLES, CLINICAL_ROLES, FINANCE_REPORT_ROLES,
+  REFUND_ROLES, PATIENT_LOOKUP_ROLES, POS_HISTORY_ROLES, POS_ROLES, QUEUE_ROLES,
 } from "./auth/roles.js";
 import PharmacyPOS from "./pages/PharmacyPOS.jsx";
 import PosSales from "./pages/PosSales.jsx";
@@ -308,7 +308,7 @@ ReactDOM.createRoot(document.getElementById("root")).render(
             <Route
               path="/admissions"
               element={
-                <RequireAuth roles={WARD_ROLES}>
+                <RequireAuth roles={BED_BOARD_ROLES}>
                   <Admissions />
                 </RequireAuth>
               }

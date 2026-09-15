@@ -23,7 +23,7 @@ from rest_framework.decorators import action
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.response import Response
 
-from apps.accounts.permissions import IsAdmin, RoleRequired, STOCK_ROLES
+from apps.accounts.permissions import CLINICIAN_ROLES, IsAdmin, RoleRequired, STOCK_ROLES
 from apps.core.config import ProtectedConfigMixin
 from apps.core.services import audit_event
 
@@ -168,8 +168,11 @@ class ItemViewSet(ProtectedConfigMixin, viewsets.ModelViewSet):
         # getattr, not `.role` — get_permissions runs *before* authentication
         # has been established, so an anonymous request reaches here with an
         # AnonymousUser and must be refused, not crash with a 500.
-        if self.action == "list" and getattr(self.request.user, "role", None) == "doctor":
-            return [RoleRequired(["doctor"])]
+        # A prescriber — the general doctor or the eye doctor — reads the
+        # drug picker, and only the list: no single product, no quantities
+        # (rule 7), and nothing that changes the catalogue.
+        if self.action == "list" and getattr(self.request.user, "role", None) in CLINICIAN_ROLES:
+            return [RoleRequired(CLINICIAN_ROLES)]
         if self.request.method in permissions.SAFE_METHODS:
             return [RoleRequired(STOCK_ROLES)]
         # Maintaining the catalogue is configuration, not counter work.
@@ -177,7 +180,7 @@ class ItemViewSet(ProtectedConfigMixin, viewsets.ModelViewSet):
 
     def get_serializer_class(self):
         # Doctors get the availability-only view; everyone else sees real numbers.
-        if getattr(self.request.user, "role", None) == "doctor" and self.action == "list":
+        if getattr(self.request.user, "role", None) in CLINICIAN_ROLES and self.action == "list":
             return serializers.ItemForPrescribingSerializer
         return serializers.ItemSerializer
 

@@ -41,6 +41,22 @@ class NotificationQuerySet(models.QuerySet):
         """Back into the inbox."""
         return self.archived().update(archived_at=None, updated_at=timezone.now())
 
+    def for_user(self, user):
+        """
+        One person's own notifications: addressed to them, **and raised for the
+        role they hold now**.
+
+        A notification is written for somebody doing a job — the cash desk's
+        refund notice, a nurse's vitals request. When an account's role
+        changes, what it was told in the old role is no longer its business:
+        an ophthalmologist must not keep reading the billing notices they got
+        as an administrator. The rows are kept (never deleted), an admin's
+        whole-system view still lists them, and changing the role back brings
+        them back. Every personal read — the list, the bell, mark-all-read,
+        archiving, the dashboard — goes through here, so they cannot disagree.
+        """
+        return self.filter(recipient=user, raised_for_role=getattr(user, "role", "") or "")
+
 
 class Notification(TimeStampedModel):
     """
@@ -58,6 +74,11 @@ class Notification(TimeStampedModel):
     is_read = models.BooleanField(default=False)
     action_url = models.CharField(max_length=255, blank=True)
     archived_at = models.DateTimeField(null=True, blank=True)
+    # The role the recipient held when this was raised — stamped once, in
+    # `save()`, and never changed. `for_user` reads it.
+    raised_for_role = models.CharField(
+        max_length=20, blank=True, default="",
+        help_text="The recipient's role when this was raised; their feed shows it only while they hold that role.")
 
     objects = NotificationQuerySet.as_manager()
 
@@ -69,6 +90,11 @@ class Notification(TimeStampedModel):
     @property
     def is_archived(self):
         return self.archived_at is not None
+
+    def save(self, *args, **kwargs):
+        if self._state.adding and not self.raised_for_role and self.recipient_id:
+            self.raised_for_role = getattr(self.recipient, "role", "") or ""
+        super().save(*args, **kwargs)
 
 
 def _decimals(text):

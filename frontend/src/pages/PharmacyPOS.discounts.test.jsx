@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import api from "../api/client";
 import { renderWithApp } from "../test/harness.jsx";
-import { Till } from "./PharmacyPOS.jsx";
+import { PAYMENT_METHODS, Till } from "./PharmacyPOS.jsx";
 
 // The till's discount interaction: pick items, discount one or several, and be
 // told which kind of "no" a refusal is before the payment rather than after it.
@@ -473,5 +473,113 @@ describe("the brief's acceptance walk", () => {
     // No sale-wide discount was invented — each selected line carries its own,
     // which is what the existing backend prices and audits.
     expect(body.discount).toBeNull();
+  });
+});
+
+describe("taking payment", () => {
+  // The amount received is judged against the discounted total, in `PayDialog`
+  // before anything is sent and again in `sales/services._tender`: cash short of
+  // it cannot complete; cash above it is change (the payment is recorded at the
+  // total — test_pos.py); a non-cash payment carries no amount at all.
+  const PENNY_PRODUCTS = [
+    { ...PRODUCTS[0], price: "20.00" },
+    { ...PRODUCTS[1], price: "500.00" },
+  ];
+  const SOLD = { reference: "POS-000003", subtotal: "520.00", discount_amount: "2.00",
+                 total_amount: "518.00", payment_method_label: "Cash", change_due: "0.00", lines: [] };
+
+  beforeEach(() => {
+    vi.spyOn(api, "get").mockImplementation((url) => {
+      if (url === "/sales/products/") {
+        return Promise.resolve({ data: { location: "Pharmacy", categories: [], results: PENNY_PRODUCTS } });
+      }
+      if (url === "/hospital-settings/current/") return Promise.resolve({ data: settings() });
+      return Promise.resolve({ data: { results: [] } });
+    });
+  });
+
+  /** ₦20 + ₦500 with 10% off the ₦20 line — subtotal ₦520, total ₦518 — then the payment screen. */
+  async function payFor518(user) {
+    renderTill();
+    await addToCart(user, "Paracetamol 500mg");
+    await addToCart(user, "Amoxicillin 500mg");
+    await user.click(await screen.findByLabelText("Select Paracetamol 500mg"));
+    await user.click(await screen.findByRole("button", { name: "Discount 1 item" }));
+    await user.type(await screen.findByLabelText("Percentage off"), "10");
+    await user.type(screen.getByPlaceholderText(/Staff purchase/), "Loyal customer");
+    await user.click(screen.getByRole("button", { name: "Apply discount" }));
+    await user.click(await screen.findByRole("button", { name: "Take Charge · ₦518" }));
+    expect(await screen.findByText("Take payment — ₦518")).toBeInTheDocument();
+  }
+
+  const completeButton = () => screen.getByRole("button", { name: "Complete sale" });
+  const tenderRow = (label) => screen.getByText(label).closest("p");
+
+  it("completes with exactly the discounted total", async () => {
+    const user = userEvent.setup();
+    const post = vi.spyOn(api, "post").mockResolvedValue({ data: SOLD });
+    await payFor518(user);
+
+    await user.type(screen.getByLabelText("Cash received"), "518");
+    expect(tenderRow("Change")).toHaveTextContent("₦0");
+    expect(completeButton()).toBeEnabled();
+
+    await user.click(completeButton());
+    await waitFor(() => expect(post).toHaveBeenCalled());
+    const [url, body] = post.mock.calls[0];
+    expect(url).toBe("/sales/complete/");
+    expect(body).toMatchObject({ payment_method: "cash", amount_tendered: "518" });
+  });
+
+  it("holds cash short of the discounted total until it is enough, without a reload", async () => {
+    const user = userEvent.setup();
+    const post = vi.spyOn(api, "post").mockResolvedValue({ data: SOLD });
+    await payFor518(user);
+
+    const received = screen.getByLabelText("Cash received");
+    await user.type(received, "517");
+    expect(tenderRow("Short by")).toHaveTextContent("₦1");
+    expect(completeButton()).toBeDisabled();
+    expect(post).not.toHaveBeenCalled();
+
+    await user.clear(received);
+    await user.type(received, "518");
+    expect(screen.queryByText("Short by")).not.toBeInTheDocument();
+    expect(completeButton()).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Back to cart" })).toBeEnabled();
+  });
+
+  it("gives ₦2 change on ₦518 when the undiscounted ₦520 is handed over", async () => {
+    const user = userEvent.setup();
+    const post = vi.spyOn(api, "post").mockResolvedValue({ data: { ...SOLD, change_due: "2.00" } });
+    await payFor518(user);
+
+    await user.type(screen.getByLabelText("Cash received"), "520");
+    expect(tenderRow("Change")).toHaveTextContent("₦2");
+    expect(completeButton()).toBeEnabled();
+
+    await user.click(completeButton());
+    await waitFor(() => expect(post).toHaveBeenCalled());
+    // The till sends what was handed over; the server keeps ₦518 and records ₦2 as change.
+    expect(post.mock.calls[0][1]).toMatchObject({ payment_method: "cash", amount_tendered: "520" });
+  });
+
+  it("asks for no amount on a non-cash payment and sends none", async () => {
+    const user = userEvent.setup();
+    const post = vi.spyOn(api, "post").mockResolvedValue({ data: SOLD });
+    await payFor518(user);
+    // A short figure typed under Cash first does not follow the cashier to another method.
+    await user.type(screen.getByLabelText("Cash received"), "517");
+
+    const others = PAYMENT_METHODS.filter(([key]) => key !== "cash");
+    for (const [, label] of others) {
+      await user.click(screen.getByRole("button", { name: label }));
+      expect(screen.queryByLabelText("Cash received")).not.toBeInTheDocument();
+      expect(completeButton()).toBeEnabled();
+    }
+
+    await user.click(completeButton());
+    await waitFor(() => expect(post).toHaveBeenCalled());
+    expect(post.mock.calls[0][1]).toMatchObject({ payment_method: others.at(-1)[0], amount_tendered: null });
   });
 });

@@ -69,23 +69,27 @@ REACHABLE = {
     # A name and a file number, not a chart. Reception gets demographics only.
     "/api/patients/": [R, D, N, PH, LAB, RAD, OPT, OPH, CASH, ACC, WARD],
 
-    # --- the chart: doctors only (plus admin) ----------------------------
-    "/api/allergies/": [D],
-    "/api/medications/": [D],
-    "/api/conditions/": [D],
-    "/api/devices/": [D],
-    "/api/surgical-history/": [D],
-    "/api/family-history/": [D],
-    "/api/social-history/": [D],
-    "/api/vaccinations/": [D],
-    "/api/medical-tests/": [D],
-    "/api/notes/": [D],
-    "/api/note-amendments/": [D],
+    # --- the chart: the clinicians only (plus admin) ---------------------
+    # CLINICIAN_ROLES — the general doctor and the eye doctor, each reaching
+    # only their own patients (patients.access).
+    "/api/allergies/": [D, OPH],
+    "/api/medications/": [D, OPH],
+    "/api/conditions/": [D, OPH],
+    "/api/devices/": [D, OPH],
+    "/api/surgical-history/": [D, OPH],
+    "/api/family-history/": [D, OPH],
+    "/api/social-history/": [D, OPH],
+    "/api/vaccinations/": [D, OPH],
+    "/api/medical-tests/": [D, OPH],
+    "/api/notes/": [D, OPH],
+    "/api/notes/eye-examination-fields/": [D, OPH],   # the note form's field definition
+    "/api/note-amendments/": [D, OPH],
 
     # --- nursing ---------------------------------------------------------
-    "/api/vitals/": [D, N],
-    "/api/vitals/recorded-today/": [D, N],
-    "/api/nursing-notes/": [D, N],
+    # Read by the clinicians; recorded by nurses alone (a POST is IsNurse).
+    "/api/vitals/": [D, N, OPH],
+    "/api/vitals/recorded-today/": [D, N, OPH],
+    "/api/nursing-notes/": [D, N, OPH],
 
     # --- workflow --------------------------------------------------------
     "/api/visits/": [R, D, N],
@@ -97,11 +101,13 @@ REACHABLE = {
     # --- the ward --------------------------------------------------------
     # Was IsAuthenticated on all five: a cashier could list every inpatient,
     # admit somebody, move them between beds and discharge them.
-    "/api/wards/": [WARD, D, N],
-    "/api/beds/": [WARD, D, N],
-    "/api/admissions/": [WARD, D, N],
-    "/api/bed-transfers/": [WARD, D, N],
-    "/api/discharges/": [WARD, D, N],
+    # The eye doctor reaches the ward for their own patients only
+    # (OWN_PATIENT_WARD_ROLES) — see apps/inpatient/tests/test_eye_ward_scope.py.
+    "/api/wards/": [WARD, D, N, OPH],
+    "/api/beds/": [WARD, D, N, OPH],
+    "/api/admissions/": [WARD, D, N, OPH],
+    "/api/bed-transfers/": [WARD, D, N, OPH],
+    "/api/discharges/": [WARD, D, N, OPH],
 
     # --- money -----------------------------------------------------------
     "/api/ledgers/": [CASH, ACC, R, PH],
@@ -124,9 +130,9 @@ REACHABLE = {
     "/api/finance/report/": [CASH, ACC],
 
     # --- pharmacy and stock ----------------------------------------------
-    "/api/prescriptions/": [D, PH],
-    "/api/prescriptions/bulk/": [D, PH],
-    "/api/items/": [D, PH, INV],        # doctors get availability, not counts
+    "/api/prescriptions/": [D, PH, OPH],
+    "/api/prescriptions/bulk/": [D, PH, OPH],
+    "/api/items/": [D, PH, INV, OPH],   # prescribers get availability, not counts
     "/api/batches/": [PH, INV],
     "/api/stock-movements/": [PH, INV],
     # Stock is product + batch + location. The locations are configuration —
@@ -147,13 +153,13 @@ REACHABLE = {
     # --- laboratory ------------------------------------------------------
     # The catalogue is a price list, so the desk reads it; a *result* is
     # clinical, so the orders are narrower.
-    "/api/lab-tests/": [LAB, D, N, R, CASH, ACC],
-    "/api/lab-tests/categories/": [LAB, D, N, R, CASH, ACC],
-    "/api/lab-parameters/": [LAB, D, N, R, CASH, ACC],
+    "/api/lab-tests/": [LAB, D, N, R, CASH, ACC, OPH],
+    "/api/lab-tests/categories/": [LAB, D, N, R, CASH, ACC, OPH],
+    "/api/lab-parameters/": [LAB, D, N, R, CASH, ACC, OPH],
     "/api/lab-parameters/reorder/": [LAB],
-    "/api/lab-panels/": [LAB, D, N, R, CASH, ACC],
-    "/api/lab-orders/": [LAB, D, R, CASH, ACC],
-    "/api/lab-orders/worklist/": [LAB, D, R, CASH, ACC],
+    "/api/lab-panels/": [LAB, D, N, R, CASH, ACC, OPH],
+    "/api/lab-orders/": [LAB, D, R, CASH, ACC, OPH],
+    "/api/lab-orders/worklist/": [LAB, D, R, CASH, ACC, OPH],
     "/api/lab-orders/for-route/": [LAB],
 
     # --- diagnostics: no page in front of it, kept to clinical roles ------

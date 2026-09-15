@@ -16,7 +16,7 @@ import ReferralResultsTab from "./ReferralResultsTab.jsx";
 import AdmissionTab from "./AdmissionTab.jsx";
 import PharmacyTab from "./PharmacyTab.jsx";
 import { useAuth } from "../auth/AuthContext.jsx";
-import { isSuperAdmin } from "../auth/roles.js";
+import { CLINICAL_ROLES, hasRole, isSuperAdmin } from "../auth/roles.js";
 import DeletePatientModal from "../components/DeletePatientModal.jsx";
 import { Page, Skeleton, Breadcrumb, Button, TabBar, Tab, ErrorState } from "../components/ui.jsx";
 import { Icon } from "../components/icons.jsx";
@@ -54,11 +54,13 @@ export default function PatientDetail() {
   const location = useLocation();
   const { user } = useAuth();
   const role = user?.role;
-  const isClinical = ["admin", "hospital_admin", "doctor"].includes(role);
-  // Nurses take vitals; doctors read them for the patients assigned to them.
-  // The Add button inside VitalsTab is what's limited to nurses.
-  const canSeeVitals = ["admin", "hospital_admin", "nurse", "doctor"].includes(role);
-  const canPrescribe = ["admin", "hospital_admin", "doctor"].includes(role);
+  // The clinicians — the general doctor and the eye doctor — read the chart.
+  // Which patients they may open is the API's decision, not this list's.
+  const isClinical = hasRole(user, CLINICAL_ROLES);
+  // Nurses take vitals; clinicians read them for the patients assigned to
+  // them. The Add button inside VitalsTab is what's limited to nurses.
+  const canSeeVitals = hasRole(user, [...CLINICAL_ROLES, "nurse"]);
+  const canPrescribe = hasRole(user, CLINICAL_ROLES);
   const canBill = ["admin", "hospital_admin", "cashier", "accountant", "reception"].includes(role);
   // The ward and the units' answers are clinical reading, so they follow the
   // same roles as the rest of the chart. A ward nurse arguably needs both at

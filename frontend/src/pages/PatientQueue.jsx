@@ -17,9 +17,15 @@ const PURPOSE_LABEL = {
   vitals: "Vitals",
   consultation: "Consultation",
   procedure: "Procedure",
+  eye: "Eye clinic",
   investigation: "Investigation",
   other: "Other",
 };
+
+// Who a route for each purpose can be named to — the mirror of
+// `PURPOSE_ROLE` in workflow/views.py. Anything not listed is a doctor's.
+const ASSIGNEE_ROLES = { vitals: ["nurse"], eye: ["ophthalmologist", "optometrist"] };
+const ASSIGNEE_LABEL = { vitals: "nurse", eye: "eye clinic staff" };
 
 // Badge tones from the design system, not a fourth hand-rolled pill.
 const PRIORITY_TONE = { emergency: "danger", urgent: "warning", routine: "neutral" };
@@ -248,12 +254,15 @@ function NewRouteForm() {
     queryFn: () => api.get("/departments/").then((r) => r.data.results ?? r.data),
   });
 
-  // Vitals go to a nurse; everything else is usually a doctor. Naming the
-  // person is optional — an unassigned route sits in the department's queue.
-  const assigneeRole = purpose === "vitals" ? "nurse" : "doctor";
+  // Vitals go to a nurse, the eye clinic to its own staff, everything else
+  // is usually a doctor. Naming the person is optional — an unassigned route
+  // sits in the shared queue of whoever works that purpose.
+  const assigneeRoles = ASSIGNEE_ROLES[purpose] ?? ["doctor"];
   const { data: assignees } = useQuery({
-    queryKey: ["users", assigneeRole],
-    queryFn: () => api.get("/users/", { params: { role: assigneeRole } }).then((r) => r.data.results ?? r.data),
+    queryKey: ["users", ...assigneeRoles],
+    queryFn: () => Promise.all(assigneeRoles.map((role) =>
+      api.get("/users/", { params: { role } }).then((r) => r.data.results ?? r.data)))
+      .then((lists) => lists.flat()),
   });
 
   const routePatient = useMutation({
@@ -330,12 +339,13 @@ function NewRouteForm() {
               <option value="vitals">Vitals (nursing)</option>
               <option value="consultation">Consultation</option>
               <option value="procedure">Procedure</option>
+              <option value="eye">Eye clinic</option>
               <option value="investigation">Investigation</option>
               <option value="other">Other</option>
             </Select>
           </Field>
 
-          <Field label={`Assign to ${assigneeRole === "nurse" ? "nurse" : "doctor"}`}>
+          <Field label={`Assign to ${ASSIGNEE_LABEL[purpose] ?? "doctor"}`}>
             <Select value={assignedTo} onChange={(e) => setAssignedTo(e.target.value)}>
               <option value="">Anyone in the department</option>
               {(assignees ?? []).map((u) => (

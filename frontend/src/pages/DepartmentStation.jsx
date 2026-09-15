@@ -6,6 +6,7 @@ import { patientNumber } from "../components/patientIdentity.js";
 import { Icon } from "../components/icons.jsx";
 import { readError } from "../api/errors";
 import { useAuth } from "../auth/AuthContext.jsx";
+import { CLINICAL_ROLES } from "../auth/roles.js";
 import { useToast } from "../components/Toaster.jsx";
 import { Button, TextLink, Page, PageHeader, MetaStat, Badge, waitedFor } from "../components/ui.jsx";
 import LabResultEntry from "../components/LabResultEntry.jsx";
@@ -57,6 +58,11 @@ export const STATIONS = {
     resultPlaceholder: "e.g. VA 6/6 both eyes. IOP 14/15 mmHg.",
     titlePlaceholder: "e.g. Refraction and IOP",
     roles: ["optometrist", "ophthalmologist"],
+    // The eye doctor is a clinician as well as a member of this unit: once a
+    // referral is theirs, the station opens the patient's chart and a new
+    // consultation note (with its eye examination) — the Doctor Desk's own
+    // pages, not a second copy of them. The optometrist keeps the findings form.
+    chartActions: true,
   },
 };
 
@@ -182,6 +188,7 @@ export default function DepartmentStation({ station }) {
               key={route.id}
               route={route}
               user={user}
+              chartActions={Boolean(config.chartActions)}
               onOpen={(updated) => setOpenRoute(updated?.id ? updated : route)}
             />
           ))}
@@ -191,7 +198,12 @@ export default function DepartmentStation({ station }) {
   );
 }
 
-function QueueRow({ route, user, onOpen }) {
+// The chart opens only for a clinician holding the patient — the server's rule
+// (`patients.access`), mirrored so an unclaimed row never offers a dead link.
+const opensChart = (route, user) =>
+  CLINICAL_ROLES.includes(user?.role) && route.assigned_to === user?.id;
+
+function QueueRow({ route, user, onOpen, chartActions }) {
   const queryClient = useQueryClient();
   const { showToast } = useToast();
   const isMine = route.assigned_to === user?.id;
@@ -232,6 +244,9 @@ function QueueRow({ route, user, onOpen }) {
         <span className={`rounded-full border px-2.5 py-1 text-xs font-medium ${PRIORITY_TONE[route.priority]}`}>
           {route.priority}
         </span>
+        {chartActions && opensChart(route, user) && (
+          <Button variant="link" size="sm" to={`/patients/${route.patient_uuid}`}>Open chart</Button>
+        )}
         {isMine ? (
           <button onClick={() => onOpen()} className="rounded-md border px-3 py-1.5 text-sm font-medium hover:bg-white">
             Open →
@@ -350,6 +365,14 @@ function Station({ config, route, onBack }) {
                 : ["referral_request"]}
               context={{ routeId: route.id }}
             />
+            {config.chartActions && opensChart(route, user) && (
+              <>
+                <Button variant="secondary" to={`/patients/${route.patient_uuid}`}>Open chart</Button>
+                <Button variant="secondary" to={`/patients/${route.patient_uuid}/notes?new=1`}>
+                  Eye consultation
+                </Button>
+              </>
+            )}
             {route.status === "queued" && (
               <Button variant="secondary" onClick={() => transition.mutate("start")} disabled={transition.isPending}>
                 Start

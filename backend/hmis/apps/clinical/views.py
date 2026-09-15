@@ -4,13 +4,14 @@ from rest_framework.decorators import action
 from rest_framework.exceptions import PermissionDenied
 from rest_framework.response import Response
 from django_filters.rest_framework import DjangoFilterBackend
-from django.db import models
+from django.db import models, transaction
 from django.utils import timezone
 
 from .models import Vitals, ConsultationNote, ConsultationNoteAmendment, NursingNote
 from . import serializers
-from apps.accounts.permissions import DoctorOrNurse, IsDoctor, IsNurse
-from apps.patients.access import doctor_patient_q, doctors_for_patient
+from apps.accounts.permissions import CLINICIAN_ROLES, ClinicalRecordAccess, ClinicianOrNurse, IsNurse
+from apps.patients.access import doctor_patient_q, doctors_for_patient, may_act_for
+from . import eye_exam
 from apps.core.services import notify
 from apps.workflow.models import PatientRoute
 
@@ -59,7 +60,9 @@ def _tell_the_doctors(vitals, nurse):
     if vitals.bp_systolic and vitals.bp_diastolic:
         summary = f"BP {vitals.bp_systolic}/{vitals.bp_diastolic}mmHg" + (f", {summary}" if summary else "")
 
-    for doctor in doctors_for_patient(vitals.patient):
+    # Clinicians, not only general doctors: the eye doctor holding the patient
+    # reads the same chart and is waiting on the same figures.
+    for doctor in doctors_for_patient(vitals.patient, roles=CLINICIAN_ROLES):
         if doctor.pk == nurse.pk:
             continue
         notify(
@@ -79,7 +82,7 @@ class VitalsViewSet(viewsets.ModelViewSet):
     """
     queryset = Vitals.objects.all()
     serializer_class = serializers.VitalsSerializer
-    permission_classes = [DoctorOrNurse]
+    permission_classes = [ClinicianOrNurse]
     filter_backends = [DjangoFilterBackend]
     filterset_fields = ["patient"]
 
@@ -98,7 +101,7 @@ class VitalsViewSet(viewsets.ModelViewSet):
     def get_permissions(self):
         if self.action == "create":
             return [IsNurse()]
-        return [DoctorOrNurse()]
+        return [ClinicianOrNurse()]
 
     def perform_create(self, serializer):
         vitals = serializer.save(recorded_by=self.request.user)
@@ -211,7 +214,7 @@ class NursingNoteViewSet(viewsets.ModelViewSet):
     """
     queryset = NursingNote.objects.select_related("patient", "nurse")
     serializer_class = serializers.NursingNoteSerializer
-    permission_classes = [DoctorOrNurse]
+    permission_classes = [ClinicianOrNurse]
     filter_backends = [DjangoFilterBackend]
     filterset_fields = ["patient", "nurse"]
     http_method_names = ["get", "post", "head", "options"]
@@ -228,7 +231,7 @@ class NursingNoteViewSet(viewsets.ModelViewSet):
     def get_permissions(self):
         if self.action == "create":
             return [IsNurse()]
-        return [DoctorOrNurse()]
+        return [ClinicianOrNurse()]
 
     def perform_create(self, serializer):
         serializer.save(nurse=self.request.user)
@@ -242,7 +245,7 @@ class ConsultationNoteViewSet(viewsets.ModelViewSet):
     """
     queryset = ConsultationNote.objects.all()
     serializer_class = serializers.ConsultationNoteSerializer
-    permission_classes = [IsDoctor]
+    permission_classes = [ClinicalRecordAccess]
     filter_backends = [DjangoFilterBackend]
     filterset_fields = ["patient", "doctor"]
 
@@ -255,7 +258,14 @@ class ConsultationNoteViewSet(viewsets.ModelViewSet):
         ).distinct()
 
     def perform_create(self, serializer):
+        if not may_act_for(self.request.user, serializer.validated_data["patient"]):
+            raise PermissionDenied("This patient is not one of yours.")
         serializer.save(doctor=self.request.user)
+
+    @action(detail=False, methods=["get"], url_path="eye-examination-fields")
+    def eye_examination_fields(self, request):
+        """What an eye examination may hold — the note form draws itself from this."""
+        return Response(eye_exam.schema())
 
     def perform_update(self, serializer):
         note = self.get_object()
@@ -266,17 +276,21 @@ class ConsultationNoteViewSet(viewsets.ModelViewSet):
         # If this is a locked note and an admin is overriding it, snapshot
         # the pre-edit content first — matches the manual's note archiving
         # (every edit keeps a timestamped copy, never a silent overwrite).
-        if note.is_locked and user.is_admin:
-            ConsultationNoteAmendment.objects.create(
-                note=note,
-                amended_by=user,
-                previous_note_text=note.note_text,
-                previous_diagnosis=note.diagnosis,
-                previous_plan=note.plan,
-            )
-
+        # The snapshot and the edit are one act: a refused save must not leave
+        # an archive row describing an amendment that never happened.
         try:
-            serializer.save(admin_override=user.is_admin)
+            with transaction.atomic():
+                if note.is_locked and user.is_admin:
+                    ConsultationNoteAmendment.objects.create(
+                        note=note,
+                        amended_by=user,
+                        previous_note_text=note.note_text,
+                        previous_diagnosis=note.diagnosis,
+                        previous_plan=note.plan,
+                        # Part of the note, so part of its archive.
+                        previous_eye_examination=note.eye_examination,
+                    )
+                serializer.save(admin_override=user.is_admin)
         except DjangoPermissionDenied as exc:
             raise PermissionDenied(str(exc))
 
@@ -286,7 +300,7 @@ class ConsultationNoteAmendmentViewSet(viewsets.ReadOnlyModelViewSet):
     whenever an admin overrides a lock (wire this into the amend action)."""
     queryset = ConsultationNoteAmendment.objects.all()
     serializer_class = serializers.ConsultationNoteAmendmentSerializer
-    permission_classes = [IsDoctor]
+    permission_classes = [ClinicalRecordAccess]
     filter_backends = [DjangoFilterBackend]
     filterset_fields = ["note"]
 

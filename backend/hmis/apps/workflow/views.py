@@ -10,10 +10,10 @@ from datetime import timedelta
 from apps.core.models import HospitalSettings, Notification
 from apps.core.models import AuditLog
 from apps.patients.models import Patient
-from apps.patients.access import patient_queryset_for
+from apps.patients.access import may_act_for, patient_queryset_for
 from apps.departments.models import Department
 from apps.appointments.models import Appointment
-from apps.clinical.models import Vitals, NursingNote
+from apps.clinical.models import ConsultationNote, Vitals, NursingNote
 from apps.inventory.models import Item, StockRecord
 from apps.pharmacy.models import Prescription
 from apps.inpatient.models import Admission, Bed
@@ -23,7 +23,7 @@ from apps.core.services import audit_event, notify
 from .models import Visit, PatientRoute
 from .serializers import VisitSerializer, PatientRouteSerializer
 from apps.accounts.models import User
-from apps.accounts.permissions import IsReception, RoleRequired
+from apps.accounts.permissions import CLINICIAN_ROLES, IsReception, RoleRequired
 
 
 # What a route is for decides who it is waiting on. Department membership is
@@ -345,11 +345,20 @@ def _notify_referral(route, doctor):
     return targets
 
 
+def _route_link_for(user, route):
+    if user.role == "nurse":
+        return "/vitals"
+    if user.role in CLINICIAN_ROLES and user.role in STATION_ROLES and route.assigned_to_id != user.pk:
+        # The eye doctor about an unclaimed eye referral: it is claimed at the
+        # station, and the chart only opens once they hold the patient.
+        return PURPOSE_STATION.get(ROLE_STATION_PURPOSE[user.role], "/queue")
+    return f"/patients/{route.visit.patient.uuid}"
+
+
 def _notify_route(route):
     for user in route_targets(route):
         notify(recipient=user, title=f"{route.get_purpose_display()} requested: {route.visit.patient}",
-               message=route.notes, category="routing",
-               action_url="/vitals" if user.role == "nurse" else f"/patients/{route.visit.patient.uuid}")
+               message=route.notes, category="routing", action_url=_route_link_for(user, route))
 
 
 def work_routes_for(user, statuses=("queued", "in_progress")):
@@ -470,7 +479,9 @@ class PatientRouteViewSet(viewsets.ModelViewSet):
         if self.action in {"forward", "send_to_doctor"}:
             return [RoleRequired(["nurse"])]
         if self.action == "refer":
-            return [RoleRequired(["doctor"])]
+            # The eye doctor sends a patient to the lab or for a scan the same
+            # way a general doctor does.
+            return [RoleRequired(CLINICIAN_ROLES)]
         if self.action == "cancel":
             return [RoleRequired(["reception", "doctor", "nurse"])]
         # Reading the queue: everyone a route can be sent to, or referred
@@ -659,6 +670,9 @@ class PatientRouteViewSet(viewsets.ModelViewSet):
         if not patient:
             return Response({"patient": "Choose the patient you are referring."},
                             status=drf_status.HTTP_400_BAD_REQUEST)
+        if not may_act_for(user, patient):
+            return Response({"detail": "This patient is not one of yours.", "code": "not_your_patient"},
+                            status=drf_status.HTTP_403_FORBIDDEN)
 
         purpose = request.data.get("purpose")
         if purpose not in REFERRAL_PURPOSES:
@@ -918,8 +932,9 @@ class DashboardView(APIView):
             "assigned_to": _display_name(route.assigned_to) if route.assigned_to else "Unassigned",
             "created_at": route.created_at,
             # Nurses work the queue from their own station; everyone else
-            # goes straight to the patient's chart.
-            "href": "/vitals" if user.role == "nurse" else f"/patients/{route.visit.patient.uuid}",
+            # goes straight to the patient's chart — except the eye doctor's
+            # unclaimed referrals, which are claimed at the station first.
+            "href": _route_link_for(user, route),
         } for route in task_routes]
 
         if is_admin_dashboard:
@@ -931,7 +946,7 @@ class DashboardView(APIView):
             } for event in activity]
         else:
             recent_activity = [{"id": note.id, "action": note.title, "actor": "", "created_at": note.created_at}
-                               for note in Notification.objects.filter(recipient=user).active()[:10]]
+                               for note in Notification.objects.for_user(user).active()[:10]]
 
         return Response({
             "today": today,
@@ -945,7 +960,7 @@ class DashboardView(APIView):
 
     def _cards_for(self, user, routes, today):
         # The inbox only — the same number the bell shows.
-        unread = Notification.objects.filter(recipient=user, is_read=False).active().count()
+        unread = Notification.objects.for_user(user).filter(is_read=False).active().count()
         if user.role == "nurse":
             return self._nurse_cards(user, routes, today, unread)
         if user.role in {"cashier", "accountant"}:
@@ -983,6 +998,12 @@ class DashboardView(APIView):
         # doctor's cards and never their own.
         if role == "doctor":
             cards.append({"key": "seen_today", "label": "Patients seen today", "value": Visit.objects.filter(attending_doctor=user, created_at__date=today).count(), "href": "/patients", "tone": "green"})
+        elif role == "ophthalmologist":
+            # The consultations the eye doctor wrote today, eye examination or
+            # not — the same notes the chart's Medical Notes tab lists.
+            cards.append({"key": "eye_consultations_today", "label": "Eye consultations today",
+                          "value": ConsultationNote.objects.filter(doctor=user, created_at__date=today).count(),
+                          "href": "/patients", "tone": "green"})
         elif role == "pharmacist":
             cards.append({"label": "Prescriptions awaiting dispensing", "value": Prescription.objects.filter(status="pending").count(), "href": "/pharmacy", "tone": "amber"})
             cards.append({"label": "Dispensed, awaiting payment", "value": Charge.objects.filter(source_type="prescription", status__in=["unpaid", "partial"]).count(), "href": "/pharmacy", "tone": "red"})

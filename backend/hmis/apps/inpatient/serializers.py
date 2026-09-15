@@ -1,4 +1,6 @@
 from rest_framework import serializers
+from apps.accounts.permissions import OWN_PATIENT_WARD_ROLES
+from apps.patients.access import patient_queryset_for
 from .models import Ward, Bed, Admission, BedTransfer, DischargeSummary
 class WardSerializer(serializers.ModelSerializer):
     bed_count = serializers.SerializerMethodField()
@@ -15,7 +17,18 @@ class BedSerializer(serializers.ModelSerializer):
     def get_occupied(self,obj): return obj.admissions.filter(status="admitted").exists()
     def get_occupant(self, obj):
         admission = obj.admissions.filter(status="admitted").select_related("patient").first()
-        return str(admission.patient) if admission else None
+        if not admission:
+            return None
+        # A role that works the ward for its own patients sees that a bed is
+        # taken, never whose it is unless the patient is theirs.
+        user = getattr(self.context.get("request"), "user", None)
+        if getattr(user, "role", None) in OWN_PATIENT_WARD_ROLES:
+            if "_own_patient_ids" not in self.context:
+                self.context["_own_patient_ids"] = set(
+                    patient_queryset_for(user).values_list("pk", flat=True))
+            if admission.patient_id not in self.context["_own_patient_ids"]:
+                return None
+        return str(admission.patient)
 class AdmissionSerializer(serializers.ModelSerializer):
     patient_name = serializers.CharField(source="patient.__str__", read_only=True)
     patient_number = serializers.CharField(source="patient.patient_number", read_only=True)

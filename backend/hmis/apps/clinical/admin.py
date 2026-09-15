@@ -49,11 +49,16 @@ class NursingNoteAdmin(LockedRecordAdmin):
 
 @admin.register(ConsultationNote)
 class ConsultationNoteAdmin(LockedRecordAdmin):
-    list_display = ["patient", "visit_time", "doctor", "reason_for_visit", "diagnosis"]
+    list_display = ["patient", "visit_time", "doctor", "reason_for_visit", "diagnosis",
+                    "has_eye_examination"]
     list_filter = ["visit_time", "doctor"]
     search_fields = ["patient__first_name", "patient__last_name", "reason_for_visit", "diagnosis"]
     list_select_related = ["patient", "doctor"]
     date_hierarchy = "visit_time"
+
+    @admin.display(description="Eye exam", boolean=True)
+    def has_eye_examination(self, obj):
+        return bool(obj.eye_examination)
 
 
 @admin.register(ConsultationNoteAmendment)

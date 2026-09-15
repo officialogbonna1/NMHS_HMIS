@@ -1,4 +1,9 @@
+from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework import serializers
+
+from apps.accounts.permissions import EYE_EXAMINATION_ROLES, has_any_role
+
+from .eye_exam import clean_eye_examination
 from .models import Vitals, ConsultationNote, ConsultationNoteAmendment, NursingNote
 
 
@@ -41,3 +46,27 @@ class ConsultationNoteSerializer(serializers.ModelSerializer):
         model = ConsultationNote
         fields = "__all__"
         read_only_fields = ["doctor", "is_locked", "locked_at"]
+
+    def validate_eye_examination(self, value):
+        """Only the fields `clinical/eye_exam.py` defines, blanks dropped, from the eye doctor."""
+        try:
+            cleaned = clean_eye_examination(value)
+        except DjangoValidationError as exc:
+            raise serializers.ValidationError(
+                exc.message_dict if hasattr(exc, "error_dict") else exc.messages)
+        user = getattr(self.context.get("request"), "user", None)
+        if cleaned is not None and not has_any_role(user, EYE_EXAMINATION_ROLES):
+            raise serializers.ValidationError("Only the eye doctor records an eye examination.")
+        return cleaned
+
+    def update(self, instance, validated_data):
+        # The view hands the lock's `admin_override` over through
+        # `serializer.save(admin_override=…)`. ModelSerializer.update treats
+        # every keyword as a field — it set the flag as an attribute and then
+        # called `instance.save()` without it, so the lock refused every admin
+        # amendment. The flag goes to `save()`, where LockedRecordMixin reads it.
+        admin_override = validated_data.pop("admin_override", False)
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+        instance.save(admin_override=admin_override)
+        return instance

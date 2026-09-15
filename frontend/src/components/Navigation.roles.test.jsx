@@ -32,3 +32,24 @@ describe("the two desks follow two groups", () => {
     expect(screen.queryByRole("link", { name: /^Service Cancellations$/ })).not.toBeInTheDocument();
   });
 });
+
+describe("the eye doctor's navigation follows the clinician groups", () => {
+  const visible = (name) => screen.queryAllByRole("link", { name: new RegExp(`^${name}$`) }).length > 0;
+
+  it("gives the eye doctor the station, referrals and their own ward — nothing of the pharmacy's", () => {
+    renderWithApp(<AppShell />, { user: { id: 3, role: "ophthalmologist" } });
+    for (const name of ["Eye Clinic", "Refer Patient", "Admissions", "Patients"]) {
+      expect(visible(name), name).toBe(true);
+    }
+    for (const name of ["Prescriptions", "Dispensing", "Stock", "Inventory", "Billing", "Laboratory"]) {
+      expect(visible(name), name).toBe(false);
+    }
+  });
+
+  it("leaves the optometrist with the eye clinic only", () => {
+    renderWithApp(<AppShell />, { user: { id: 4, role: "optometrist" } });
+    expect(visible("Eye Clinic")).toBe(true);
+    expect(visible("Refer Patient")).toBe(false);
+    expect(visible("Admissions")).toBe(false);
+  });
+});

@@ -119,7 +119,9 @@ function BedBoard({ wards, beds, loading }) {
                   >
                     <p className="font-semibold text-slate-800">Bed {bed.number}</p>
                     <p className="mt-0.5 text-sm text-slate-700">
-                      {!bed.is_active ? "Out of service" : bed.occupied ? bed.occupant : "Free"}
+                      {/* `occupant` is withheld from a role that works the ward for
+                          its own patients only, when the bed is somebody else's. */}
+                      {!bed.is_active ? "Out of service" : bed.occupied ? (bed.occupant ?? "Occupied") : "Free"}
                     </p>
                   </div>
                 ))}
