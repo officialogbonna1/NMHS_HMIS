@@ -147,7 +147,7 @@ class BillAndReceiptPayloadTests(TestCase):
         self.assertEqual(receipt["channel"], "front_desk")
         self.assertEqual(receipt["reference"], "TRF-9931")
         self.assertEqual(receipt["received_by_name"], "Ada Bello")
-        self.assertEqual(receipt["patient_name"], str(self.patient))
+        self.assertEqual(receipt["patient_name"], self.patient.display_name)
         self.assertIn("id", receipt)        # the receipt number
         self.assertIn("created_at", receipt)
 

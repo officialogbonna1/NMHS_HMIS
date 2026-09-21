@@ -1,6 +1,7 @@
-from decimal import Decimal
 
 from rest_framework import serializers
+
+from apps.billing import status as billing_status
 
 from .models import (
     LabOrder, LabOrderTest, LabPanel, LabParameter, LabResultAmendment,
@@ -173,28 +174,16 @@ class LabOrderTestSerializer(serializers.ModelSerializer):
         What this one test costs and whether it has been settled — read from
         the charge the order raised, never computed from today's catalogue
         price. The lab reads this; it never writes it.
+
+        `billing.status` is where the shape and the vocabulary live, so the
+        bench and the imaging station say the same words about the same
+        money.
         """
-        charge = obj.charge
-        if charge is None:
-            return {"billed": False, "status": "unbilled",
-                    "amount": f"{obj.unit_price:.2f}", "paid": "0.00",
-                    "outstanding": "0.00", "deferred": False}
-        return {
-            "billed": True,
-            "charge": charge.pk,
-            "status": charge.settlement_status,
-            "amount": f"{charge.amount:.2f}",
-            "discounted": f"{charge.amount_discounted:.2f}",
-            "waived": f"{charge.amount_waived:.2f}",
-            "payable": f"{charge.payable:.2f}",
-            "paid": f"{charge.amount_paid:.2f}",
-            "outstanding": f"{max(charge.balance, 0):.2f}",
-            "deferred": charge.active_deferral is not None,
-        }
+        return billing_status.service_billing(obj.charge, fallback_amount=obj.unit_price)
 
 
 class LabOrderSerializer(serializers.ModelSerializer):
-    patient_name = serializers.CharField(source="patient.__str__", read_only=True)
+    patient_name = serializers.CharField(source="patient.display_name", read_only=True)
     patient_number = serializers.CharField(source="patient.patient_number", read_only=True)
     patient_file_number = serializers.CharField(source="patient.patient_number", read_only=True)
     patient_age = serializers.CharField(source="patient.age_display", read_only=True)
@@ -250,34 +239,23 @@ class LabOrderSerializer(serializers.ModelSerializer):
         Read-only: the laboratory never writes a figure here. Ordering a test
         raised the charge through `billing.services`, and the cash desk
         settles it there — this is the bench being told where that stands, so
-        an unpaid test is visible rather than assumed.
+        an unpaid test is visible rather than assumed. Each test keeps its own
+        status beside this; the headline is the worst of them, because an
+        order that read "PAID" while one test on it was not is exactly how an
+        unpaid service gets through.
         """
-        charges = [item.charge for item in obj.items.all()
-                   if item.charge_id and item.charge.status != "cancelled"]
-        total = sum((c.amount for c in charges), Decimal("0"))
-        paid = sum((c.amount_paid for c in charges), Decimal("0"))
-        discounted = sum((c.amount_discounted for c in charges), Decimal("0"))
-        waived = sum((c.amount_waived for c in charges), Decimal("0"))
-        outstanding = sum((max(c.balance, Decimal("0")) for c in charges), Decimal("0"))
-        deferred = [c for c in charges if c.active_deferral is not None]
-        return {
-            "billed": bool(charges),
-            # Formatted here so the shape on the wire is the same whichever
-            # renderer answers, and the frontend never has to guess.
-            "total": f"{total:.2f}",
-            "paid": f"{paid:.2f}",
-            "discounted": f"{discounted:.2f}",
-            "waived": f"{waived:.2f}",
-            "outstanding": f"{outstanding:.2f}",
-            "settled": bool(charges) and outstanding <= 0,
-            "deferred": bool(deferred),
-            "deferred_by": _name(deferred[0].active_deferral.approved_by) if deferred else None,
-        }
+        charges = [item.charge for item in obj.items.all() if item.charge_id]
+        summary = billing_status.summarise(charges)
+        deferred = [c for c in charges
+                    if c.status != "cancelled" and c.active_deferral is not None]
+        summary["deferred_by"] = (_name(deferred[0].active_deferral.approved_by)
+                                  if deferred else None)
+        return summary
 
 
 class LabOrderSummarySerializer(serializers.ModelSerializer):
     """The worklist row — no parameters, no values."""
-    patient_name = serializers.CharField(source="patient.__str__", read_only=True)
+    patient_name = serializers.CharField(source="patient.display_name", read_only=True)
     patient_number = serializers.CharField(source="patient.patient_number", read_only=True)
     patient_file_number = serializers.CharField(source="patient.patient_number", read_only=True)
     status_label = serializers.CharField(source="get_status_display", read_only=True)

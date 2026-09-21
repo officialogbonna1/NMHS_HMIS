@@ -497,7 +497,7 @@ class TheRecordAfterwards(Desk):
         self.assertEqual(entry.actor, self.cashier)
         self.assertIsNotNone(entry.created_at)
         self.assertEqual(entry.object_id, charge.pk)
-        self.assertEqual(details["patient"], str(self.patient))
+        self.assertEqual(details["patient"], self.patient.display_name)
         self.assertEqual(details["patient_number"], self.patient.patient_number)
         self.assertEqual(details["service"], "Laboratory: FBC")
         self.assertEqual(details["department"], "Laboratory")

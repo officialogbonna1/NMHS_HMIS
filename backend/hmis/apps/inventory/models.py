@@ -274,9 +274,16 @@ class StockRecord(TimeStampedModel):
     `save()` refuses to move the number unless a service is doing it. That is
     not politeness — it is the guarantee the API rests on: there is no
     serializer field, no admin form and no shell one-liner that can change a
-    quantity without writing the `StockMovement` that explains it. Services
-    pass `through_service=True` *after* they have written the movement, in
-    the same transaction.
+    quantity without writing the `StockMovement` that explains it.
+
+    The one service that moves it, `inventory.services.apply_stock_change`,
+    does not come through here at all: it writes a conditional `UPDATE`
+    (`SET quantity = quantity - n WHERE quantity >= n`) so that checking what
+    is on the shelf and taking it off are one indivisible statement, which a
+    read-modify-write through `save()` can never be. `through_service=True`
+    remains the escape hatch for a future service that needs the model's own
+    save path; it is **not** a way around the floor above, and anything
+    reaching for it owes its caller the same atomicity.
     """
     batch = models.ForeignKey(Batch, on_delete=models.CASCADE, related_name="stock")
     location = models.ForeignKey(StockLocation, on_delete=models.PROTECT, related_name="stock")
@@ -461,6 +468,15 @@ class StockMovement(TimeStampedModel):
     class Meta:
         ordering = ["-created_at"]
         indexes = [models.Index(fields=["location", "-created_at"])]
+
+    def __str__(self):
+        """
+        One line of the stock log: which lot moved, on which shelf, by how
+        much and why. The sign is kept, because "-8" and "+8" against the
+        same batch are the two halves of a transfer (rule 30).
+        """
+        return (f"{self.batch} @ {self.location.name} · {self.change:+d} "
+                f"({self.get_reason_display()})")
 
 
 #: Where medicine a customer brings back goes. Neither a receiving location nor

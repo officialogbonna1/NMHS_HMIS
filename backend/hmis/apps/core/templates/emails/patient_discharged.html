@@ -1,0 +1,21 @@
+{% extends "emails/base.html" %}
+{% comment %}
+A patient has left the ward.
+
+Deliberately administrative: who, when, from which bed, under whose authority
+and under what reference. The discharge diagnosis, the summary of the stay and
+the instructions given are clinical and stay in the record — the discharge
+letter carries them, printed and handed over, and an inbox is the wrong place
+for them.
+{% endcomment %}
+{% block body %}
+  <tr>
+    <td style="padding:18px 28px 0 28px;">
+      <p style="margin:0;font-size:13px;line-height:1.6;color:#475569;">
+        The discharge has been recorded and the bed released. The completed
+        discharge letter, including the clinical detail of the stay, is
+        available on the patient's record in the HMIS.
+      </p>
+    </td>
+  </tr>
+{% endblock %}

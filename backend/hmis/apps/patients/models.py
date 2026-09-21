@@ -3,7 +3,7 @@ from datetime import date
 
 from django.db import models
 from django.conf import settings
-from apps.core import identifiers
+from apps.core import identifiers, labels
 from apps.core.mixins import TimeStampedModel
 
 
@@ -63,6 +63,25 @@ class Patient(TimeStampedModel):
         indexes = [models.Index(fields=["last_name", "first_name"])]
 
     def __str__(self):
+        """
+        How this row is labelled wherever Django renders the object itself —
+        a foreign-key dropdown, an inline, an admin log entry.
+
+        The hospital number leads, because a name alone is ambiguous on a
+        register that holds two J. Okonkwos and a dropdown gives no other
+        column to tell them apart. The API is deliberately *not* built on
+        this: every `patient_name` field reads `display_name`, so a payload
+        still carries the name on its own beside `patient_number` (rule 32 —
+        the two identifiers are not interchangeable, and a screen decides for
+        itself how to show them).
+        """
+        if self.patient_number:
+            return f"{self.patient_number} — {self.display_name}"
+        return self.display_name
+
+    @property
+    def display_name(self):
+        """The name on its own, as the manual's lists show it: "Last, First"."""
         return f"{self.last_name}, {self.first_name}"
 
     @property
@@ -122,6 +141,12 @@ class Allergy(TimeStampedModel):
     is_dangerous = models.BooleanField(default=False)
     notes = models.TextField(blank=True)
 
+    def __str__(self):
+        """A severe allergy says so in the label: it is the one tile row a
+        clinician must not have to open to see."""
+        severe = " (severe)" if self.is_dangerous else ""
+        return f"{self.patient} · allergy: {self.name}{severe}"
+
 
 class Medication(TimeStampedModel):
     patient = models.ForeignKey(Patient, on_delete=models.CASCADE, related_name="medications")
@@ -134,12 +159,19 @@ class Medication(TimeStampedModel):
     time_frame_days = models.PositiveIntegerField(null=True, blank=True)
     notes = models.TextField(blank=True)
 
+    def __str__(self):
+        strength = f" {self.strength}" if self.strength else ""
+        return f"{self.patient} · medication: {self.name}{strength}"
+
 
 class MedicalCondition(TimeStampedModel):
     patient = models.ForeignKey(Patient, on_delete=models.CASCADE, related_name="conditions")
     name = models.CharField(max_length=150)
     date_diagnosed = models.DateField(null=True, blank=True)
     notes = models.TextField(blank=True)
+
+    def __str__(self):
+        return f"{self.patient} · condition: {self.name}"
 
 
 class MedicalDevice(TimeStampedModel):
@@ -152,12 +184,18 @@ class MedicalDevice(TimeStampedModel):
     next_update = models.DateField(null=True, blank=True)
     notes = models.TextField(blank=True)
 
+    def __str__(self):
+        return f"{self.patient} · device: {self.name}"
+
 
 class SurgicalHistory(TimeStampedModel):
     patient = models.ForeignKey(Patient, on_delete=models.CASCADE, related_name="surgeries")
     name = models.CharField(max_length=150)
     surgery_date = models.DateField(null=True, blank=True)
     description = models.TextField(blank=True)
+
+    def __str__(self):
+        return f"{self.patient} · surgery: {self.name} ({labels.on(self.surgery_date)})"
 
 
 class FamilyMedicalHistory(TimeStampedModel):
@@ -166,6 +204,11 @@ class FamilyMedicalHistory(TimeStampedModel):
     is_deceased = models.BooleanField(default=False)
     conditions = models.JSONField(default=list, blank=True)
     notes = models.TextField(blank=True)
+
+    def __str__(self):
+        """The relative, not the patient's own name — this tile is about
+        somebody else's history."""
+        return f"{self.patient} · family history: {self.relationship}"
 
 
 class SocialHistory(TimeStampedModel):
@@ -177,6 +220,10 @@ class SocialHistory(TimeStampedModel):
     started_year = models.PositiveIntegerField(null=True, blank=True)
     notes = models.TextField(blank=True)
 
+    def __str__(self):
+        state = "current" if self.is_active else "past"
+        return f"{self.patient} · social history: {self.category} ({state})"
+
 
 class Vaccination(TimeStampedModel):
     patient = models.ForeignKey(Patient, on_delete=models.CASCADE, related_name="vaccinations")
@@ -184,6 +231,9 @@ class Vaccination(TimeStampedModel):
     date_administered = models.DateField(null=True, blank=True)
     next_due_date = models.DateField(null=True, blank=True)
     notes = models.TextField(blank=True)
+
+    def __str__(self):
+        return f"{self.patient} · vaccination: {self.name} ({labels.on(self.date_administered)})"
 
 
 class MedicalTest(TimeStampedModel):
@@ -214,3 +264,9 @@ class MedicalTest(TimeStampedModel):
         # without one the database is free to return a different page 2 each
         # time, which is how a result goes missing from a list.
         ordering = ["-test_date", "-created_at"]
+
+    def __str__(self):
+        """The test, its kind and the day it was done — what the Tests &
+        Diagnostics tile lists, and what a route's filed copy is found by."""
+        return (f"{self.patient} · {self.title} "
+                f"({self.get_test_type_display()}, {labels.on(self.test_date)})")

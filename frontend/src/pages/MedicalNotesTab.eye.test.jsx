@@ -36,7 +36,7 @@ function mockGets(notes = []) {
   });
 }
 
-const reasonBox = () => screen.getByText("Reason for Visit").parentElement.querySelector("input");
+const reasonBox = () => screen.getByLabelText(/Reason for visit/);
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -47,12 +47,12 @@ describe("the eye doctor's consultation note", () => {
     const post = vi.spyOn(api, "post").mockResolvedValue({ data: { id: 1 } });
     renderWithApp(<MedicalNotesTab patientId={3} />, { user: EYE_DOCTOR });
 
-    await user.click(await screen.findByRole("button", { name: "Add Medical Note" }));
+    await user.click(await screen.findByRole("button", { name: "New note" }));
     const exam = await screen.findByRole("region", { name: "Eye examination" });
     await user.type(reasonBox(), "Blurred vision");
     await user.type(within(exam).getByLabelText("IOP (mmHg) — right eye"), "28");
     await user.selectOptions(within(exam).getByLabelText("Measurement method"), "applanation");
-    await user.click(screen.getByRole("button", { name: "Save" }));
+    await user.click(screen.getByRole("button", { name: "Save medical note" }));
 
     await waitFor(() => expect(post).toHaveBeenCalled());
     const [url, body] = post.mock.calls[0];
@@ -70,11 +70,11 @@ describe("the eye doctor's consultation note", () => {
     });
     renderWithApp(<MedicalNotesTab patientId={3} />, { user: EYE_DOCTOR });
 
-    await user.click(await screen.findByRole("button", { name: "Add Medical Note" }));
+    await user.click(await screen.findByRole("button", { name: "New note" }));
     await screen.findByRole("region", { name: "Eye examination" });
     await user.type(reasonBox(), "Pain");
     await user.type(screen.getByLabelText("IOP (mmHg) — right eye"), "95");
-    await user.click(screen.getByRole("button", { name: "Save" }));
+    await user.click(screen.getByRole("button", { name: "Save medical note" }));
 
     expect(await screen.findByText("Enter a pressure between 0 and 80 mmHg.")).toBeInTheDocument();
     expect(screen.getByText("Check the eye examination below.")).toBeInTheDocument();
@@ -88,9 +88,11 @@ describe("the eye doctor's consultation note", () => {
 
     expect(await screen.findByText("Eye examination")).toBeInTheDocument();   // the list badge
     await user.click(screen.getByRole("button", { name: /Glaucoma review/ }));
+    // Opening a saved note shows the record, never an editable form.
     const exam = await screen.findByRole("region", { name: "Eye examination" });
-    expect(within(exam).getByLabelText("IOP (mmHg) — right eye")).toHaveValue(28);
-    expect(within(exam).getByLabelText("IOP (mmHg) — right eye")).toBeDisabled();
+    // Read as a record: the value as text, with its unit, and no input to type in.
+    expect(within(exam).getByLabelText("IOP (mmHg) — right eye")).toHaveTextContent("28 mmHg");
+    expect(within(exam).queryByRole("spinbutton")).not.toBeInTheDocument();
     expect(within(exam).queryByLabelText("Distance — right eye")).not.toBeInTheDocument();
   });
 });
@@ -102,10 +104,10 @@ describe("the general doctor's consultation note", () => {
     const post = vi.spyOn(api, "post").mockResolvedValue({ data: { id: 2 } });
     renderWithApp(<MedicalNotesTab patientId={3} />, { user: DOCTOR });
 
-    await user.click(await screen.findByRole("button", { name: "Add Medical Note" }));
+    await user.click(await screen.findByRole("button", { name: "New note" }));
     await user.type(reasonBox(), "Headache");
     expect(screen.queryByRole("region", { name: "Eye examination" })).not.toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Save" }));
+    await user.click(screen.getByRole("button", { name: "Save medical note" }));
 
     await waitFor(() => expect(post).toHaveBeenCalled());
     expect(post.mock.calls[0][1]).not.toHaveProperty("eye_examination");

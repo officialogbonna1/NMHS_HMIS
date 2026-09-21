@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { useConfirm } from "../../components/ConfirmAlert.jsx";
 import { useParams } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import api from "../../api/client";
@@ -36,6 +37,7 @@ export default function ConfigResource() {
 }
 
 function ResourceScreen({ config }) {
+  const { ask } = useConfirm();
   const queryClient = useQueryClient();
   const { showToast } = useToast();
   const [editing, setEditing] = useState(null);     // null | "new" | row
@@ -189,8 +191,14 @@ function ResourceScreen({ config }) {
                           {!inUse && (
                             <Button
                               variant="linkDanger" size="xs"
-                              onClick={() => confirm(`Delete ${rowLabel(row, config)}? This cannot be undone.`)
-                                && remove.mutate(row)}
+                              onClick={async () => {
+                                if (await ask({
+                                  title: "Delete this permanently?",
+                                  message: `${rowLabel(row, config)} will be deleted. `
+                                    + "This cannot be undone.",
+                                  confirmLabel: "Delete",
+                                })) remove.mutate(row);
+                              }}
                             >
                               Delete
                             </Button>

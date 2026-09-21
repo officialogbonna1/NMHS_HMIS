@@ -23,15 +23,34 @@ from django.db import transaction
 from django.core.exceptions import ValidationError
 from django.utils import timezone
 
-from apps.inventory.models import StockRecord, dispensing_location
-from apps.inventory.services import apply_stock_change, quantity_on_hand
+from apps.inventory.models import StockRecord, dispensing_location, receiving_location
+from apps.inventory.services import (InsufficientStockError, apply_stock_change,
+                                     quantity_on_hand)
 from apps.pharmacy.models import Prescription
 from apps.billing.departments import department_for_source
 from apps.billing.services import add_charge
 
 
 class OutOfStockError(ValidationError):
-    pass
+    """
+    The counter cannot fill this line.
+
+    One refusal for two causes that look identical from the shelf: it never
+    had the units, or it had them a moment ago and another transaction took
+    them first. Both are "insufficient stock" to the person standing there,
+    so they get one message — which names the second possibility, because a
+    pharmacist who saw `1 available` on screen a second ago is owed an
+    explanation rather than a flat contradiction.
+
+    Carries the figures beside the sentence so the counter can act on them
+    without parsing prose, the way the billing refusals already answer with a
+    `code` (rules 22, 38).
+    """
+
+    def __init__(self, message, *, available=0, requested=0):
+        super().__init__(message, code="insufficient_stock")
+        self.available = available
+        self.requested = requested
 
 
 class AlreadyDispensedError(ValidationError):
@@ -48,6 +67,28 @@ def available_quantity(item, location=None):
     would promise a doctor a drug the counter has none of.
     """
     return quantity_on_hand(item=item, location=location or dispensing_location())
+
+
+def _insufficient(*, item, available, requested, counter):
+    """
+    The one wording for "the counter cannot fill this".
+
+    It names what is actually on the shelf **now** rather than what the caller
+    believed, says the units may have gone to another transaction, and — only
+    when it is true — says where the replacements are. Pointing at the store
+    unconditionally would send a pharmacist to fetch stock that is not there.
+    """
+    message = (
+        f"Insufficient stock. {item.name} has {available} unit(s) available on the "
+        f"pharmacy shelf — cannot dispense {requested}. This item may have been "
+        f"dispensed or allocated by another transaction."
+    )
+    store = receiving_location()
+    in_store = quantity_on_hand(item=item, location=store) if store else 0
+    if in_store:
+        message += (f" There are {in_store} unit(s) in {store.name} — transfer them to "
+                    f"the counter first.")
+    return OutOfStockError(message, available=available, requested=requested)
 
 
 def _directions(*, frequency="", duration="", route="", notes=""):
@@ -126,6 +167,33 @@ def dispense_prescription(*, prescription, pharmacist):
     Hand the drugs over: deduct FEFO (earliest-expiring non-expired batch
     first), log a StockMovement per batch touched, and raise the charge the
     pharmacy then collects against.
+
+    **This is where two prescriptions for the last unit are resolved**, and
+    deliberately not earlier. Writing a prescription is a clinical order, so
+    two doctors may each order the last box; what cannot happen is both being
+    handed over. Nothing is reserved at prescribing time (see
+    `create_prescription`) — the shelf is read again here, under lock, and the
+    deduction itself is a conditional UPDATE inside
+    `inventory.services.apply_stock_change`, so the loser matches no row and
+    is refused before anything is written.
+
+    Three things hold the line, smallest first:
+
+    - the **prescription row** is locked, so the same script cannot be
+      dispensed twice even by two clicks on one counter (`status != pending`
+      is then decisive);
+    - the **stock records for this product on this shelf** are locked with
+      `of=("self",)` — those rows and nothing else. Without `of`, the joins
+      this query needs (`batch__item`, `batch__expiry_date`) make PostgreSQL
+      lock the `Batch` rows too, which would block a delivery being received
+      into the Main Store for a lot the counter happens to be dispensing;
+    - the **deduction** is `quantity = quantity - take WHERE quantity >= take`,
+      which is what actually decides the race — and keeps deciding it on
+      SQLite, where `select_for_update` compiles to nothing.
+
+    All-or-nothing: a line that cannot be filled in full is refused whole.
+    Partial dispensing is deliberately not built (see CLAUDE.md), so there is
+    no state where half a prescription has left the shelf.
     """
     prescription = Prescription.objects.select_for_update().get(pk=prescription.pk)
     if prescription.status != "pending":
@@ -141,7 +209,7 @@ def dispense_prescription(*, prescription, pharmacist):
     # Store is not on this list: it has to be transferred to the counter
     # before it can be given to anybody.
     records = list(
-        StockRecord.objects.select_for_update()
+        StockRecord.objects.select_for_update(of=("self",))
         .select_related("batch")
         .filter(batch__item=prescription.item, location=counter, quantity__gt=0)
         .exclude(batch__expiry_date__lt=_today())
@@ -150,26 +218,34 @@ def dispense_prescription(*, prescription, pharmacist):
 
     available = sum(record.quantity for record in records)
     if available < prescription.quantity:
-        raise OutOfStockError(
-            f"Only {available} unit(s) of {prescription.item.name} on the pharmacy shelf — "
-            f"cannot dispense {prescription.quantity}. "
-            f"Transfer more from the store first."
-        )
+        raise _insufficient(item=prescription.item, available=available,
+                            requested=prescription.quantity, counter=counter)
 
     remaining = prescription.quantity
     dispensed_value = 0
-    for record in records:
-        if remaining <= 0:
-            break
-        take = min(record.quantity, remaining)
-        # Through the inventory service, so the deduction and its movement
-        # land together and the movement says which shelf it came off.
-        apply_stock_change(
-            record, -take, reason="prescription", actor=pharmacist,
-            reference=f"prescription:{prescription.id}",
-        )
-        dispensed_value += take * record.batch.sale_price
-        remaining -= take
+    try:
+        for record in records:
+            if remaining <= 0:
+                break
+            take = min(record.quantity, remaining)
+            # Through the inventory service, so the deduction and its movement
+            # land together and the movement says which shelf it came off.
+            apply_stock_change(
+                record, -take, reason="prescription", actor=pharmacist,
+                reference=f"prescription:{prescription.id}",
+            )
+            dispensed_value += take * record.batch.sale_price
+            remaining -= take
+    except InsufficientStockError:
+        # The shelf moved between the read above and this deduction — the
+        # window `select_for_update` closes on PostgreSQL and cannot on
+        # SQLite. Answered as the same refusal the pharmacist would have got a
+        # moment earlier, re-reading what is genuinely there now. Everything
+        # written so far goes back with the transaction: no movement, no
+        # charge, and the prescription stays pending to be tried again.
+        raise _insufficient(item=prescription.item,
+                            available=available_quantity(prescription.item, counter),
+                            requested=prescription.quantity, counter=counter)
 
     prescription.status = "dispensed"
     prescription.dispensed_by = pharmacist

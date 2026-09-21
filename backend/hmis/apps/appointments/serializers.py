@@ -3,7 +3,7 @@ from .models import Appointment
 
 
 class AppointmentSerializer(serializers.ModelSerializer):
-    patient_name = serializers.CharField(source="patient.__str__", read_only=True)
+    patient_name = serializers.CharField(source="patient.display_name", read_only=True)
     doctor_name = serializers.SerializerMethodField()
 
     class Meta:

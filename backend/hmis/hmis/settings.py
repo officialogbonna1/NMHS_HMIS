@@ -95,6 +95,9 @@ REST_FRAMEWORK = {
     "DEFAULT_PERMISSION_CLASSES": ["rest_framework.permissions.IsAuthenticated"],
     "DEFAULT_PAGINATION_CLASS": "hmis.pagination.StandardPagination",
     "PAGE_SIZE": 25,
+    # One shape for every refusal, and no stack trace on any of them.
+    # `apps/core/exceptions.py` says what each kind of failure answers with.
+    "EXCEPTION_HANDLER": "apps.core.exceptions.api_exception_handler",
 }
 
 CORS_ALLOWED_ORIGINS = os.environ.get(
@@ -116,6 +119,90 @@ CELERY_BEAT_SCHEDULE = {
     "check-expiring-batches-nightly": {
         "task": "apps.inventory.tasks.check_expiring_batches",
         "schedule": 60 * 60 * 24,
+    },
+}
+
+# The login lockout (`apps/accounts/lockout.py`) is the only thing in the
+# system that reads or writes the cache, and what it keeps there is a count of
+# consecutive failed sign-ins. That count has to be one count: with several
+# worker processes and a per-process cache, five attempts becomes five *per
+# worker*. Redis is already a dependency and already configured above for
+# Celery, so the cache points at it when one is configured and falls back to
+# this process's own memory when there is not — which is what a single-process
+# `runserver` and the test suite want, and neither needs Redis to be up.
+#
+# Nothing else uses the cache, so this setting changes nothing but the lockout.
+# If Redis is configured and then goes down, the lockout fails *open* (see that
+# module): a hospital being unable to reach its own records because a cache is
+# unavailable is a worse failure than a brute-force window.
+_CACHE_URL = os.environ.get("CACHE_URL") or os.environ.get("REDIS_URL")
+CACHES = {
+    "default": {
+        "BACKEND": "django.core.cache.backends.redis.RedisCache",
+        "LOCATION": _CACHE_URL,
+    } if _CACHE_URL else {
+        "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+        "LOCATION": "hmis-login-lockout",
+    }
+}
+
+# How many consecutive failed sign-ins a client may make against one username
+# before it is shut out, and for how long. The fifth failure is the one that
+# locks: four are allowed. Settings rather than constants so a deployment can
+# tighten them without a code change; the defaults are the rule as specified.
+LOGIN_MAX_FAILED_ATTEMPTS = int(os.environ.get("LOGIN_MAX_FAILED_ATTEMPTS", 5))
+LOGIN_LOCKOUT_SECONDS = int(os.environ.get("LOGIN_LOCKOUT_SECONDS", 300))
+
+
+# --------------------------------------------------------------------- email
+#
+# Transactional admin notifications go out through Resend
+# (`apps/core/email.py`). Everything here is environment configuration: an API
+# key does not belong in a repository, and neither does the address of whoever
+# currently administers the hospital — that is a person, and people change.
+#
+# With no key configured, `apps/core/email.py` does not send and says so in the
+# log. That is the correct behaviour for a developer machine and for a test
+# run: nothing is emailed and nothing fails.
+RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "")
+HMIS_EMAIL_FROM = os.environ.get("HMIS_EMAIL_FROM", "")
+HMIS_ADMIN_EMAIL = os.environ.get("HMIS_ADMIN_EMAIL", "")
+# Where a link in an email points. The API and the React app are served from
+# different origins in development, and an email is read outside both.
+HMIS_BASE_URL = os.environ.get("HMIS_BASE_URL", "http://localhost:5173").rstrip("/")
+# How long Resend gets before the notification is given up on. A hospital
+# transaction has already committed by the time this runs; nobody waits.
+RESEND_TIMEOUT_SECONDS = float(os.environ.get("RESEND_TIMEOUT_SECONDS", 10))
+
+# ------------------------------------------------------------------- logging
+#
+# An expected refusal is not news: a wrong password, a 404, a 403 and a
+# validation error are the application working. What must always reach the log
+# is the unexpected — `apps.core.exceptions` logs those with their traceback
+# and a reference the user is shown, so a support call names the exact entry.
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {
+        "standard": {
+            "format": "{asctime} {levelname} {name} {message}",
+            "style": "{",
+        },
+    },
+    "handlers": {
+        "console": {
+            "class": "logging.StreamHandler",
+            "formatter": "standard",
+        },
+    },
+    "root": {"handlers": ["console"], "level": "INFO"},
+    "loggers": {
+        # The two that carry this application's own operational failures.
+        "hmis.api": {"handlers": ["console"], "level": "INFO", "propagate": False},
+        "hmis.email": {"handlers": ["console"], "level": "INFO", "propagate": False},
+        # Django logs every 4xx from `django.request` at WARNING, which turns
+        # each ordinary 404 and 403 into a line that reads like a fault.
+        "django.request": {"handlers": ["console"], "level": "ERROR", "propagate": False},
     },
 }
 

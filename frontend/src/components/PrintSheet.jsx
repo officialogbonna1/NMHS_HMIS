@@ -2,6 +2,18 @@ import { createContext, useContext, useEffect, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import api from "../api/client";
 import { patientNumber } from "./patientIdentity.js";
+// The hospital's logo, resolved by Vite rather than by a hand-written path.
+//
+// It lives in `src/assets/` — the source tree — and not in `dist/`, where it
+// was found: `dist/` is build output, it is gitignored, and `npm run build`
+// empties it, so a path into it works on one machine until the next build and
+// on no other machine at all.
+//
+// It is inlined as a base64 data URI (see `assetsInlineLimit` in
+// `vite.config.js`, which explains why): a letterhead that is still fetching,
+// or that 404s because a deployment did not route `/assets/`, prints as a
+// broken box on a hospital document.
+import hospitalLogo from "../assets/Ngozi Maternity and Hospital Services.jpg";
 
 // A printable document, shown on screen as a preview and sent to the
 // printer as-is. Browser printing rather than a generated PDF: it needs no
@@ -68,7 +80,17 @@ export function useHospital() {
   return useContext(HospitalContext);
 }
 
-export default function PrintSheet({ title, onClose, children }) {
+/**
+ * A printable document.
+ *
+ * `watermark` defaults to **true**, which is what makes the mark central: the
+ * fifteen registered documents inherit it without one of them mentioning it,
+ * and there is no per-sheet markup to add, forget or let drift. The two call
+ * sites that pass `false` are the loading and error placeholders — there is no
+ * document behind them yet, and watermarking "Loading…" would say that a
+ * spinner is a hospital record.
+ */
+export default function PrintSheet({ title, onClose, children, watermark = true }) {
   // Escape closes, and the preview never traps the person behind it.
   useEffect(() => {
     function onKey(e) { if (e.key === "Escape") onClose(); }
@@ -97,26 +119,86 @@ export default function PrintSheet({ title, onClose, children }) {
           </div>
         </div>
 
-        <div id="print-area" className="rounded-xl bg-white p-8 shadow print:rounded-none print:shadow-none">
-          {children}
+        {/* The watermark is drawn by `#print-area.sheet-watermarked::before`
+            (see `index.css`) — a pseudo-element, so it adds no node to the
+            document, takes no space in the flow and cannot push content onto
+            another page. The logo reaches CSS as a custom property rather than
+            a second `url()` written into the stylesheet: the asset stays the
+            one Vite already inlines for the letterhead, and there is no second
+            way of loading it. */}
+        <div
+          id="print-area"
+          className={`rounded-xl bg-white p-8 shadow print:rounded-none print:shadow-none${
+            watermark ? " sheet-watermarked" : ""}`}
+          style={watermark ? { "--sheet-watermark": `url(${hospitalLogo})` } : undefined}
+        >
+          {/* Raised above the watermark. Everything the document says —
+              header, tables, figures, signatures — paints over it, never
+              under. */}
+          <div className="sheet-content">{children}</div>
         </div>
       </div>
     </div>
   );
 }
 
+/**
+ * The hospital's mark, at a size that prints.
+ *
+ * A fixed height with `w-auto` and `object-contain`: the source is 300×266, and
+ * constraining both axes is how a logo ends up subtly stretched on every sheet
+ * the hospital issues. The print height is set in millimetres in `index.css`,
+ * because a pixel height means nothing to a printer.
+ *
+ * `alt` is deliberately the hospital's name rather than "logo" — if the image
+ * ever fails to render, the sheet still reads as that hospital's letterhead.
+ */
+export function HospitalLogo({ className = "" }) {
+  return (
+    <img
+      src={hospitalLogo}
+      alt={HOSPITAL.fullName}
+      className={`sheet-logo h-16 w-auto shrink-0 object-contain ${className}`}
+    />
+  );
+}
+
+/**
+ * The letterhead every printed document opens with.
+ *
+ * **One header, reused.** Fourteen documents render this — the patient card,
+ * the invoice, the statement, the receipt, the POS receipt, the laboratory
+ * request form and report, the referral request and report, the script, the
+ * dispensing note, the admission slip, the observation record, the clinical
+ * summary, the consultation note and the discharge letter. Branding is changed
+ * here and nowhere else; there is no second copy of this markup to drift.
+ *
+ * Laid out for paper rather than for a screen: the mark and the hospital's
+ * identity on the left, what the document *is* on the right, and a rule under
+ * both. The document title stays the largest thing on the right because that
+ * is what somebody sorting a stack of sheets reads first.
+ */
 export function SheetHeader({ documentTitle, reference, date }) {
   return (
-    <header className="mb-6 flex items-start justify-between gap-6 border-b-2 border-slate-800 pb-4">
-      <div>
-        <p className="text-xl font-bold tracking-tight text-slate-900">{HOSPITAL.fullName}</p>
-        <p className="text-sm text-slate-700">{HOSPITAL.address}</p>
-        {HOSPITAL.phone && <p className="text-sm text-slate-700">{HOSPITAL.phone}</p>}
-      </div>
-      <div className="text-right">
-        <p className="text-lg font-semibold uppercase tracking-wide text-slate-900">{documentTitle}</p>
-        {reference && <p className="text-sm text-slate-700">No. {reference}</p>}
-        <p className="text-sm text-slate-700">{date ?? new Date().toLocaleString()}</p>
+    <header className="sheet-header mb-6 border-b-2 border-slate-800 pb-4">
+      <div className="flex items-start justify-between gap-6">
+        <div className="flex min-w-0 items-start gap-4">
+          <HospitalLogo />
+          <div className="min-w-0">
+            <p className="text-xl font-bold leading-tight tracking-tight text-slate-900">
+              {HOSPITAL.fullName}
+            </p>
+            {HOSPITAL.address && <p className="text-sm text-slate-700">{HOSPITAL.address}</p>}
+            {HOSPITAL.phone && <p className="text-sm text-slate-700">{HOSPITAL.phone}</p>}
+          </div>
+        </div>
+        <div className="shrink-0 text-right">
+          <p className="text-lg font-semibold uppercase tracking-wide text-slate-900">
+            {documentTitle}
+          </p>
+          {reference && <p className="text-sm text-slate-700">No. {reference}</p>}
+          <p className="text-sm text-slate-700">{date ?? new Date().toLocaleString()}</p>
+        </div>
       </div>
     </header>
   );
@@ -223,7 +305,8 @@ export function WriteInLines({ rows = 4, label }) {
  */
 export function SheetStatus({ title, isError, message, onClose }) {
   return (
-    <PrintSheet title={title} onClose={onClose}>
+    // No watermark: there is no document here yet, only a message about one.
+    <PrintSheet title={title} onClose={onClose} watermark={false}>
       <p className="text-slate-700">
         {isError
           ? (message ?? "Could not load this document. Close and try again.")

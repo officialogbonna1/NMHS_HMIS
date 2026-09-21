@@ -93,8 +93,13 @@ class DepartmentStationTests(TestCase):
 
     def test_somebody_elses_work_cannot_be_written_on(self):
         """
-        404, not 403: once a colleague claims the request it leaves everyone
-        else's queue, so it is not theirs to find, let alone write on.
+        Refused, and nothing written.
+
+        A claimed request stays on the unit's board so the bench can see who
+        has it (`work_routes_for(..., include_unit=True)`), which makes this a
+        **403** rather than the 404 it used to be — the row is findable, and
+        `_own_route` is what refuses. The thing that matters is unchanged:
+        somebody else's result is not theirs to write.
         """
         route_id = self._refer()
         other = User.objects.create_user(username="lab2", password="test", role="laboratory")
@@ -103,8 +108,14 @@ class DepartmentStationTests(TestCase):
         client = APIClient(); client.force_authenticate(other)
         response = client.post(f"/api/patient-routes/{route_id}/record-result/",
                                {"result": "Made up."}, format="json")
-        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.status_code, 403)
         self.assertEqual(PatientRoute.objects.get(pk=route_id).result, "")
+        # And the board says whose it is rather than offering them a button.
+        row = next(r for r in client.get("/api/patient-routes/").data["results"]
+                   if r["id"] == route_id)
+        self.assertTrue(row["claimed_by_other"])
+        self.assertFalse(row["can_work"])
+        self.assertFalse(row["can_accept"])
 
     def test_the_result_cannot_be_patched_onto_the_row_directly(self):
         """It is stamped with who wrote it, so it goes through the action."""

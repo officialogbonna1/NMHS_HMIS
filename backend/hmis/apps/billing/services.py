@@ -6,6 +6,8 @@ from django.utils import timezone
 from .departments import department_for_source, is_authoritative
 from .models import (PatientLedger, Charge, Payment, Adjustment, PaymentDeferral,
                      PaymentAllocation, Refund, RefundAllocation)
+from apps.core import notifications_email as email_events
+from .clearance import announce_cleared
 from .notifications import announce
 
 def ledger_totals(patient):
@@ -91,6 +93,13 @@ def add_charge(*, patient, description, amount, created_by, department=None, sou
         announce(event="charge_raised", patient=patient, amount=charge.amount,
                  actor=created_by, detail=charge.description,
                  outstanding=ledger.outstanding_balance)
+        # And the administrator, by email. Queued on commit and unable to
+        # raise (`core/email.py`), so Resend being down cannot undo a bill.
+        # Behind the same `notify` flag as the announcement above, so a script
+        # of six drugs or an order of five tests sends one line, not six
+        # (rule 35's "once per decision" applies to the inbox too).
+        email_events.patient_billed(charge=charge, patient=patient, actor=created_by,
+                                    outstanding=ledger.outstanding_balance)
     return charge
 
 @transaction.atomic
@@ -113,6 +122,10 @@ def allocate_to_charges(*, patient, amount, payment=None):
         patient=patient, status__in=["unpaid", "partial"]
     ).order_by("created_at")
     allocations = []
+    # Which services this money actually finished off. Collected here because
+    # this loop is the only thing that knows — the charge was owing by the
+    # filter above, so anything that comes out settled was settled by us.
+    cleared = []
     for charge in charges:
         if remaining <= 0: break
         due = charge.amount - charge.amount_paid - charge.amount_discounted - charge.amount_waived
@@ -125,8 +138,13 @@ def allocate_to_charges(*, patient, amount, payment=None):
         remaining -= take
         if payment is not None:
             allocations.append(PaymentAllocation(payment=payment, charge=charge, amount=take))
+        if charge.status in ("paid", "waived"):
+            cleared.append(charge)
     if allocations:
         PaymentAllocation.objects.bulk_create(allocations)
+    for charge in cleared:
+        _tell_the_unit(charge, was_owing=True,
+                       actor=payment.received_by if payment is not None else None)
     return remaining
 
 def _percent_label(percent):
@@ -143,6 +161,26 @@ def _settled_status(charge):
     if covered >= charge.amount:
         return "waived" if charge.amount_waived > 0 and charge.amount_paid <= 0 else "paid"
     return "partial" if covered > 0 else "unpaid"
+
+
+def _tell_the_unit(charge, *, was_owing, actor=None):
+    """
+    A service that was owed for is owed for no longer: tell whoever is holding
+    the patient for it.
+
+    The trigger is the charge's own state changing from owing to settled —
+    there is no flag, and nothing has to be kept in step. `was_owing` is what
+    the caller saw *before* it touched the charge, because that is the only
+    thing this function cannot work out for itself.
+
+    Every path that settles a charge comes through here, so a payment at the
+    counter, a payment at the pharmacy, a waiver and a discount that finishes
+    the bill off all reach the bench the same way (rule 35's "announced once,
+    from the service", applied in the other direction).
+    """
+    if not was_owing or charge.status not in ("paid", "waived"):
+        return []
+    return announce_cleared(charge, actor=actor)
 
 @transaction.atomic
 def record_payment(*, patient, amount, received_by, method="cash", reference="", channel="front_desk"):
@@ -168,6 +206,8 @@ def record_payment(*, patient, amount, received_by, method="cash", reference="",
              detail=f"{payment.get_method_display()} at the {payment.get_channel_display().lower()}",
              reference=payment.reference,
              outstanding=ledger.outstanding_balance)
+    email_events.payment_received(payment=payment, patient=patient, actor=received_by,
+                                  outstanding=ledger.outstanding_balance)
     return payment
 
 
@@ -216,6 +256,10 @@ def apply_percentage_discount(*, charge, percent, reason, approved_by, notify=Tr
     locked.status = _settled_status(locked)
     locked.save(update_fields=["amount_discounted", "status"])
     ledger = refresh_ledger(locked.patient)
+    # A 100% discount leaves nothing to collect, so the unit is told exactly
+    # as it would be for a payment. Anything less changes no status and
+    # announces nothing here.
+    _tell_the_unit(locked, was_owing=True, actor=approved_by)
     if notify:
         announce(event="discount", patient=locked.patient, amount=amount, actor=approved_by,
                  detail=f"{_percent_label(percent)}% off {locked.description}",
@@ -278,6 +322,7 @@ def apply_amount_discount(*, charge, amount, reason, approved_by, notify=True):
     locked.status = _settled_status(locked)
     locked.save(update_fields=["amount_discounted", "status"])
     ledger = refresh_ledger(locked.patient)
+    _tell_the_unit(locked, was_owing=True, actor=approved_by)
     if notify:
         announce(event="discount", patient=locked.patient, amount=amount, actor=approved_by,
                  detail=locked.description, reference=reason,
@@ -324,6 +369,10 @@ def waive_charge(*, charge, reason, approved_by, amount=None, notify=True):
     locked.save(update_fields=["amount_waived", "status"])
     ledger = refresh_ledger(locked.patient)
     _close_settled_deferrals(locked.patient)
+    # A fully waived service is not an unpaid one, and the unit holding the
+    # patient has to be told so — otherwise the bench sits on a bill nobody
+    # is ever going to collect.
+    _tell_the_unit(locked, was_owing=True, actor=approved_by)
     if notify:
         announce(event="waiver", patient=locked.patient, amount=amount, actor=approved_by,
                  detail=locked.description, reference=reason,

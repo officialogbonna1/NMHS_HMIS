@@ -5,6 +5,7 @@ import api from "../api/client";
 import { Button, TextLink } from "../components/ui.jsx";
 import { useAuth } from "../auth/AuthContext.jsx";
 import { PrintButton } from "../components/printing.jsx";
+import { PaymentBadge, PaymentLines } from "../components/PaymentStatus.jsx";
 
 // Ultrasound, the eye clinic and procedures, on the chart.
 //
@@ -127,6 +128,12 @@ export default function ReferralResultsTab({ patientId, patientUuid, kind }) {
                 STATUS_TONE[route.status] ?? "bg-slate-100 text-slate-600 ring-slate-200"}`}>
                 {route.status.replaceAll("_", " ")}
               </span>
+              {/* Whether the patient has cleared what this referral was
+                  billed for. The doctor who ordered the scan is the one who
+                  gets asked why it has not been done, so the answer belongs
+                  beside the request — and it is the referral's own services,
+                  never the patient's other bills. */}
+              <PaymentBadge billing={route.billing} />
               {/* Per referral, because a header button would have to guess
                   which scan you meant. The report once the unit has written
                   one; the request form until then. */}
@@ -146,6 +153,12 @@ export default function ReferralResultsTab({ patientId, patientUuid, kind }) {
               <span className="font-medium">Asked for:</span> {route.notes}
             </p>
           )}
+
+          {/* Each examination with its own amount and its own status: a
+              patient can settle the abdominal scan and still owe for the
+              Doppler, and one line saying "PARTIALLY PAID" would not say
+              which. */}
+          <PaymentLines services={route.services} className="mt-3" />
 
           {route.result ? (
             <div className="mt-3">

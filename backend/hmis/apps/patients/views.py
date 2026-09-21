@@ -15,6 +15,7 @@ from apps.accounts.permissions import (
     PATIENT_LOOKUP_ROLES, ClinicalRecordAccess, IsReception, IsSuperAdmin, RoleRequired,
 )
 from apps.core.config import describe, references_to
+from apps.core import notifications_email as email_events
 from apps.core.services import audit_event
 from .access import doctor_patient_q, patient_queryset_for
 from .overview import build_overview
@@ -112,7 +113,14 @@ class PatientViewSet(viewsets.ModelViewSet):
         return serializers.PatientSerializer
 
     def perform_create(self, serializer):
-        serializer.save(created_by=self.request.user)
+        patient = serializer.save(created_by=self.request.user)
+        # The administrator is told, by email, once the registration has
+        # actually landed. `dispatch_admin_email` queues on commit and cannot
+        # raise (`core/email.py`), so Resend being unreachable leaves the
+        # patient registered and writes a log line — the registration is the
+        # record, the email is a courtesy. Keyed on the hospital number, so a
+        # re-submitted form cannot produce a second one.
+        email_events.patient_registered(patient, registered_by=self.request.user)
 
     def destroy(self, request, *args, **kwargs):
         """
@@ -171,7 +179,7 @@ class PatientViewSet(viewsets.ModelViewSet):
         audit_event(
             actor=request.user, action="patients.deleted", request=request,
             details={"patient_number": patient.patient_number, "uuid": str(patient.uuid),
-                     "name": str(patient), "sex": patient.sex,
+                     "name": patient.display_name, "sex": patient.sex,
                      "registered_at": patient.created_at.isoformat()},
         )
         patient.delete()

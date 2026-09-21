@@ -69,13 +69,13 @@ class EyeDoctorWardScopeTests(TestCase):
         ward = self.ward_row(self.eye_a)
         self.assertEqual((ward["bed_count"], ward["occupied_count"]), (3, 1))
         # The ward itself still sees the name.
-        self.assertEqual(self.bed(self.doctor, self.beds[0])["occupant"], str(self.other))
+        self.assertEqual(self.bed(self.doctor, self.beds[0])["occupant"], self.other.display_name)
 
     def test_the_eye_doctor_admits_their_own_patient_through_the_existing_admission(self):
         response = self.admit(self.eye_a, self.patient_a, self.beds[1])
         self.assertEqual(response.status_code, 201, response.data)
         self.assertEqual(Admission.objects.get(pk=response.data["id"]).admitted_by, self.eye_a)
-        self.assertEqual(self.bed(self.eye_a, self.beds[1])["occupant"], str(self.patient_a))
+        self.assertEqual(self.bed(self.eye_a, self.beds[1])["occupant"], self.patient_a.display_name)
         self.assertEqual(self.ward_row(self.eye_a)["occupied_count"], 2)
         # Another eye doctor sees the bed taken, not by whom.
         self.assertEqual(self.bed(self.eye_b, self.beds[1])["occupant"], None)

@@ -102,7 +102,7 @@ def purge_patient(*, patient, actor, reason, confirmation, request=None):
         audit_event(
             actor=actor, action="patients.purged", request=request,
             details={"patient_number": patient.patient_number, "uuid": str(patient.uuid),
-                     "name": str(patient), "sex": patient.sex,
+                     "name": patient.display_name, "sex": patient.sex,
                      "registered_at": patient.created_at.isoformat(),
                      "reason": reason, "removed": removed,
                      # Quantized: SQLite's Sum hands back Decimal("8500").

@@ -73,4 +73,17 @@ class User(AbstractUser):
             super().save(update_fields=["staff_number"])
 
     def __str__(self):
-        return f"{self.get_full_name() or self.username} ({self.role})"
+        """
+        `NMHS-S000001 — Jane Doe (Nurse)`, the staff register's own form.
+
+        The number leads for the same reason the patient's does: a dropdown
+        of prescribers or approvers gives no other column to tell two Janes
+        apart. The role is kept — it was already here, and it is what somebody
+        assigning work is actually choosing by. A technical login with neither
+        a name nor a role still reads as its username rather than as
+        "User object (4)".
+        """
+        name = self.get_full_name() or self.username
+        role = f" ({self.get_role_display()})" if self.role else ""
+        prefix = f"{self.staff_number} — " if self.staff_number else ""
+        return f"{prefix}{name}{role}"

@@ -1,0 +1,16 @@
+{% extends "emails/base.html" %}
+{% comment %}
+A new patient is on the register. Demographics and the hospital number only —
+there is no clinical record yet, and this event would be the wrong place to
+carry one if there were.
+{% endcomment %}
+{% block body %}
+  <tr>
+    <td style="padding:18px 28px 0 28px;">
+      <p style="margin:0;font-size:13px;line-height:1.6;color:#475569;">
+        The patient record has been created and is now on the system. The
+        hospital number above is the one to quote at any desk.
+      </p>
+    </td>
+  </tr>
+{% endblock %}

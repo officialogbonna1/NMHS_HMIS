@@ -10,6 +10,10 @@ class InvestigationCatalog(TimeStampedModel):
     code=models.SlugField(unique=True); name=models.CharField(max_length=160); kind=models.CharField(max_length=20,choices=KIND)
     department=models.ForeignKey(Department,null=True,blank=True,on_delete=models.SET_NULL); price=models.DecimalField(max_digits=12,decimal_places=2,default=0); is_active=models.BooleanField(default=True)
 
+    def __str__(self):
+        """The catalogued study, and which kind of unit performs it."""
+        return f"{self.name} ({self.get_kind_display()})"
+
 class InvestigationOrder(TimeStampedModel):
     STATUS=[("requested","Requested"),("collected","Collected"),("in_progress","In progress"),("completed","Completed"),("cancelled","Cancelled")]
     patient=models.ForeignKey(Patient,on_delete=models.PROTECT,related_name="investigation_orders"); visit=models.ForeignKey(Visit,null=True,blank=True,on_delete=models.SET_NULL,related_name="investigations")
@@ -17,7 +21,15 @@ class InvestigationOrder(TimeStampedModel):
     status=models.CharField(max_length=20,choices=STATUS,default="requested"); clinical_notes=models.TextField(blank=True); performed_by=models.ForeignKey(settings.AUTH_USER_MODEL,null=True,blank=True,on_delete=models.SET_NULL,related_name="investigations_performed")
     class Meta: ordering=["-created_at"]
 
+    def __str__(self):
+        """Who was sent for what study, and how far it has got."""
+        return f"{self.patient} · {self.investigation.name} ({self.get_status_display()})"
+
 class InvestigationResult(TimeStampedModel):
     order=models.OneToOneField(InvestigationOrder,on_delete=models.CASCADE,related_name="result")
     findings=models.TextField(); conclusion=models.TextField(blank=True); values=models.JSONField(default=dict,blank=True); attachment=models.FileField(upload_to="investigations/%Y/%m/",blank=True)
     released_by=models.ForeignKey(settings.AUTH_USER_MODEL,on_delete=models.PROTECT); released_at=models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        """The answer to one order, named by the order it answers."""
+        return f"Result · {self.order}"

@@ -15,8 +15,10 @@ class BillingItemAdmin(ProtectedConfigAdmin, admin.ModelAdmin):
     search_fields = ["name"]
     ordering = ["category", "name"]
     actions = ["activate", "deactivate"]
-    # A laboratory test priced from this item keeps pointing at it.
-    protected_relations = ("lab_tests",)
+    # A laboratory test priced from this item keeps pointing at it, and so
+    # does every referral that has ordered it (`workflow.RouteService`).
+    # Deactivate rather than delete: old orders keep their price.
+    protected_relations = ("lab_tests", "route_services")
 
     @admin.action(description="Activate selected")
     def activate(self, request, queryset):

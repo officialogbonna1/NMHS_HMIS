@@ -2,6 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { ToastProvider } from "../components/Toaster.jsx";
+import { ConfirmProvider } from "../components/ConfirmAlert.jsx";
 import { AuthContext } from "../auth/AuthContext.jsx";
 
 /**
@@ -23,7 +24,7 @@ export function renderWithApp(ui, { user = null, queryClient } = {}) {
       <MemoryRouter>
         <QueryClientProvider client={client}>
           <AuthContext.Provider value={value}>
-            <ToastProvider>{ui}</ToastProvider>
+            <ToastProvider><ConfirmProvider>{ui}</ConfirmProvider></ToastProvider>
           </AuthContext.Provider>
         </QueryClientProvider>
       </MemoryRouter>,

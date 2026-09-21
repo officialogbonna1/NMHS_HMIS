@@ -15,6 +15,16 @@ movements for a batch at a location and you get the number that is there.
 
 **Stock is held under `select_for_update` while it moves.** Two pharmacists
 transferring the last 100 units at the same moment must not both succeed.
+The lock is taken `of=("self",)` where the query joins `Batch` to find its
+rows, so what is held is the stock on the shelf and not the lot everywhere
+else in the building.
+
+**And the deduction does not depend on that lock.** `apply_stock_change`
+moves a quantity with a conditional `UPDATE` carrying its own floor, so the
+check and the deduction are one indivisible statement. This matters because
+`select_for_update` is a documented no-op on SQLite: without it, two callers
+that both read "1 left" would both write "0" and the unit would leave twice.
+The same reasoning rule 38 applies to cancelling a charge.
 
 **Nothing here trusts a caller to say what is available.** Every function
 re-reads the quantity under lock and refuses to take more than is there,
@@ -22,7 +32,7 @@ whatever the caller believed a moment ago.
 """
 from django.core.exceptions import ValidationError
 from django.db import transaction
-from django.db.models import Sum
+from django.db.models import F, Sum
 from django.utils import timezone
 
 from .models import (
@@ -73,28 +83,63 @@ def apply_stock_change(record, delta, *, reason, actor, reference="", transfer=N
     """
     Move one stock record by `delta` and write the movement that explains it.
 
-    **The only way a quantity changes anywhere in the system.** The movement
-    is written first and the quantity saved with `through_service=True`
-    immediately after, inside the caller's atomic block — so either both land
-    or neither does, and `StockRecord.save()` rejects any other route.
+    **The only way a quantity changes anywhere in the system** — the single
+    place any code writes `StockRecord.quantity`, which is why the guarantee
+    below only has to be made once to hold for dispensing, the till,
+    transfers, receipts, counts, write-offs and returns alike.
+
+    **The check and the deduction are one statement.** The quantity is moved
+    by a conditional `UPDATE` — `SET quantity = quantity + delta WHERE pk = …
+    AND quantity >= -delta` for anything leaving — rather than by computing
+    the new figure in Python and writing it back. That matters because a read
+    followed by a write can interleave and a single `UPDATE` cannot: two
+    pharmacists dispensing the last unit both read 1, both compute 0, and both
+    write 0 — the unit leaves twice and the shelf says it left once. With the
+    floor inside the statement, the database itself decides who gets it, the
+    loser matches no row, and stock can never go below zero.
+
+    It is deliberately **not** conditioned on the quantity the caller read.
+    Stock arriving is never in conflict — two deliveries of the same lot must
+    both land — so only an outflow carries the `quantity >= -delta` guard, and
+    `F()` keeps both kinds free of lost updates.
+
+    Callers still take `select_for_update` on the rows they are about to move
+    (`dispense_prescription`, `consume_fefo`, `transfer_stock` …). That is
+    what makes a *multi-row* operation see a stable shelf and serialises
+    contention on PostgreSQL. This guard is what holds when it cannot: on
+    SQLite `select_for_update` is a documented no-op, so the lock compiles
+    away and the conditional UPDATE is the whole protection. The same
+    reasoning rule 38 applies to a charge's compare-and-set.
+
+    The movement is written **after** the quantity lands, so a refused
+    deduction leaves no audit row behind even outside a transaction; inside
+    one — where every caller here runs — the two roll back together.
 
     Public because `pharmacy/services.py` dispenses through it: that module
     owns prescriptions and the patient's charge, but it does not get its own
     way of moving stock (design rule 6). Everything else that needs to move
     stock should get a function in this module rather than call this directly.
     """
-    new_quantity = record.quantity + delta
-    if new_quantity < 0:
+    rows = StockRecord.objects.filter(pk=record.pk)
+    if delta < 0:
+        rows = rows.filter(quantity__gte=-delta)
+    if rows.update(quantity=F("quantity") + delta, updated_at=timezone.now()) != 1:
+        # Either the row is gone or it no longer holds what was asked for.
+        # Report what is actually there, read now rather than from the stale
+        # copy in memory, because that figure is the one the caller must act on.
+        current = (StockRecord.objects.filter(pk=record.pk)
+                   .values_list("quantity", flat=True).first() or 0)
         raise InsufficientStockError(
-            f"Only {record.quantity} unit(s) of {record.batch} at {record.location.name}."
+            f"Only {current} unit(s) of {record.batch} at {record.location.name}."
         )
     StockMovement.objects.create(
         batch=record.batch, location=record.location, change=delta, reason=reason,
         performed_by=actor, reference=reference[:200], transfer=transfer,
         stock_count=stock_count,
     )
-    record.quantity = new_quantity
-    record.save(update_fields=["quantity", "updated_at"], through_service=True)
+    # The in-memory copy would otherwise still hold the pre-update figure,
+    # which a caller looping over several batches goes on to read.
+    record.refresh_from_db(fields=["quantity", "updated_at"])
     return record
 
 
@@ -372,14 +417,20 @@ def consume_fefo(*, item, quantity, location, actor, reason, reference=""):
     query `fefo_lines_for` already orders by expiry then batch, expired lots
     excluded, the same order `dispense_prescription` takes from — read here
     under `select_for_update`, so two tills selling the last strip cannot both
-    succeed. Every unit leaves through `apply_stock_change`, so each batch
-    touched gets its `StockMovement`.
+    succeed. `of=("self",)` keeps that lock on the stock rows themselves: the
+    query joins `Batch` to filter on product and expiry, and locking those too
+    would block a delivery of the same lot arriving at the store while the
+    till is open. Every unit leaves through `apply_stock_change`, whose
+    conditional UPDATE is what still decides the race on SQLite, where
+    `select_for_update` compiles to nothing — so each batch touched gets its
+    `StockMovement` and no till can sell a strip that has already gone.
     """
     if quantity < 1:
         raise ValidationError("Quantity must be at least 1.")
     if location is None:
         raise ValidationError("No location to take the stock from.")
-    records = list(_available_records(item=item, location=location).select_for_update())
+    records = list(
+        _available_records(item=item, location=location).select_for_update(of=("self",)))
     available = sum(record.quantity for record in records)
     if available < quantity:
         raise InsufficientStockError(
@@ -433,7 +484,8 @@ def write_off_expired(*, batch, actor, location=None, note=""):
     if not batch.is_expired:
         raise ValidationError("This batch has not expired yet.")
 
-    records = StockRecord.objects.select_for_update().filter(batch=batch, quantity__gt=0)
+    records = (StockRecord.objects.select_for_update(of=("self",))
+               .filter(batch=batch, quantity__gt=0))
     if location is not None:
         records = records.filter(location=location)
     records = list(records.select_related("location"))

@@ -12,6 +12,7 @@ from django.db import models
 from django.db.models import Sum
 
 from apps.appointments.models import Appointment
+from apps.billing import status as billing_status
 from apps.billing.models import Charge
 from apps.clinical.models import Vitals, ConsultationNote, NursingNote
 from apps.pharmacy.models import Prescription
@@ -233,12 +234,35 @@ def build_overview(*, patient, user):
                         "id": r.id, "department": r.department.name, "purpose": r.get_purpose_display(),
                         "status": r.status, "assigned_to": _name(r.assigned_to), "priority": r.priority,
                         "notes": r.notes,
+                        # When the patient was sent and who sent them — what
+                        # turns this block into a readable history of the
+                        # visit rather than a set of departments.
+                        "created_at": r.created_at, "routed_by": _name(r.routed_by),
                         # What came back from the lab, imaging or the eye
                         # clinic. A referral the doctor cannot read the
                         # answer to is a patient sent away and lost.
                         "result": r.result, "result_by": _name(r.result_by), "result_at": r.result_at,
+                        # Where the money stands on what this referral asked
+                        # for. A doctor who ordered a scan has to be able to
+                        # see whether the patient cleared it — otherwise they
+                        # send the patient back to a unit that is still
+                        # waiting, or assume a bill was settled that was not.
+                        #
+                        # It is the referral's own services and nothing else:
+                        # the patient's other bills, their balance and their
+                        # payment history stay where they are, behind the
+                        # roles that read money (the `billing` block below).
+                        "billing": billing_status.route_billing(r),
+                        "services": [
+                            {"id": s.id, "name": s.name,
+                             "billing": billing_status.service_billing(
+                                 s.charge, fallback_amount=s.unit_price)}
+                            for s in r.services.all()
+                        ],
                     }
-                    for r in v.routes.select_related("department", "assigned_to", "result_by").all()
+                    for r in v.routes.select_related(
+                        "department", "assigned_to", "result_by", "routed_by"
+                    ).prefetch_related("services__charge", "lab_order__items__charge").all()
                 ],
             }
             for v in Visit.objects.filter(patient=patient).select_related("attending_doctor").prefetch_related("routes")[:5]

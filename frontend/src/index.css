@@ -95,6 +95,42 @@
    are dropped by the driver, and a receipt that prints as pale grey is a
    receipt nobody can read.
    --------------------------------------------------------------------- */
+/* The document watermark.
+   The hospital's own mark, very faint, behind every printable document — a
+   visual sign that a sheet is an NMHS record and a discouragement to casual
+   photocopying. It is an authenticity *marking*, not a security control: it
+   proves nothing cryptographically and must never be described as making a
+   document tamper-proof.
+
+   Drawn as a pseudo-element so it adds no node, takes no space in the flow,
+   and cannot push content onto another page. `--sheet-watermark` is set by
+   `PrintSheet` from the same Vite-inlined logo the letterhead uses; there is
+   no second copy of the asset and no second way of loading it.
+
+   Stacking, in paint order: the sheet's white background, then this at
+   `z-index: 0`, then `.sheet-content` at `z-index: 1`. Text always wins. */
+.sheet-watermarked { position: relative; }
+
+.sheet-watermarked::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background-image: var(--sheet-watermark);
+  background-repeat: no-repeat;
+  background-position: center center;
+  /* Width only — the height follows, so the mark keeps its 300:266 ratio and
+     is never stretched to fill a box. */
+  background-size: min(58%, 320px) auto;
+  opacity: 0.05;
+  pointer-events: none;
+  z-index: 0;
+}
+
+.sheet-watermarked > .sheet-content {
+  position: relative;
+  z-index: 1;
+}
+
 @media print {
   @page { margin: 14mm; }
 
@@ -116,6 +152,46 @@
   }
 
   .no-print, .no-print * { display: none !important; }
+
+  /* The letterhead.
+     A logo sized in pixels means nothing to a printer, so the height is given
+     in millimetres and the width left to follow — constraining both axes is
+     how a mark ends up subtly stretched on every sheet a hospital issues.
+     `print-color-adjust` is explicit because drivers economise on ink by
+     default, and a letterhead printed as a grey ghost is worse than none. */
+  #print-area .sheet-logo {
+    height: 18mm;
+    width: auto;
+    print-color-adjust: exact;
+    -webkit-print-color-adjust: exact;
+  }
+
+  /* A header split across a page break is not a header. */
+  #print-area .sheet-header { break-inside: avoid; }
+
+  /* The watermark, on paper.
+     Sized in millimetres, because a percentage of the print box is not a
+     predictable size on A4. 110mm across the middle of a 210mm page: large
+     enough to read as the hospital's mark, small enough to stay clear of the
+     margins.
+
+     `position: fixed` puts it on the page box rather than the document box,
+     which is what makes it land in the centre of the *page* — and what makes
+     Chrome repeat it on each sheet of a multi-page document.
+
+     `print-color-adjust: exact` is genuinely load-bearing here and not
+     decoration: Chrome's "Background graphics" option is off by default and
+     suppresses background images, so without this the watermark would simply
+     not print for most people. It is scoped to this one element — nothing
+     else in the document is forced to print colour. */
+  #print-area.sheet-watermarked::before {
+    position: fixed;
+    inset: 0;
+    background-size: 110mm auto;
+    opacity: 0.06;
+    print-color-adjust: exact;
+    -webkit-print-color-adjust: exact;
+  }
 
   #print-area table { width: 100%; border-collapse: collapse; }
   #print-area th, #print-area td { padding: 6px 4px; }

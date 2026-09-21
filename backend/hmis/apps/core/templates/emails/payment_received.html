@@ -1,0 +1,16 @@
+{% extends "emails/base.html" %}
+{% comment %}
+Money has been taken. The receipt itself is printed at the desk; this only
+says that it happened and what the balance is afterwards.
+{% endcomment %}
+{% block body %}
+  {% include "emails/_amount.html" %}
+  <tr>
+    <td style="padding:14px 28px 0 28px;">
+      <p style="margin:0;font-size:13px;line-height:1.6;color:#475569;">
+        The payment has been recorded and allocated against the patient's
+        outstanding charges. The printed receipt was issued at the desk.
+      </p>
+    </td>
+  </tr>
+{% endblock %}

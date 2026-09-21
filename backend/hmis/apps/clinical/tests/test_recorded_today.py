@@ -54,7 +54,7 @@ class RecordedTodayTests(TestCase):
         self.assertEqual(len(response.data), 1)
         row = response.data[0]
         self.assertEqual(row["patient_id"], patient.id)
-        self.assertEqual(row["patient_name"], str(patient))
+        self.assertEqual(row["patient_name"], patient.display_name)
         self.assertEqual(row["patient_file_number"], patient.file_number)
         # The figures are on the row, so the nurse need not open the chart.
         labels = {r["label"]: r["value"] for r in row["readings"]}
@@ -162,7 +162,7 @@ class RecordedTodayTests(TestCase):
 
         rows = self._today().data
         self.assertEqual(len(rows), 2)
-        self.assertEqual({r["patient_name"] for r in rows}, {str(p) for p in Patient.objects.all()})
+        self.assertEqual({r["patient_name"] for r in rows}, {p.display_name for p in Patient.objects.all()})
         for row in rows:
             self.assertEqual(row["sent_to"]["doctor"], "Ada Obi")
 

@@ -16,7 +16,7 @@ class BillingItemSerializer(serializers.ModelSerializer):
     class Meta: model = BillingItem; fields = "__all__"
 class PatientLedgerSerializer(serializers.ModelSerializer):
     outstanding_balance = serializers.DecimalField(max_digits=14, decimal_places=2, read_only=True)
-    patient_name = serializers.CharField(source="patient.__str__", read_only=True)
+    patient_name = serializers.CharField(source="patient.display_name", read_only=True)
     # The routing identity, so a row that drives a link to the chart does not
     # have to send the reader to the integer pk. Read-only, and never a
     # permission: `/patients/<uuid>/` runs the same access filter.
@@ -28,7 +28,7 @@ class PatientLedgerSerializer(serializers.ModelSerializer):
     patient_phone = serializers.CharField(source="patient.phone_number", read_only=True)
     class Meta: model = PatientLedger; fields = "__all__"
 class ChargeSerializer(serializers.ModelSerializer):
-    patient_name = serializers.CharField(source="patient.__str__", read_only=True)
+    patient_name = serializers.CharField(source="patient.display_name", read_only=True)
     department_name = serializers.SerializerMethodField()
     # Original − discount − waiver = payable; payable − paid = balance. Sent
     # as separate figures rather than one number, because a bill that only
@@ -107,7 +107,7 @@ class PaymentSerializer(serializers.ModelSerializer):
     received_by_name = serializers.SerializerMethodField()
 
     def get_patient_name(self, obj):
-        return str(obj.patient) if obj.patient_id else None
+        return obj.patient.display_name if obj.patient_id else None
 
     def get_patient_number(self, obj):
         return obj.patient.patient_number if obj.patient_id else None
@@ -126,7 +126,7 @@ class PaymentSerializer(serializers.ModelSerializer):
 
     def get_is_fully_refunded(self, obj): return obj.is_fully_refunded
 class AdjustmentSerializer(serializers.ModelSerializer):
-    patient_name = serializers.CharField(source="patient.__str__", read_only=True)
+    patient_name = serializers.CharField(source="patient.display_name", read_only=True)
     patient_uuid = serializers.UUIDField(source="patient.uuid", read_only=True)
     charge_description = serializers.SerializerMethodField()
     kind_label = serializers.CharField(source="get_kind_display", read_only=True)
@@ -189,7 +189,7 @@ class AdjustmentSerializer(serializers.ModelSerializer):
 
 class PaymentDeferralSerializer(serializers.ModelSerializer):
     """The pay-later register: who let a patient proceed owing, and for how much."""
-    patient_name = serializers.CharField(source="patient.__str__", read_only=True)
+    patient_name = serializers.CharField(source="patient.display_name", read_only=True)
     charge_description = serializers.CharField(source="charge.description", read_only=True)
     approved_by_name = serializers.SerializerMethodField()
     outstanding = serializers.SerializerMethodField()
@@ -236,7 +236,7 @@ class RefundSerializer(serializers.ModelSerializer):
     patient_number = serializers.SerializerMethodField()
 
     def get_patient_name(self, obj):
-        return str(obj.patient) if obj.patient_id else None
+        return obj.patient.display_name if obj.patient_id else None
 
     def get_patient_uuid(self, obj):
         return str(obj.patient.uuid) if obj.patient_id else None

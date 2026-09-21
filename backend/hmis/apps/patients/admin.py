@@ -142,7 +142,7 @@ class PatientAdmin(admin.ModelAdmin):
 
         form = PurgePatientForm(request.POST or None, patient=patient)
         if request.method == "POST" and form.is_valid():
-            label = f"{patient.patient_number} {patient}"
+            label = str(patient)
             with transaction.atomic():
                 self.log_deletion(request, patient, label)
                 removed = purge_patient(patient=patient, actor=request.user,

@@ -5,6 +5,7 @@ import { readError } from "../api/errors";
 import { useToast } from "./Toaster.jsx";
 import LabReportSheet from "./LabReportSheet.jsx";
 import { LabRequestSheet } from "./DepartmentDocuments.jsx";
+import { PaymentBadge } from "./PaymentStatus.jsx";
 
 // Entering laboratory results.
 //
@@ -40,46 +41,12 @@ const STATUS_TONE = {
   cancelled: "bg-slate-100 text-slate-500 ring-slate-200",
 };
 
-// What the money says about this one test. Read from the charge the order
-// raised — the laboratory never writes it, and it never blocks the work: a
-// sample already drawn gets run and the desk chases the balance.
-const PAYMENT_TONE = {
-  paid: "bg-emerald-50 text-emerald-700 ring-emerald-200",
-  partial: "bg-amber-50 text-amber-800 ring-amber-200",
-  unpaid: "bg-red-50 text-red-700 ring-red-200",
-  deferred: "bg-sky-50 text-sky-800 ring-sky-200",
-  waived: "bg-slate-100 text-slate-600 ring-slate-200",
-  unbilled: "bg-slate-100 text-slate-600 ring-slate-200",
-  cancelled: "bg-slate-100 text-slate-500 ring-slate-200",
-};
-
-const PAYMENT_LABEL = {
-  paid: "Paid",
-  partial: "Part paid",
-  unpaid: "UNPAID",
-  deferred: "Pay later approved",
-  waived: "Waived",
-  unbilled: "No price set",
-  cancelled: "Charge cancelled",
-};
-
-function PaymentBadge({ billing }) {
-  if (!billing) return null;
-  const status = billing.status ?? "unbilled";
-  const owing = Number(billing.outstanding ?? 0);
-  return (
-    <span
-      title={billing.billed
-        ? `₦${billing.amount} charged · ₦${billing.paid} paid · ₦${billing.outstanding} outstanding`
-        : "This test has no price in the catalogue, so no charge was raised."}
-      className={`rounded-full px-2.5 py-1 text-xs font-semibold ring-1 ring-inset ${
-        PAYMENT_TONE[status] ?? PAYMENT_TONE.unbilled}`}
-    >
-      {PAYMENT_LABEL[status] ?? status}
-      {owing > 0 && status !== "unbilled" && ` · ₦${owing.toLocaleString()}`}
-    </span>
-  );
-}
+// What the money says about this one test, and about the order it is on.
+//
+// Both read `components/billingStatus.js`, which the imaging station and the
+// doctor's chart read too — one vocabulary for one authoritative balance. The
+// laboratory never writes any of it, and it never blocks the work: a sample
+// already drawn gets run and the desk chases the balance (rule 24).
 
 // What a scientist may flag by hand, on top of the automatic low/normal/high.
 const MANUAL_FLAGS = [
@@ -213,28 +180,18 @@ function OrderHeader({ order, onRefresh }) {
             {order.entered_by_name && ` · last entered by ${order.entered_by_name}`}
           </p>
         </div>
-        {/* The order's money, summed from its tests' own charges. Ordering
-            raised them; the counter settles them. The lab reads this and
-            never writes it — and it never blocks work, because a sample
-            already drawn gets run and the desk chases the balance. */}
-        {billing.billed ? (
-          <span className={`rounded-full px-3 py-1 text-xs font-semibold ring-1 ring-inset ${
-            billing.settled
-              ? "bg-emerald-50 text-emerald-700 ring-emerald-200"
-              : billing.deferred
-                ? "bg-sky-50 text-sky-800 ring-sky-200"
-                : "bg-red-50 text-red-700 ring-red-200"}`}>
-            {billing.settled
-              ? "Paid in full"
-              : billing.deferred
-                ? `Pay later · ₦${Number(billing.outstanding).toLocaleString()} owing`
-                : `UNPAID · ₦${Number(billing.outstanding).toLocaleString()}`}
-          </span>
-        ) : (
-          <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-600">
-            No priced tests on this order
-          </span>
-        )}
+        {/* The order's money, summed from its tests' own charges — the worst
+            state of them, so an order with one unpaid test never reads as
+            paid. Ordering raised the charges; the counter settles them. The
+            lab reads this and never writes it, and it never blocks work:
+            a sample already drawn gets run and the desk chases the balance. */}
+        {billing.billed
+          ? <PaymentBadge billing={billing} />
+          : (
+            <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-600">
+              No priced tests on this order
+            </span>
+          )}
       </div>
 
       {billing.billed && !billing.settled && (

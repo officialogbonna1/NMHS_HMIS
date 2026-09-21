@@ -148,7 +148,7 @@ class BillingNotificationTests(TestCase):
         note = Notification.objects.filter(recipient=self.cashier, category="billing").first()
         self.assertIsNotNone(note, "the cashier was not told about a charge they have to collect")
         self.assertIn("To collect", note.title)
-        self.assertIn(str(self.patient), note.title)
+        self.assertIn(self.patient.display_name, note.title)
         self.assertIn("Consultation fee", note.message)
         self.assertIn("reception", note.message)
         self.assertEqual(note.action_url, "/billing")

@@ -424,3 +424,8 @@ class LabResultAmendment(TimeStampedModel):
 
     class Meta:
         ordering = ["-created_at"]
+
+    def __str__(self):
+        """The correction itself — which figure was changed, and to what."""
+        return (f"{self.parameter.name}: {self.previous_value or '—'} → "
+                f"{self.new_value or '—'}")

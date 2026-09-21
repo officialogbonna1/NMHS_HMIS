@@ -33,6 +33,10 @@ class Vitals(LockedRecordMixin, TimeStampedModel):
     class Meta:
         ordering = ["-visit_time"]
 
+    def __str__(self):
+        """Who it was taken on and when — never "Vitals object (1)"."""
+        return f"{self.patient} · vitals {self.visit_time:%d %b %Y %H:%M}"
+
 
 class ConsultationNote(LockedRecordMixin, TimeStampedModel):
     """
@@ -58,6 +62,15 @@ class ConsultationNote(LockedRecordMixin, TimeStampedModel):
 
     class Meta:
         ordering = ["-visit_time"]
+
+    def __str__(self):
+        """
+        How the record names itself — by the patient's hospital number and the
+        date, never "ConsultationNote object (1)". The admin's page title, its
+        breadcrumbs and every audit row read this, and an internal primary key
+        means nothing to the person reading them (rule 32).
+        """
+        return f"{self.patient} · {self.visit_time:%d %b %Y}"
 
 
 class NursingNote(LockedRecordMixin, TimeStampedModel):
@@ -85,16 +98,68 @@ class NursingNote(LockedRecordMixin, TimeStampedModel):
 
 class ConsultationNoteAmendment(TimeStampedModel):
     """
-    Archived snapshot created every time an admin amends a locked note,
-    matching the manual's 'Medical Note Archiving' behavior — each edit
-    keeps a timestamped copy rather than overwriting history.
+    Archived snapshot written every time a saved note is amended, matching the
+    manual's 'Medical Note Archiving' behaviour — each correction keeps a
+    timestamped copy of what the note said before, rather than overwriting it.
+
+    **This is the note's history, and there is no second one.** The row holds
+    every field the note carries, so the chain reads end to end: the newest
+    amendment's snapshot is what the note said before the last correction, and
+    the note itself holds what it says now. An older amendment's "new" values
+    are the snapshot of the amendment that came after it, which is why no
+    `new_*` column exists — storing both halves would be the same fact twice,
+    free to disagree. `amended_by` and `created_at` answer "who last amended
+    this, and when" without the note needing columns of its own.
     """
+
+    # Why the record was changed. A medical record is amended for a reason and
+    # the reason is part of the record — the laboratory already works this way
+    # (`LabResultAmendment`, rule 22), so this is that rule applied to notes
+    # rather than a second convention.
+    REASONS = [
+        ("correction", "Correction of error"),
+        ("additional_information", "Additional clinical information"),
+        ("clarification", "Clarification"),
+        ("documentation", "Documentation correction"),
+        ("other", "Other"),
+    ]
+
     note = models.ForeignKey(ConsultationNote, on_delete=models.CASCADE, related_name="amendments")
     amended_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT)
+
+    previous_reason_for_visit = models.CharField(max_length=255, blank=True)
+    previous_chief_complaint = models.CharField(max_length=255, blank=True)
     previous_note_text = models.TextField(blank=True)
     previous_diagnosis = models.TextField(blank=True)
     previous_plan = models.TextField(blank=True)
     previous_eye_examination = models.JSONField(null=True, blank=True)
 
+    # Required by the API, `blank=True` on the model on purpose: the rows
+    # written before amendments carried a reason must stay readable, the same
+    # way `Adjustment.charge` stays nullable while the serializer refuses a
+    # new one without it (rule 33).
+    reason = models.CharField(max_length=40, choices=REASONS, blank=True)
+    detail = models.TextField(blank=True, help_text="What was corrected, in the amender's words.")
+
     class Meta:
         ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"Amendment to note {self.note_id} ({self.created_at:%Y-%m-%d %H:%M})"
+
+    # The fields an amendment snapshots, as (snapshot column, note column).
+    # Named once so the view that writes a snapshot and the serializer that
+    # reads a diff out of it cannot disagree about what history covers.
+    SNAPSHOT_FIELDS = (
+        ("previous_reason_for_visit", "reason_for_visit"),
+        ("previous_chief_complaint", "chief_complaint"),
+        ("previous_note_text", "note_text"),
+        ("previous_diagnosis", "diagnosis"),
+        ("previous_plan", "plan"),
+        ("previous_eye_examination", "eye_examination"),
+    )
+
+    @classmethod
+    def snapshot_of(cls, note):
+        """What `note` says right now, as the columns this model stores it in."""
+        return {column: getattr(note, field) for column, field in cls.SNAPSHOT_FIELDS}

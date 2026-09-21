@@ -78,7 +78,7 @@ class FinancialNotificationTests(TestCase):
                    created_by=self.reception, source_type="consultation")
         note = Notification.objects.filter(recipient=self.cashier).first()
         self.assertIn("To collect", note.title)
-        self.assertIn(str(self.patient), note.title)
+        self.assertIn(self.patient.display_name, note.title)
         self.assertIn(self.patient.patient_number, note.message)
         self.assertIn("5,000.00", note.message)
         self.assertIn("Consultation fee", note.message)

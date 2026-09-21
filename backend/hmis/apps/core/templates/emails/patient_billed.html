@@ -1,0 +1,18 @@
+{% extends "emails/base.html" %}
+{% comment %}
+A charge has been raised. The billed *service* is named — that is the line on
+the bill the patient is holding — and nothing further off the chart, which is
+exactly where `billing/notifications.py` draws the line for the on-screen
+notification (rule 35).
+{% endcomment %}
+{% block body %}
+  {% include "emails/_amount.html" %}
+  <tr>
+    <td style="padding:14px 28px 0 28px;">
+      <p style="margin:0;font-size:13px;line-height:1.6;color:#475569;">
+        The charge has been raised against the patient's account and appears on
+        their statement. Settlement is handled at the billing counter as usual.
+      </p>
+    </td>
+  </tr>
+{% endblock %}

@@ -82,11 +82,19 @@ export function PageHeader({
           reads as the head of an application screen, and it gives the stat
           strip and the toolbar something to belong to. */}
       <div className="rounded-[10px] border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between sm:gap-4">
+        {/* `sm:flex-wrap`, so a header with more actions than will fit drops
+            them onto their own line instead of crushing the title. Without it
+            the actions are `shrink-0` and the title block is `flex-1` — basis
+            zero — so once the buttons filled the row the title was squeezed to
+            nothing and rendered one letter per line. */}
+        <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-start sm:justify-between sm:gap-4">
           {/* One left-aligned block at every width: icon and title on a line,
               the description under it, the figures under that. Centring this
-              on a phone split it away from the content it heads. */}
-          <div className="min-w-0 sm:flex-1">
+              on a phone split it away from the content it heads.
+
+              `sm:basis-80` is the floor that makes the wrap above happen: a
+              title is never narrower than 20rem before the actions give way. */}
+          <div className="min-w-0 sm:flex-1 sm:basis-80">
             {/* The icon shares a row with the title alone, centred against it.
                 It used to sit in a column beside the whole text block under
                 `items-start`, which aligned a 36px disc to the top of a 28px
@@ -411,17 +419,30 @@ export function Select({ className = "", children, ...props }) {
   );
 }
 
-/** A search box with its icon and a clear button. */
-export function SearchInput({ value, onChange, placeholder = "Search…", label = "Search", className = "" }) {
-  return (
-    <div className={`relative min-w-0 ${className}`}>
+/**
+ * A search box with its icon and a clear button.
+ *
+ * `label` is the accessible name and is invisible by default, which is right
+ * for a box sitting alone above a list. **In a filter row it is not**: every
+ * `Field` beside it renders a visible label with `mb-1 block`, so a bare
+ * search box floats ~22px above its neighbours and the row reads as scattered
+ * controls rather than one toolbar. `showLabel` renders the same label, with
+ * the same classes `Field` uses, so the two align exactly.
+ */
+export function SearchInput({
+  value, onChange, placeholder = "Search…", label = "Search", showLabel = false,
+  className = "",
+}) {
+  const id = useId();
+  const box = (
+    <div className="relative min-w-0">
       <span aria-hidden="true" className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-500">
         <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.8" className="h-4 w-4">
           <circle cx="9" cy="9" r="6" /><path d="m13.5 13.5 3.5 3.5" strokeLinecap="round" />
         </svg>
       </span>
       <input
-        type="search" value={value} aria-label={label} placeholder={placeholder}
+        type="search" id={id} value={value} aria-label={label} placeholder={placeholder}
         onChange={(e) => onChange(e.target.value)}
         className={`${controlClass} pl-9 ${value ? "pr-10" : ""} [&::-webkit-search-cancel-button]:hidden`}
       />
@@ -432,6 +453,88 @@ export function SearchInput({ value, onChange, placeholder = "Search…", label 
         </button>
       )}
     </div>
+  );
+
+  if (!showLabel) return <div className={`min-w-0 ${className}`}>{box}</div>;
+  return (
+    <div className={`min-w-0 ${className}`}>
+      <label htmlFor={id} className="mb-1 block text-sm font-medium text-slate-700">{label}</label>
+      {box}
+    </div>
+  );
+}
+
+/**
+ * A figure and what it counts, as a card.
+ *
+ * `MetaStat` is the *inline* version — a strip of figures under a page title,
+ * where the number and its label sit on one line. This is the same figure when
+ * it is the page's own summary and has to read as a number first: the value
+ * large and tabular, the label beneath it, on the same card chrome the finance
+ * summary already uses (`rounded-xl border border-slate-200 bg-white`).
+ *
+ * Reach for `MetaStat` inside a `PageHeader`'s `meta`, and this where the
+ * counts are a section of the page. Given `to`, the whole card is the link.
+ */
+export function StatCard({ value, label, hint, tone = "slate", to, className = "" }) {
+  const body = (
+    <>
+      <p className={`text-2xl font-semibold leading-none tabular-nums tracking-tight ${STAT_TONES[tone] ?? STAT_TONES.slate}`}>
+        {value}
+      </p>
+      <p className="mt-1.5 text-sm leading-snug text-slate-600">{label}</p>
+      {hint && <p className="mt-1 text-xs leading-snug text-slate-500">{hint}</p>}
+    </>
+  );
+  const shell = `flex min-w-0 flex-col rounded-xl border border-slate-200 bg-white p-3 sm:p-4 ${className}`;
+  if (to) {
+    return (
+      <Link to={to} className={`${shell} transition hover:border-brand-300 hover:shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500`}>
+        {body}
+      </Link>
+    );
+  }
+  return <div className={shell}>{body}</div>;
+}
+
+const STAT_TONES = {
+  slate: "text-slate-900", brand: "text-brand-700", success: "text-emerald-700",
+  warning: "text-amber-700", danger: "text-red-700", violet: "text-violet-700",
+};
+
+/**
+ * A row of filters, as one panel rather than a handful of loose controls.
+ *
+ * Every child is a `Field` (or a `SearchInput` with `showLabel`), so the labels
+ * sit on one line and the controls on the next, at the same height across the
+ * row — which is the whole point. Four controls dropped straight into a page
+ * wrap into a ragged column on anything narrower than a laptop and read as
+ * scattered form elements; grouped here they read as one question.
+ *
+ * `columns` is how many it may reach on a wide screen. Below `sm` it is always
+ * a single full-width column, because a date input squeezed to a third of a
+ * phone is unusable.
+ */
+export function FilterBar({ title, actions, columns = 4, className = "", children }) {
+  const cols = {
+    2: "sm:grid-cols-2",
+    3: "sm:grid-cols-2 lg:grid-cols-3",
+    4: "sm:grid-cols-2 lg:grid-cols-4",
+  }[columns] ?? "sm:grid-cols-2 lg:grid-cols-4";
+  return (
+    <section className={`rounded-xl border border-slate-200 bg-white p-3 sm:p-4 ${className}`}>
+      {(title || actions) && (
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+          {title && (
+            <p className="text-xs font-semibold uppercase tracking-wide text-slate-700">{title}</p>
+          )}
+          {actions && <div className="flex flex-wrap items-center gap-2">{actions}</div>}
+        </div>
+      )}
+      {/* `items-end`, so a control whose label wraps to two lines still lines
+          its box up with the rest of the row. */}
+      <div className={`grid items-end gap-3 sm:gap-4 ${cols}`}>{children}</div>
+    </section>
   );
 }
 

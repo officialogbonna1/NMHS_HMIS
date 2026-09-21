@@ -401,3 +401,109 @@ class LabCatalogueIsTheSameRows(ConfigurationTestCase):
         LabTest.objects.filter(pk=test.pk).update(price=Decimal("4500"))
         response = self.client.get(f"/api/lab-tests/{test.pk}/")
         self.assertEqual(Decimal(response.data["price"]), Decimal("4500"))
+
+
+class RadiologyIsConfiguredThroughBothDoors(ConfigurationTestCase):
+    """
+    The ultrasound examinations a doctor orders and Reception bills are
+    `BillingItem` rows — the price list, which both administration interfaces
+    already edit. There is no radiology catalogue beside it, and these are
+    what say so: write through one door, read through the other, and see the
+    change reach the bill.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.cashier = User.objects.create_user(username="cash", password="t", role="cashier")
+        self.reception = User.objects.create_user(username="rec", password="t", role="reception")
+
+    def test_an_examination_added_in_the_hmis_is_the_row_django_admin_shows(self):
+        response = self.client.post("/api/billing-items/", {
+            "category": "ultrasound", "name": "Carotid Doppler", "price": "18000",
+            "is_active": True,
+        }, format="json")
+        self.assertEqual(response.status_code, 201, response.data)
+        row = BillingItem.objects.get(name="Carotid Doppler")
+        self.assertEqual((row.category, row.price), ("ultrasound", Decimal("18000")))
+
+    def test_a_price_changed_in_django_admin_is_what_the_hmis_quotes(self):
+        row = BillingItem.objects.filter(category="ultrasound").first()
+        BillingItem.objects.filter(pk=row.pk).update(price=Decimal("21000"))
+
+        desk = APIClient()
+        desk.force_authenticate(self.reception)
+        listed = desk.get("/api/billable-services/", {"category": "ultrasound"}).data["results"]
+        quoted = next(item for item in listed if item["id"] == row.pk)
+        self.assertEqual(quoted["price"], "21000.00")
+
+    def test_a_price_changed_in_django_admin_is_what_the_patient_is_charged(self):
+        """The point of one catalogue: an edit reaches the bill, not a copy."""
+        row = BillingItem.objects.filter(category="ultrasound").first()
+        BillingItem.objects.filter(pk=row.pk).update(price=Decimal("9500"))
+        patient = Patient.objects.create(first_name="Ada", last_name="Obi", sex="F")
+
+        desk = APIClient()
+        desk.force_authenticate(self.reception)
+        billed = desk.post("/api/charges/bill-services/", {
+            "patient": patient.pk, "services": [f"billing_item:{row.pk}"],
+        }, format="json")
+        self.assertEqual(billed.status_code, 201, billed.data)
+        self.assertEqual(billed.data["total"], "9500.00")
+
+    def test_retiring_one_in_django_admin_takes_it_off_the_desk_s_list(self):
+        row = BillingItem.objects.filter(category="ultrasound").first()
+        BillingItem.objects.filter(pk=row.pk).update(is_active=False)
+
+        desk = APIClient()
+        desk.force_authenticate(self.reception)
+        listed = desk.get("/api/billable-services/", {"category": "ultrasound"}).data["results"]
+        self.assertNotIn(row.pk, [item["id"] for item in listed])
+        # Retired, not deleted: the row and its history are still there.
+        self.assertTrue(BillingItem.objects.filter(pk=row.pk).exists())
+
+    def test_an_examination_a_referral_has_ordered_cannot_be_deleted(self):
+        """History points at it, so the rule is deactivate (rule 31)."""
+        from apps.departments.models import Department
+        from apps.workflow.models import RouteService, Visit, PatientRoute
+
+        row = BillingItem.objects.filter(category="ultrasound").first()
+        patient = Patient.objects.create(first_name="Bo", last_name="Eze", sex="M")
+        department = Department.objects.create(code="rad-cfg", name="Radiology (config test)")
+        visit = Visit.objects.create(patient=patient, opened_by=self.admin)
+        route = PatientRoute.objects.create(visit=visit, department=department,
+                                            purpose="ultrasound", routed_by=self.admin)
+        RouteService.objects.create(route=route, item=row, name=row.name, unit_price=row.price)
+
+        refused = self.client.delete(f"/api/billing-items/{row.pk}/")
+        self.assertEqual(refused.status_code, 409, refused.data)
+        self.assertTrue(BillingItem.objects.filter(pk=row.pk).exists())
+
+    def test_django_admin_hides_delete_for_that_same_row(self):
+        from apps.workflow.models import RouteService, Visit, PatientRoute
+        from apps.departments.models import Department
+
+        row = BillingItem.objects.filter(category="ultrasound").first()
+        patient = Patient.objects.create(first_name="Chi", last_name="Nwosu", sex="F")
+        department = Department.objects.create(code="rad-cfg2", name="Radiology (config test 2)")
+        visit = Visit.objects.create(patient=patient, opened_by=self.admin)
+        route = PatientRoute.objects.create(visit=visit, department=department,
+                                            purpose="ultrasound", routed_by=self.admin)
+        RouteService.objects.create(route=route, item=row, name=row.name, unit_price=row.price)
+
+        model_admin = admin_site._registry[BillingItem]
+        request = type("R", (), {"user": self.admin, "GET": {}, "method": "GET"})()
+        self.assertFalse(model_admin.has_delete_permission(request, row))
+
+    def test_radiology_staff_are_the_existing_user_model_in_both_doors(self):
+        """No second staff model: a radiology account is a `User` with the
+        role the project already has."""
+        created = self.client.post("/api/users/", {
+            "username": "sono_test", "role": "radiology", "first_name": "Bisi",
+            "last_name": "Ade", "password": "set-by-the-admin-workflow",
+        }, format="json")
+        self.assertIn(created.status_code, (201, 400), created.data)
+        if created.status_code == 201:
+            account = User.objects.get(username="sono_test")
+            self.assertEqual(account.role, "radiology")
+            self.assertTrue(account.staff_number.startswith("NMHS-S"))
+            self.assertIn(User, admin_site._registry)

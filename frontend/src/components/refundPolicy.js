@@ -11,6 +11,7 @@
 // figure here loses an argument with the server rather than winning one. What
 // this buys is that the desk is not offered an action that would only fail.
 import { CANCEL_ROLES, hasRole, REFUND_ROLES } from "../auth/roles.js";
+import { PAYMENT_LABEL, PAYMENT_TONE } from "./billingStatus.js";
 
 /** The money figures on a payment, whatever the API happened to send. */
 function figures(payment) {
@@ -138,11 +139,15 @@ export function cancellationProblem({ reason, confirmed }) {
  * cancellation, so the badge and the server's `?status=` filter always agree.
  */
 export function serviceStatus(charge) {
-  switch (charge?.status) {
-    case "cancelled": return { key: "cancelled", label: "CANCELLED", tone: "neutral" };
-    case "waived": return { key: "waived", label: "WAIVED", tone: "violet" };
-    case "paid": return { key: "paid", label: "PAID", tone: "success" };
-    case "partial": return { key: "partial", label: "PARTIALLY PAID", tone: "warning" };
-    default: return { key: "unpaid", label: "UNPAID", tone: "danger" };
-  }
+  const key = ["cancelled", "waived", "paid", "partial"].includes(charge?.status)
+    ? charge.status : "unpaid";
+  return {
+    key,
+    // The desk's wording, which is the shared vocabulary with one deliberate
+    // exception: a *clinical* unit is told "NO PAYMENT REQUIRED", because what
+    // it needs to know is that there is nothing to wait for, while a cashier
+    // reading the write-off register needs the accounting word for it.
+    label: key === "waived" ? "WAIVED" : PAYMENT_LABEL[key],
+    tone: PAYMENT_TONE[key],
+  };
 }

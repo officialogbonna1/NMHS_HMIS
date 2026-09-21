@@ -57,6 +57,74 @@ class SeededRegistryTests(TestCase):
         self.assertEqual([code for code, _, _ in REVENUE_DEPARTMENTS], EXPECTED_CODES)
 
 
+class ClinicalDepartmentTests(TestCase):
+    """
+    The units that treat patients without billing them.
+
+    `PatientRoute.department` is required, so every route the front desk
+    raises names a department — and there was none for nursing. Reception had
+    to file a vitals route against Consultation or General Medicine, neither
+    of which is where the patient went.
+
+    Seeded by `departments/0003`, deliberately *outside* `REVENUE_DEPARTMENTS`:
+    a nurse raises no charge, so a nursing entry there would be a column that
+    is permanently zero in every financial report.
+    """
+
+    def test_the_nursing_department_is_seeded_and_available(self):
+        clinicals = Department.objects.get(code="clinicals")
+        self.assertEqual(clinicals.name, "Clinicals (Nursing)")
+        self.assertTrue(clinicals.is_active)
+
+    def test_it_is_not_a_revenue_department(self):
+        self.assertNotIn("clinicals", [code for code, _, _ in REVENUE_DEPARTMENTS])
+        # And the seven stay seven, which is what stops it being added here
+        # the next time somebody wants a department in a dropdown.
+        self.assertEqual(len(REVENUE_DEPARTMENTS), 7)
+
+    def test_a_vitals_route_can_name_it(self):
+        """The reason it exists: the front desk can file nursing work truthfully."""
+        from apps.workflow.models import PatientRoute, Visit
+
+        reception = User.objects.create_user(username="desk2", password="t", role="reception")
+        patient = Patient.objects.create(first_name="Ada", last_name="Obi", sex="F",
+                                         created_by=reception)
+        visit = Visit.objects.create(patient=patient, opened_by=reception)
+        route = PatientRoute.objects.create(
+            visit=visit, department=Department.objects.get(code="clinicals"),
+            purpose="vitals", routed_by=reception)
+        self.assertEqual(route.department.name, "Clinicals (Nursing)")
+
+    def test_it_never_appears_in_the_financial_report(self):
+        """
+        A department only reaches the report by carrying a charge, and nursing
+        raises none. This is the guard on the whole decision: if somebody later
+        adds it to the revenue registry, this fails.
+        """
+        from apps.billing.reporting import department_for
+
+        key, _ = department_for("", department_code="clinicals",
+                                department_name="Clinicals (Nursing)")
+        # Unmapped, so it would only ever be bucketed by its own FK — which no
+        # charge carries, because nothing bills nursing.
+        self.assertEqual(key, "department:clinicals")
+        self.assertFalse(Charge.objects.filter(department__code="clinicals").exists())
+
+    def test_re_running_the_seed_leaves_a_renamed_one_alone(self):
+        module = importlib.import_module(
+            "apps.departments.migrations.0003_seed_clinical_departments")
+        clinicals = Department.objects.get(code="clinicals")
+        clinicals.name = "Nursing Station"
+        clinicals.is_active = False
+        clinicals.save(update_fields=["name", "is_active"])
+
+        module.seed(django_apps, None)
+
+        clinicals.refresh_from_db()
+        self.assertEqual((clinicals.name, clinicals.is_active), ("Nursing Station", False))
+        self.assertEqual(Department.objects.filter(code="clinicals").count(), 1)
+
+
 class MigrationLiteralTests(TestCase):
     """
     The migration's literal list must match `billing.departments`.

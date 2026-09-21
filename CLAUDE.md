@@ -64,13 +64,20 @@ person explicitly asks for something different.
 1. **Roles**: admin, doctor, nurse, reception, pharmacist. Defined in
    `accounts.Role`. Admin can do everything; other roles are scoped per
    `accounts/permissions.py`.
-2. **Lock-after-save**: `Vitals` and `ConsultationNote` use
-   `core.mixins.LockedRecordMixin`. Once saved, only a caller passing
-   `admin_override=True` may update them — this must never be bypassed to
-   "make a feature easier." Corrections go through an Amendment record
-   (see `ConsultationNoteAmendment`), never an in-place overwrite.
-3. **Doctors edit only their own notes** before lock; they can *view* any
-   doctor's notes. Enforced in `ConsultationNoteViewSet.perform_update`.
+2. **Lock-after-save**: `Vitals`, `NursingNote` and `ConsultationNote` use
+   `core.mixins.LockedRecordMixin`, which locks a record on its *first* save.
+   **Nothing is ever overwritten in place.** `Vitals` and `NursingNote` are
+   absolute: there is no edit path at all, and a correction is a new record.
+   `ConsultationNote` is corrected through an **amendment** — see rule 45 —
+   which archives every field the note held before touching it. The mixin's
+   `admin_override` is what the amendment path passes once the snapshot is
+   written; it is never a way to skip the snapshot, and no new caller may pass
+   it without writing one.
+3. **Doctors edit only their own notes** — never a colleague's, before or
+   after the lock. `serializers.may_amend` is the one definition (the author,
+   or an admin), read by `ConsultationNoteViewSet.perform_update` and by the
+   serializer's `can_amend` so the screen and the API cannot disagree. Any
+   clinician may still *view* a note for a patient they hold.
 4. **Reception records lock immediately after save** — same pattern as
    Vitals; if you add a reception-intake model, mix in
    `LockedRecordMixin` too.
@@ -412,6 +419,53 @@ person explicitly asks for something different.
    In a test, `apps/inventory/testing.py` (`stock_the_pharmacy` /
    `stock_the_store`) is how you put stock somewhere — a bare
    `Batch.objects.create()` now puts stock nowhere at all.
+
+   **Checking the shelf and taking stock off it are one statement.**
+   `apply_stock_change` moves a quantity with a conditional
+   `UPDATE … SET quantity = quantity + delta WHERE pk = … AND quantity >= -delta`
+   — the floor is *inside* the statement, not a Python check before it. It
+   used to compute the new figure in memory and write it back, which is a read
+   followed by a write and therefore interleavable: two pharmacists dispensing
+   the last unit both read 1, both wrote 0, and the unit left twice with two
+   movements to prove it. Now the loser matches no row, is refused, and stock
+   cannot reach −1 by any path. Only an **outflow** carries the floor; a
+   receipt is never in conflict, because two deliveries of one lot must both
+   land, and `F()` keeps either kind free of lost updates. The movement is
+   written **after** the quantity lands, so a refused deduction leaves no audit
+   row even outside a transaction.
+
+   This is the one guarantee that does not rest on the database, and it has to
+   be: **`select_for_update` is a documented no-op on SQLite**, which is what
+   `settings.DATABASES` configures, so every row lock in the dispensing path
+   compiles away on this deployment. The locks are still right and still taken
+   — they are what lets a *multi-row* operation see a stable shelf and what
+   serialises contention on PostgreSQL — but the conditional UPDATE is what
+   actually decides the race. Rule 38 reached the same conclusion about
+   cancelling a charge; this is that reasoning applied to stock.
+
+   **A lock is taken `of=("self",)` wherever the query joins to find its
+   rows.** `dispense_prescription`, `consume_fefo` and `write_off_expired` all
+   filter through `batch__item` / `batch__expiry_date` or select the location,
+   and PostgreSQL's `FOR UPDATE` locks every table in the join unless told
+   otherwise — so a counter dispensing paracetamol was locking the `Batch` row
+   and blocking a delivery of that same lot into the Main Store. Lock the
+   stock on the shelf, not the lot everywhere in the building.
+
+   **The conflict is settled at dispensing, never at prescribing.** A
+   prescription is a clinical order and reserves nothing: two doctors may each
+   write for the last box, both scripts sit in the queue, and the first
+   dispense takes it. `create_prescription`'s stock check stays a courtesy so a
+   doctor is told early — it is not a claim, and nothing anywhere reserves
+   stock. The second dispense answers 400 with
+   `code: "insufficient_stock"`, `available`, `requested` and a message naming
+   the possibility the pharmacist needs ("may have been dispensed or allocated
+   by another transaction") — never a 500 — and leaves no movement, no charge,
+   no `dispensed_at` and the script still `pending` to be filled once
+   restocked. A line that cannot be filled whole is refused whole; partial
+   dispensing is still not built. Held by
+   `apps/pharmacy/tests/test_concurrent_dispensing.py`, which forces the
+   interleave deterministically on SQLite and runs the real two-thread race on
+   PostgreSQL.
 
 31. **One set of models, two administration interfaces.** The HMIS
    administration screens (`/admin`, `pages/admin/`) and Django admin are two
@@ -1205,6 +1259,629 @@ person explicitly asks for something different.
    `frontend/src/pages/MedicalNotesTab.eye.test.jsx` and
    `DepartmentStation.eye.test.jsx`.
 
+44. **Reception routes to Ophthalmology through the one routing system, and a
+   named person has to be able to do the work.** The front desk's existing
+   form (`PatientQueue.jsx`) raises the `Visit` and the `PatientRoute`; sending
+   a patient to the eye clinic is `purpose="eye"`, which is what rule 16's
+   `PURPOSE_ROLE` turns into a notification and a queue. There is no eye
+   referral page, no eye assignment table and no eye notification engine.
+
+   - **Nursing is a department too, and it is not a revenue one.**
+     `PatientRoute.department` is required, so every route names one — and
+     there was no nursing row, so reception filed a vitals route against
+     Consultation or General Medicine, neither of which is where the patient
+     went. `departments/migrations/0003` seeds `clinicals` / "Clinicals
+     (Nursing)" with `0002`'s rules (never overwrite an edited name, never
+     reactivate a retired one, adopt a hand-made row by name, reverse only what
+     nothing points at). It is **deliberately absent from
+     `billing/departments.py`**: a nurse raises no charge, so an entry in
+     `REVENUE_DEPARTMENTS` would be a permanently empty column in every
+     financial report, and `test_department_registry.py` holds that list at
+     seven. A department is a unit of the hospital; that registry is the subset
+     that takes money. Routing is unaffected either way — `purpose` decides who
+     the patient reaches (rule 16) — so what the department buys is a queue row
+     and a printed form that say where the patient actually went.
+   - **The purpose and the department are one decision.** The screen pairs
+     them by the department's `code` (rule 34's registry — "Ophthalmology /
+     Eye clinic" selects the seeded `eye` department, "Vitals (nursing)"
+     selects Clinicals, and a department with a purpose of its own sets that
+     purpose). Either can still be overridden: the
+     pairing is a default, not a constraint, because the purpose is what
+     actually decides who the patient reaches. It reads back **only for the
+     purposes the desk is offered**, so picking the Laboratory department at
+     the front desk never quietly becomes a laboratory order — ordering a test
+     is the clinician's and raises a charge (rule 24).
+   - **`PatientRouteSerializer.validate` refuses an assignee who cannot do
+     the work**, against that same `PURPOSE_ROLE`. `refer/` had always checked
+     it and creating a route had not, so over the API the front desk could name
+     a cashier on an eye referral and the patient would sit in a queue that
+     person cannot even list. Admins still pass, and a purpose with no role of
+     its own ("other") still falls back to department membership.
+   - **A station reads its closed clinic by asking for it.**
+     `PatientRouteViewSet.get_queryset` passes `statuses=None` when the caller
+     names a `status`, so the queue stays live work by default and the
+     Completed tab is an explicit second request. **The ownership rule is
+     unchanged either way** — only the time limit lifts, exactly as it does for
+     a printable document (rule 17).
+   - **The station carries the context the clinician needs before opening the
+     chart** — age, sex, contact, the visit's own reason, who referred and
+     when. Demographics only, and every role a route can reach already reads
+     them from `/patients/` (`PATIENT_LOOKUP_ROLES`); it saves a request, it
+     widens nothing. The chart itself still opens behind `ClinicalRecordAccess`.
+   - **A clinician who runs a station does not refer to it.** `refer/` answers
+     `code: "self_referral"` for a station role referring to its own purpose
+     (`ROLE_STATION_PURPOSE`), and the destination is not offered on
+     `ReferPatient`. Only station roles are caught, so a general doctor's
+     procedure referral is untouched. Everything onward — laboratory, imaging,
+     a procedure, a prescription — is the existing page reached from the
+     station's own action row.
+   - **The examination grew; nothing else did.** `clinical/eye_exam.py` is
+     still the one definition, still validated by the server and served to the
+     form at `GET /api/notes/eye-examination-fields/`, still stored on the
+     consultation note so it locks and is amended with it. It gained a
+     presenting complaint and an ocular history (a new `multi` kind — a ticked
+     list, deduplicated, in the catalogue's own order, refused by name when
+     something is not on it), structured refraction, pupils and RAPD, sclera
+     and the fundus vessels, and **per-field options** (`OPTIONS`) so a choice
+     field is no longer held to the pressure method's list. Nothing is
+     mandatory and a blank is still dropped. `describe()` reads a stored
+     examination back through the catalogue's labels — and shows a key the
+     catalogue no longer names rather than hiding a recorded finding, because
+     the note keeps what was recorded whatever the list says later.
+   - **No new configuration model.** Departments, staff roles, notification
+     categories and the alert thresholds are already configured in Django admin
+     (rule 31); the examination's field list is code because its *values* are
+     snapshotted onto a locked note, which is what rule 28 asks for. What
+     Django admin gained is a read-only rendering of the examination on
+     `ConsultationNoteAdmin`, through `describe()`, instead of raw JSON.
+
+45. **A visit is a note; a correction is an amendment.** Confusing the two is
+   how a follow-up overwrites the consultation before it, so the two paths are
+   separate all the way down and neither can be reached by accident.
+
+   - **A new visit is a new `ConsultationNote`.** It always was — the model is
+     a plain FK to the patient ordered `-visit_time` — and nothing in the
+     amendment path can create one. Returning next month leaves every earlier
+     note exactly as it was written.
+   - **A correction amends *that* note**, through `ConsultationNoteAmendment`,
+     which already existed and is still the only history there is. The trail
+     now snapshots **every** field the note carries (`SNAPSHOT_FIELDS`, with
+     `reason_for_visit` and `chief_complaint` added by `clinical/0004`), plus
+     **why** it was changed: `reason` off a fixed list and a free-text
+     `detail`. The API refuses an amendment without a reason —
+     `code: "amendment_reason_required"`, carrying the choices so the form
+     never has to guess — exactly as a released laboratory result already does
+     (rule 22). `reason` is `blank=True` at the database so rows written before
+     it stay readable, the same precedent rule 33 sets for `Adjustment.charge`.
+   - **Who may amend is `may_amend`: the note's own author, or an admin.**
+     This widened rule 2 and is the one behavioural change here — it was made
+     deliberately, not as a convenience. The lock still stands: an amendment
+     writes the snapshot *first*, in the same transaction, so a refused save
+     can never leave a trail describing a correction that did not happen.
+     `Vitals` and `NursingNote` were not widened and stay absolutely locked.
+   - **The note grew no columns.** "Who documented this" is `doctor`, which is
+     read-only and never reassigned; "who last amended it, and when" is read
+     off the newest amendment (`is_amended`, `last_amended_at`,
+     `last_amended_by_name`, `amendment_count`). Two columns that must agree
+     are two columns free to disagree.
+   - **The field-level diff is derived, never stored.** An amendment holds what
+     the note said *before*; what it said *after* is the next amendment's
+     snapshot, or the note itself for the newest. So `changes` is computed in
+     the serializer and each amendment reports only what it alone changed. The
+     eye examination is diffed finding by finding through the catalogue's
+     labels, because "the eye examination changed" answers nothing.
+   - **Viewing is reading.** The chart opens a saved note as a record — no form
+     until *Amend* is pressed — and `EyeExaminationFields` renders a stored
+     finding as text rather than a disabled input, because a page of greyed-out
+     boxes reads as a form somebody is meant to fill in.
+   - **Printing is the existing registry.** `consultation_note` in
+     `components/printing.jsx` (`needs: ["note"]`, so it is never offered
+     without one), rendering `ConsultationNoteSheet` — a per-record document,
+     printed from the note's own row and header rather than the chart masthead,
+     which would have to guess which note you meant. An amended note is stamped
+     **Amended** and carries created / last-amended / status at its foot. Empty
+     eye sections are omitted: a printed heading with nothing under it reads as
+     "examined, normal".
+   - `note.created` and `note.amended` go to the existing `AuditLog` through
+     `audit_event` — there is no second audit system. `details["source"]` says
+     which door the correction came through, `"hmis"` or `"django-admin"`.
+   - **Two doors, one implementation.** `clinical/services.py` holds what an
+     amendment *is* — `is_valid_reason`, `archive` (the snapshot),
+     `audit_created` / `audit_amended`, and `changes_for` (the derived diff) —
+     and both `ConsultationNoteViewSet` and `ConsultationNoteAdmin` call it.
+     The doors differ only in how they collect input (a DRF serializer, a
+     ModelForm), which is all they should differ in. `note_before()` exists
+     because Django admin hands `save_model` an instance the form has already
+     written over, so the snapshot has to be re-read from the database.
+   - **Django admin can add and amend a note; it still cannot delete one, and
+     it still cannot touch anything else.** `ConsultationNoteAdmin` is
+     deliberately *not* a `LockedRecordAdmin` — `Vitals`, `NursingNote` and the
+     amendment trail still are, and still refuse every write. The add form has
+     **no `doctor` field**: the author is stamped from the signed-in account, so
+     one account can never file a note under another's name. The change form
+     carries `amendment_reason` / `amendment_detail`, which are not model fields
+     — they belong to the amendment `save_model` writes — and the form refuses
+     a correction without a reason exactly as the API does. Who may use the
+     door is `User.is_admin` (the HMIS role), narrowing Django's own `is_staff`
+     rather than adding a second RBAC: a doctor let into the admin site gets
+     403 on both forms **and on the changelist**. Reading is gated the same way
+     the writing is, with **no fallback to Django's model permissions** — a
+     group granted `view_consultationnote` would be exactly the second RBAC
+     this narrowing exists to refuse, and reading is the access that matters
+     most, because the note is the patient's history. The amendment archive
+     answers the same way: its rows hold the note's own clinical text, so
+     reading the trail is reading the record. The trail is a read-only inline,
+     and `ConsultationNote.__str__` names the record by patient number and date
+     so no screen shows a primary key. Held by `apps/clinical/tests/test_admin_notes.py`.
+
+   Migration `clinical/0004` is required, and only for the four additive
+   amendment columns. Held by `apps/clinical/tests/test_note_amendments.py`,
+   `test_eye_examination.py`, `frontend/src/pages/MedicalNotesTab.amend.test.jsx`
+   and `MedicalNotesTab.eye.test.jsx`.
+
+   No migration: no model changed. Held by
+   `apps/workflow/tests/test_eye_doctor_desk.py`'s
+   `ReceptionRoutesToOphthalmologyTests` and `OphthalmologyRoutesOnwardTests`,
+   `apps/clinical/tests/test_eye_examination.py`,
+   `frontend/src/pages/PatientQueue.reception.test.jsx`,
+   `DepartmentStation.eye.test.jsx` and
+   `frontend/src/components/EyeExaminationFields.test.jsx`.
+
+46. **Only the login is rate limited, and it counts failures, not requests.**
+   Four consecutive failed sign-ins are allowed; the fifth shuts that client
+   out of that username for five minutes; a success forgets every failure
+   before it. `apps/accounts/lockout.py` is the whole rule and
+   `LoginView` asks it three questions — may this attempt run, that one
+   failed, that one worked. Authentication is untouched: still DRF's
+   `ObtainAuthToken` with `AuthTokenSerializer`, still the same 400 in the same
+   words for a wrong password.
+
+   **It is not a DRF throttle, and that was a decision.** `SimpleRateThrottle`
+   counts *requests* in a sliding window; this counts *consecutive failures*
+   and has to forget them the instant somebody signs in. Bending a throttle
+   class into that shape would have meant subverting it, so the rule is its own
+   module and the answer is the standard 429 + `Retry-After` that a throttle
+   would have sent anyway.
+
+   **No model.** Two short-lived cache entries per (client, username): a
+   counter and, once it tops out, the moment the lock lifts. A failed attempt
+   is not something a hospital needs to keep, and a row would need cleaning up.
+   The staff account is never touched, so nothing here locks anybody out
+   permanently and the admin's password reset is still the way back in.
+
+   **The key is the client's address *and* the username.** Username alone
+   would let anyone shut a named nurse out of the system from anywhere by
+   guessing five times — denial of service dressed as a security control.
+   Address alone would shut out a whole department behind one NAT over one
+   typo. `apps/accounts/tests/test_login_lockout.py` holds both directions.
+
+   **It reveals nothing.** The count is kept against whatever was typed,
+   existing or not, and the refusal is identical either way — so a lockout says
+   "this client has failed five times", never "this username is real". Counting
+   only real usernames would have made the 429 itself the tell.
+
+   **It fails open.** Every cache call is guarded and a cache that raises means
+   sign-in proceeds. A brute-force window is a real cost; a hospital unable to
+   reach its own records because a cache is down is a worse one, and the person
+   locked out by that failure is the one holding the patient.
+
+   `CACHES` exists for this and nothing else — Django was on its default
+   per-process `LocMemCache` and no code read the cache at all. It points at
+   the Redis already configured for Celery when `REDIS_URL` is set, because
+   with several workers and a per-process cache five attempts becomes five *per
+   worker*; with none set it stays in-process, which is what `runserver` and
+   the tests want and neither needs Redis up.
+
+   **The countdown on `/login` is feedback, never the control.** The server
+   refuses a locked client before it reads the password — the right password
+   does not get past it, which `test_the_right_password_does_not_get_past_the_cooldown`
+   holds. The page seeds itself from the 429's `retry_after`, counts down so
+   somebody staring at a dead form knows why and for how long, and re-enables
+   itself when the wait is over without a reload; if its clock disagrees with
+   the server's, the next attempt simply locks again. `pages/loginLockout.js`
+   is the pure module behind it (the `refundPolicy.js` pattern).
+
+   Nothing else in the HMIS is rate limited, and an authenticated request never
+   reaches the lockout at all.
+
+47. **An expected failure is an answer; an unexpected one is a bug.**
+   `apps/core/exceptions.py` is DRF's `EXCEPTION_HANDLER`, so every endpoint
+   refuses in one shape and none has to remember to. A wrong field, a missing
+   record, a role that may not, an expired token, a lock still standing, a
+   shelf that is short — these keep their status and body and gain a short
+   `code` where they had none, and are **not** logged as faults. Anything else
+   is logged whole, with its traceback, and answers 500 with a `reference`
+   (`RF-3f2a9c`) and nothing else: no exception class, no message, no stack, no
+   SQL. The reference is in the log line beside the traceback, so a support
+   call lands on the exact entry without the screen having leaked anything.
+
+   **It is not a blanket `except Exception`.** A `KeyError` in a service is not
+   an operational condition, and dressing one up as a tidy 400 is how it
+   survives to production — `test_a_bug_is_not_dressed_up_as_a_validation_error`
+   holds that. Three things *are* translated, because they are conditions this
+   API genuinely meets: Django's own `ValidationError` and `PermissionDenied`
+   (raised by `LockedRecordMixin`, `StockRecord.save` and the inventory
+   services, which DRF does not understand) become 400 and 403; `IntegrityError`
+   becomes **409** with a fixed sentence, never the database's own text, which
+   names tables, columns and constraints.
+
+   On the frontend `api/errors.js` is the one reading of that shape —
+   `readError` unchanged for the forms that already call it, plus `errorCode`,
+   `errorReference`, `fieldErrors` and `errorMessage` (which is the one that
+   speaks to a request that never arrived). `components/ErrorBoundary.jsx`
+   wraps the shell so a render-time bug in one page no longer unmounts the tree
+   into a white screen; it deliberately shows the person nothing about the
+   exception, because that text is for a developer. Held by
+   `apps/core/tests/test_error_handling.py` and `frontend/src/api/errors.test.js`.
+
+48. **Email is a courtesy; the hospital transaction is the record.**
+   `apps/core/email.py` is the only thing that sends mail, through Resend, and
+   the rule it exists to keep is that **sending can never fail a hospital
+   transaction**. A patient registered, a bill raised, money taken, somebody
+   discharged — all four are already committed when anything there runs, so
+   every function returns rather than raises. There is exactly one
+   `except Exception` in that file and it is the boundary between somebody
+   else's service and this hospital's record; the right answer on it is a log
+   line. Held four ways over four failures in
+   `apps/core/tests/test_admin_email.py`.
+
+   **Queued on commit, then off the request.** `dispatch_admin_email` hands the
+   work to `transaction.on_commit`, so a rolled-back transaction tells nobody —
+   there is no state where the administrator is emailed about a discharge the
+   database then threw away. Once committed it goes to the **existing** Celery
+   queue (`apps/core/tasks.py`, beside the inventory alerts — no second queue),
+   and runs inline if no broker will take it, because a slower request is a
+   better failure than a lost notification. In a test that means
+   `captureOnCommitCallbacks(execute=True)`: without it nothing sends and every
+   assertion passes for the wrong reason.
+
+   **Nothing is addressed in code.** `RESEND_API_KEY`, `HMIS_EMAIL_FROM`,
+   `HMIS_ADMIN_EMAIL` and `HMIS_BASE_URL` are environment configuration read
+   through settings at call time. With none configured nothing is sent and the
+   reason is logged, which is what a developer machine wants.
+   `NoHardCodedRecipients` scans `apps/` and fails on any literal address or
+   `re_` key — a hard-coded administrator outlives whoever it pointed at.
+
+   **One action, one email.** Each send names the thing it is about
+   (`patient.registered:NMHS-P000123`, `payment.received:PAY-42`) and claims
+   that key with `cache.add` for a day, so a double-click, a retried request or
+   a refreshed browser sends once. A *failed* send releases its claim, so a
+   Celery retry can still deliver — de-duplication must not swallow the
+   notification. The cache is right for this rather than a table: it is a
+   window, not a record, and losing it costs one extra email rather than a
+   wrong one.
+
+   **What goes in one.** `apps/core/notifications_email.py` builds all four
+   events so no view assembles content itself, over one reusable layout
+   (`templates/emails/base.html`, hospital identity from
+   `core.HospitalSettings` — rule 31, not a name in a template). The
+   administrator is told that something happened and given enough to find it:
+   who, when, which reference, how much. A billed *service* is named, because
+   that is the line on the bill the patient is already holding — the same
+   boundary rule 35 draws. A diagnosis, a drug, a test result or the course of
+   a stay is **not**, in any of them, discharge included: the letter carries the
+   clinical detail, printed and handed over, and an inbox is the wrong place
+   for it.
+
+49. **One discharge, two doors.** `DischargeSummary` was always there and the
+   ward has always written it; what is new is that the rule lives in
+   `inpatient/services.discharge_patient` and both doors call it — the ward's
+   `/api/discharges/` (`BED_BOARD_ROLES`, eye doctor for their own patients,
+   **unchanged**) and the Admin Discharge workspace at `/api/admin-discharges/`
+   (`IsAdmin` — **both** administrators). One model, one service, one audit
+   action, one email. The
+   admin workspace took nothing away from the ward, and
+   `TheWardKeepsItsOwnDischarge` exists to keep it that way.
+
+   Extracting it settled three latent faults: the status was checked *after*
+   the record was written; a second discharge came back as a **500** out of the
+   `OneToOneField`'s `IntegrityError`; and two people pressing at once could
+   both pass the check. It is now a 409 `already_discharged` **carrying the
+   existing record**, so the screen shows the discharge that is already there
+   and offers its letter rather than writing a second one (and sends no second
+   email — the notification is keyed to the row, which is created once). The
+   status moves compare-and-set under `select_for_update`, the way rule 38
+   settles two cashiers. A patient readmitted next month is a new `Admission`
+   and a new discharge, which is a different record, not a second discharge of
+   this one.
+
+   `reference` is `DCH-000123`, issued off the primary key exactly as
+   `StockTransfer`'s is; `condition` is free text because the hospital has no
+   coded list for it and inventing clinical vocabulary is not this feature's to
+   do. Migration `inpatient/0004` is additive and backfills nothing.
+
+   **The letter is the existing printing architecture** — `discharge_letter` in
+   `components/printing.jsx`, rendering `DischargeLetterSheet` through
+   `PrintSheet` with the shared `SheetHeader` / `PatientBlock` / `SheetSection`
+   / `SheetFooter`, black on white. Its `roles` is `["admin"]`, mirroring
+   `IsSuperAdmin` on the endpoint it reads and never widening it. It prints
+   **only what the model holds** and omits a section that is empty, because a
+   printed heading with blank space under it reads as "considered, nothing
+   found" — the same reasoning rule 45 applies to the eye sections. Held by
+   `apps/inpatient/tests/test_admin_discharge.py`.
+
+   **Both administrators work the admin door.** It was `IsSuperAdmin`, the
+   boundary rule 37 draws on permanently deleting a patient, and it was
+   widened to `IsAdmin` deliberately: a discharge is a *record*, written once
+   and keeping its reference, its audit row and its letter, and a patient
+   readmitted tomorrow is a new admission rather than an edit to this one.
+   Running the wards is ordinary hospital administration, which is what
+   `hospital_admin` is for. The gate moved from one administrator to two and
+   not one step further — no clinical role reaches it, the ward's own
+   discharge is untouched, and `SUPER_ADMIN_ONLY` in
+   `apps/core/tests/test_api_permissions.py` is empty again. `ADMIN_ROLES` on
+   the route guard and the nav mirrors it, and `discharge_letter`'s
+   `roles: ["admin"]` already admitted both, because `hasRole` passes every
+   admin role.
+
+   **An icon a row does not have is a blank, not an error.** `Icon` returns
+   `null` for a name `PATHS` does not hold, silently — so `"clipboard"` in
+   `NAV_ITEMS` (which did not exist) left Discharged Patients sitting in the
+   sidebar with nothing where its icon should be, while Discharge Patient drew
+   `"bed"`, which is *Admissions* — two destinations the eye cannot tell
+   apart. Both now have their own: `discharge` is the bed's frame with an
+   arrow leaving it, so the pair reads as the two ends of one stay, and
+   `clipboard` is the completed register. `Navigation.icons.test.jsx` walks
+   every nav row an admin can see and fails on any that draws no `<svg>`, and
+   on the discharge pair sharing one.
+
+   **`PrintButton` needs the reader's role, and renders nothing without it.**
+   `resolveDocuments({role, keys, context})` filters the registry by `roles`,
+   so a `<PrintButton>` with no `role` prop resolves *no* documents and returns
+   `null` — silently, with no error and no empty state. Both discharge screens
+   omitted it, which is why the discharge letter could not be printed from
+   either. Pass `role={user?.role}` on every `PrintButton`; the registry's own
+   `roles` is what narrows it, and the API is what actually refuses.
+
+   **The workspace reads the admission before it closes it.**
+   `components/AdmissionDetail.jsx` is one component rendering both halves —
+   `AdmissionDetail` (patient identity, the stay, and the `BedTransfer` moves
+   read through the existing `/bed-transfers/?admission=`) and
+   `DischargeDetail` (the completed record, stamped **DISCHARGED**). The
+   Admin Discharge workspace shows the first before discharging so the decision
+   is made against the record; Discharged Patients shows both afterwards. Two
+   copies would be two descriptions of one admission free to disagree, the same
+   reason `StockPanels.jsx` serves both stock workspaces.
+
+   **Nothing new is stored to say any of it.** `AdmissionSerializer.reference`
+   is `ADM-{pk:06d}` derived the way `admission_reference` already was,
+   `length_of_stay` is the two timestamps (and stops counting at
+   `discharged_at`, so a closed admission does not keep ageing), and
+   `discharge_reference` / `discharge_id` read the existing `DischargeSummary`
+   row. `dischargeable` gained a `?ward=` filter and matches the reference by
+   reading its digits back out — there is no column to search and none to
+   backfill. A completed discharge stays read-only: the model has no amendment
+   trail and `DischargeSummaryViewSet.http_method_names` is GET/POST, so the
+   record the letter is printed from is the record that was signed.
+
+50. **One service, ordered and billed — Reception reads the catalogue the
+   doctor orders from.** The hospital keeps billable things in more than one
+   place and is right to: a `LabTest` carries a specimen, a container and a
+   page of parameters; a `BillingItem` is a name and a price. What was wrong
+   was the *window* onto them. Reception's counter and the chart's billing tab
+   read `/billing-items/` alone, so the Laboratory tab offered the **one** row
+   the price list happened to hold while the doctor ordered from sixty-six —
+   the desk could not bill the test that had just been ordered, because the
+   desk was reading a different book. Not a pagination limit, not a filter,
+   not a frontend cap: two catalogues, one window.
+
+   `apps/billing/catalogue.py` is that window widened, and it is a **read**:
+   it defines no service and stores no price. Every active `LabTest` plus
+   every active `BillingItem`, each service **once** — a `BillingItem` a
+   `LabTest` points at is represented by the test, at the test's own
+   `charge_amount`, so nothing is offered twice at two prices. `source_type`
+   on each row is what the counter has always posted (the category), so
+   `billing/departments.py` attribution, the charge, the ledger and every
+   report are untouched. `GET /api/billable-services/?category=&search=` is
+   deliberately **unpaginated** — a picker over configuration that stops at
+   page one is the bug — and is read by the desks that bill plus the roles
+   that already read `/api/lab-tests/`; the pharmacy works a different
+   catalogue and is not on it. Adding a catalogue is adding a reader to
+   `_SOURCES`, never a place to add a service. `components/billableServices.js`
+   + `components/ServicePicker.jsx` are the one frontend reading, rendered by
+   Reception's counter, the chart's billing tab **and** the doctor's referral
+   page — searchable, self-scrolling, nothing cut off. Held by
+   `apps/billing/tests/test_billable_services.py`,
+   `frontend/src/components/billableServices.test.js` and
+   `ServicePicker.test.jsx`.
+
+51. **Radiology / Ultrasound is the laboratory's pattern at the size imaging
+   needs.** Doctor refers → names the examinations from the configured
+   catalogue → the charges are raised there and then → the patient settles
+   them at the existing counter → the request is on radiology's worklist with
+   what was asked for and where the money stands → the scan is done and the
+   report written through the station that already existed.
+
+   **Nothing here is a second system.** The referral is `PatientRoute`
+   (`purpose="ultrasound"`, rule 16 routes it, rule 14 notifies it), the role
+   is the `radiology` role that already existed, the worklist is
+   `DepartmentStation`'s `/ultrasound`, the report is the existing
+   `record-result` (which already files the permanent `MedicalTest` copy and
+   tells the doctor who asked), and the money is
+   `billing.services.add_charge`. **No new notification, no new role, no new
+   catalogue, no new billing.**
+
+   What is new is one row: `workflow.RouteService` — the configured service a
+   referral asked for, its **order-time** name and price (rule 21), and the
+   charge it raised. `workflow/services.py` puts them on
+   (`POST /patient-routes/<id>/request-services/`), one charge per
+   examination and **one announcement for the lot**, exactly as
+   `laboratory.services.add_tests` does (rule 35). It is not
+   imaging-specific: `PURPOSE_CATEGORY` is what says which purposes order
+   from the price list, and only `ultrasound` does today.
+
+   This extends rule 24's exception to a second unit: **ordering a priced
+   study raises its charge**. Referring to the eye clinic or for a procedure
+   still raises none, because neither has a priced order behind it yet.
+   The unit reads the money and is **never gated by it** — a patient on the
+   couch is scanned and the cash desk chases the balance, the rule the
+   laboratory already works to.
+
+   **The examinations are `BillingItem` rows** (`category="ultrasound"`,
+   seeded by `billing/migrations/0019`, never overwriting what an
+   administrator has set), which is the list Reception bills from — so rule
+   50's principle holds by construction rather than by a second catalogue
+   kept in step. A priced row a referral has ordered cannot be deleted
+   (`protected_relations`); retire it. Held by
+   `apps/workflow/tests/test_radiology_workflow.py`,
+   `frontend/src/pages/ReferPatient.radiology.test.jsx` and
+   `DepartmentStation.radiology.test.jsx`.
+
+52. **A bill is a selection, and the server prices it.** A patient arrives at
+   the counter with a doctor's list of five tests, so the counter ticks five
+   and submits once: `POST /api/charges/bill-services/` with
+   `{patient, services: ["lab_test:12", "billing_item:7", …]}`.
+
+   **The request carries identities, never money.** Every key is resolved
+   through `billing/catalogue.py` on the server, the price is the catalogue's
+   and the total is worked out there — an `amount` in a request body is not
+   money in this system, the same way `Payment.channel` is stamped from the
+   collector's role and never trusted from the client (rule 18). A key naming
+   nothing billable — retired since the screen loaded, deleted, malformed —
+   is refused by name (`code: "unknown_service"`) with **nothing billed**:
+   five charges where the desk meant six is worse than an error.
+
+   Each service is an ordinary `add_charge`, so the chokepoint, the
+   attribution and the ledger are exactly what a single charge typed at the
+   counter has always been; the announcement is made **once** for the whole
+   decision (rule 35). The write-in ("Other") is the one path where the desk
+   still names the amount, because nothing has priced it.
+
+   On the frontend `components/ServicePicker.jsx` is the one control — a
+   checkbox per service, a chip per selection that removes itself, a running
+   total and one **Bill ₦7,500** — rendered by Reception's counter and the
+   chart's billing tab alike; `billableServices.toggle` is the pure decision
+   behind ticking and unticking, and `billServicesBody` is what proves the
+   submission carries no price. Held by
+   `apps/billing/tests/test_billable_services.py`'s
+   `BillingSeveralServicesAtOnce`, `frontend/src/pages/Billing.multiselect.test.jsx`
+   and `components/ServicePicker.test.jsx`.
+
+53. **An imaging report has a shape, and it is imaging's own.**
+   `workflow/report_fields.py` is the one definition — technique, findings,
+   measurements, impression — validated on the server and served to the
+   station (`GET /api/patient-routes/report-fields/?purpose=`), so the form
+   holds no copy of the field list. It is the eye examination's arrangement
+   (rule 43), not the laboratory's: a `LabParameter` is a measurement with a
+   reference range and a flag, and almost nothing in a scan report is.
+
+   **It adds no record and no reader.** The sections live on
+   `PatientRoute.result_data` (migration `workflow/0006`, additive), and the
+   server **renders** them into `result` — which the chart, the printed sheet,
+   the permanent `MedicalTest` copy and the doctor's notification already
+   read, so nothing had to learn about sections to keep working. A purpose
+   with no sections (the eye clinic, a procedure) keeps the single findings
+   box it has always had. Nothing is mandatory and a blank section is dropped
+   (rule 20), and `result_data` is read-only on the serializer: a report is
+   written through `record-result` / `complete`, which stamp who wrote it.
+
+   Who signed it and when is `result_by` / `result_at`, and whether it is
+   released is the route's own status — the laboratory's separate verify step
+   is not copied here, because a sonographer releases their own report.
+   Held by `apps/workflow/tests/test_radiology_workflow.py`'s
+   `TheReportHasTheShapeOfAScan` and
+   `frontend/src/pages/DepartmentStation.radiology.test.jsx`.
+
+54. **A unit shares a board; a nurse's hand-off does not.** Accepting a
+   request marks it **accepted** — it does not make it disappear. A station
+   role (`STATION_ROLES`: laboratory, radiology, the eye clinic) sees
+   everything sent to its unit, claimed or not
+   (`work_routes_for(..., include_unit=True)`, passed by the queue endpoint
+   and deliberately *not* by the dashboard, so "My queue" still counts my own
+   work). Those units share a room, a machine and a list, and a request that
+   vanished the moment somebody pressed Accept left the rest of the unit
+   unable to tell whether it had been picked up or lost.
+
+   **Nursing keeps the opposite rule, on purpose.** A vitals hand-off is one
+   nurse to one patient, and "accepting claims the patient from the other
+   nurses" is held by `test_nurse_handoff`. `nurse` is not a station role, so
+   nothing there moved.
+
+   **Seeing is not doing.** `workflow/access.py` is the one definition of who
+   the work is waiting on — the admin, the named assignee, or anybody in the
+   role while it is unclaimed — and `PatientRouteViewSet._own_route` gates
+   start / complete / record-result with it while the serializer's `can_work`,
+   `can_accept` and `claimed_by_other` answer the same question for the screen.
+   So a colleague's row carries **"Accepted · Tunde Okafor"** and the words
+   "With Tunde Okafor" in place of Accept and Open, rather than a button that
+   would come back 409 (a second claim) or 403 (writing somebody else's
+   report). A request named to one radiologist reads as theirs from the start
+   and needs no Accept at all. The shared `/queue` page follows the same
+   answer: `RouteRow` offers Start and Mark done on `can_work`, not on the
+   role, so a sonographer is never shown a button for a scan a colleague is
+   already doing (it falls back to the role where the field is absent). The one visible consequence elsewhere: writing
+   on a colleague's claimed request is now refused **403 rather than 404**,
+   because the row is legitimately findable — nothing about the refusal
+   changed. Held by `apps/workflow/tests/test_radiology_workflow.py`'s
+   `TheUnitSeesWhoHasWhat`, `test_department_stations.py`,
+   `frontend/src/pages/DepartmentStation.radiology.test.jsx` and
+   `PatientQueue.board.test.jsx`.
+
+54. **A department reads the money; it never keeps any.** Order → bill →
+   the cash desk is told → the patient pays → the unit sees PAID. Every part
+   of that was already built except the last arrow, and the last arrow is a
+   *reading*, not a new system.
+
+   `apps/billing/status.py` is that reading, once. `Charge.settlement_status`
+   (rule 12) is still the only thing that decides what a bill is worth; this
+   renders it into one shape and one vocabulary — **UNPAID / PARTIALLY PAID /
+   PAID / NO PAYMENT REQUIRED / PAY LATER / CANCELLED / NOT BILLED** — for
+   every screen that has to show it. The laboratory's `get_billing` and
+   imaging's were the same twenty lines twice and the next unit would have
+   been the third copy; a bench and a scanner room calling one ₦3,000 by two
+   names is confusion the patient pays for. `components/billingStatus.js` is
+   the frontend's copy of the table, and `refundPolicy.serviceStatus` reads
+   it, with one deliberate exception: a clinical unit is told "NO PAYMENT
+   REQUIRED" and the write-off register says "WAIVED", because they are two
+   audiences for one status.
+
+   **`requires_payment` is derived on every read** — it is `status` restated
+   for a screen. There is no column, no cache and no `doctor_can_proceed`
+   flag, so nothing can go stale and nothing has to be refreshed: the answer
+   changes because the charge did.
+
+   **Each service keeps its own, and a basket takes the worst of them.**
+   Paying ₦8,000 of a ₦20,000 referral settles the first examination and
+   leaves the second exactly where it was; `summarise()` reports the pair as
+   PARTIALLY PAID, never PAID, because an order that read paid while one test
+   on it was not is how an unpaid service gets through.
+
+   **A route knows what it cost, whichever unit billed it.**
+   `route_billing()` sums the referral's own `RouteService` charges *and* the
+   `LabOrderTest` charges of the order it opened, so `PatientRouteSerializer
+   .billing` puts the figure on the queue row and the bench stops having to
+   open the order to find out. It is on the chart too — `overview.py`'s
+   `visits[].routes[]` carry `billing` and the per-service breakdown — which
+   is the doctor seeing the payment state of **what they ordered** and
+   nothing else: the ledger block stays behind the roles that read money.
+
+   **Both directions are announced, once each, through the existing bell.**
+   Rule 35 already tells the cash desk a charge was raised.
+   `apps/billing/clearance.py` is the answer coming back: when a charge moves
+   from owing to settled, `billing/services.py` — the chokepoint, so a
+   payment, a waiver and a full discount all reach it — tells whoever is
+   holding the patient, through `core.services.notify` and
+   `workflow.views.route_targets` (the assignee, else the pool, never the
+   doctor who referred). A part payment tells nobody; a charge with no
+   referral behind it tells nobody; settled-with-no-money-taken says "No
+   payment required", because "Payment cleared · ₦0.00 paid" reads as a bug.
+
+   **Nothing here refuses anything.** Rules 24 and 51 are unchanged and
+   deliberate: the bench runs a sample already drawn, imaging scans the
+   patient on the couch, and the cash desk chases the balance. `accept`,
+   `start` and `complete` consult no bill and take exactly the calls they
+   always did — `test_radiology_workflow.py`'s
+   `test_an_unpaid_examination_is_shown_and_never_blocks_the_work` and
+   `TheUnitIsNeverGatedByTheMoney` hold it from both sides. What changed is
+   that the unit *knows*; **do not add a payment gate here**, in any form.
+   A first-attempt refusal that a second call waves past was tried and
+   removed: it made a one-call workflow a two-call one, which is the
+   hospital's workflow changed, whatever it is called.
+
+   Held by `apps/billing/tests/test_service_payment_visibility.py`,
+   `frontend/src/components/billingStatus.test.js` and
+   `frontend/src/pages/DepartmentStation.payment.test.jsx`.
+
 ## Django admin
 
 Every app has an `admin.py` and every model is registered — `Patients` is
@@ -1213,7 +1890,7 @@ hospital treats and a user is staff who log in. `apps/core/tests/
 test_admin_registration.py` fails if a model is added without an admin, if
 any changelist 500s, or if `manage.py check` reports an admin problem.
 
-Two rules the admin classes follow, and new ones should:
+Three rules the admin classes follow, and new ones should:
 
 1. **Anything a service owns is read-only there.** Vitals and notes lock on
    save; charges, payments and the ledger are kept in step by
@@ -1225,6 +1902,26 @@ Two rules the admin classes follow, and new ones should:
    the `password` column for editing (typing a plain string in stores an
    unusable hash); each row carries a **Set password** link, and `role` is on
    the add form because an account without one can log in and reach nothing.
+3. **Every model names itself, and the API is not built on that name.**
+   `__str__` is what Django labels a foreign-key dropdown, an inline, a
+   breadcrumb and an admin log entry with, so a model without one reads
+   "Ward object (1)" and a bed cannot be assigned to a ward nobody can name.
+   Each one is built from fields the model already has — `Ward` is its name,
+   `Bed` is `Bed 01 — Male Medical Ward`, `Patient` and `User` lead with the
+   hospital number that identifies them on paper (rule 32), and a record
+   belonging to a patient names that patient first, then what it is.
+   `apps/core/labels.py` holds the three helpers a label needs — a date that
+   may be None, an amount, a person — because `__str__` is called on unsaved
+   instances too, where an `auto_now_add` column is still None.
+
+   **The name in the API is `Patient.display_name`**, which is "Last, First"
+   and nothing else. Every `patient_name` field, notification title, audit
+   row and email reads *that*, never `str(patient)`: a payload carries the
+   number separately in `patient_number`, and folding the two together would
+   print it twice on every screen that already shows both. A new serializer
+   field for a patient's name uses `display_name`. Held by
+   `apps/core/tests/test_model_labels.py`, which also fails by name on any
+   model left with Django's default representation.
 
 ## Conventions
 
@@ -1708,7 +2405,7 @@ Done:
   hospital number, never a pk), department, service, due, discount, waiver,
   paid, balance, method and settlement status. The dashboards' money cards
   open it on the period they count.
-- Tests: 1,105 passing, 1 skipped (backend; frontend `npm test`: 178) — the PostgreSQL-only two-thread race in
+- Tests: ~1,497 passing (backend; frontend `npm test`: 422) — the PostgreSQL-only two-thread race in
   `test_cancel_and_refund_hardening.py` (`./venv/bin/python manage.py test` — the venv is at
   `backend/hmis/venv`; a bare `python` has no Django and fails misleadingly) — pharmacy dispensing +
   payment flow, charge settlement (full / half / later, oldest-first

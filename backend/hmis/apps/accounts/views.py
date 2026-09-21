@@ -1,8 +1,12 @@
 
+from datetime import timedelta
+
+from django.utils import timezone
 from django.utils.decorators import method_decorator
 from django.views.decorators.csrf import csrf_exempt
 
-from rest_framework import viewsets
+from rest_framework import status, viewsets
+from rest_framework.exceptions import ValidationError
 from rest_framework.authtoken.views import ObtainAuthToken
 from rest_framework.authtoken.models import Token
 from rest_framework.decorators import action
@@ -13,9 +17,16 @@ from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework.filters import SearchFilter
 
 from apps.core.services import audit_event
+from . import lockout
 from .models import User
 from .permissions import IsAdmin
 from .serializers import UserSerializer, UserAdminSerializer, UserDirectorySerializer
+
+
+def cooldown_minutes(seconds):
+    """The cooldown as the message says it. A deployment may shorten the
+    setting; the sentence should follow rather than keep saying five."""
+    return seconds / 60
 
 
 @method_decorator(csrf_exempt, name="dispatch")
@@ -34,17 +45,82 @@ class LoginView(ObtainAuthToken):
         "token": "...",
         "user": {...}
     }
+
+    **Four failed attempts are allowed; the fifth locks this client out of
+    this username for five minutes.** The rule itself lives in
+    `accounts/lockout.py` — this view only asks it three questions: may this
+    attempt run, that one failed, that one worked. Authentication is unchanged:
+    still `ObtainAuthToken` with `AuthTokenSerializer`, still the same 400 and
+    the same wording for a wrong password, so nothing here says whether a
+    username exists.
+
+    A lockout is **server-side and complete**: it is refused before the
+    credentials are so much as looked at, so no amount of client-side
+    persuasion gets past it. The countdown the login page shows is drawn from
+    `retry_after` below and is feedback, never the control.
+
+    Nothing else in the HMIS is rate limited. This is the only view that counts
+    anything, and an authenticated request never touches the lockout at all.
     """
 
+    def _locked(self, request, seconds, username):
+        """
+        429 with everything the login page needs to explain itself: the
+        sentence, a machine-readable `code`, and the seconds left so it can
+        count down without guessing. `Retry-After` is the HTTP way of saying
+        the same thing, for anything that is not our own frontend.
+        """
+        minutes = max(1, round(cooldown_minutes(seconds)))
+        body = {
+            "code": "login_locked",
+            "detail": (
+                "Too many failed login attempts. For your security, login has been "
+                f"temporarily blocked for {minutes} minutes. Please try again after "
+                "the lockout expires."
+            ),
+            "retry_after": seconds,
+            "locked_until": (timezone.now() + timedelta(seconds=seconds)).isoformat(),
+        }
+        response = Response(body, status=status.HTTP_429_TOO_MANY_REQUESTS)
+        response["Retry-After"] = str(seconds)
+        return response
+
     def post(self, request, *args, **kwargs):
+        username = request.data.get("username", "")
+
+        # Asked before the credentials are read at all: a locked client is
+        # refused whether or not it has since guessed the right password.
+        locked_for = lockout.remaining(request, username)
+        if locked_for:
+            return self._locked(request, locked_for, username)
+
         serializer = self.serializer_class(
             data=request.data,
             context={"request": request},
         )
 
-        serializer.is_valid(raise_exception=True)
+        try:
+            serializer.is_valid(raise_exception=True)
+        except ValidationError:
+            triggered = lockout.record_failure(request, username)
+            if not triggered:
+                # The ordinary refusal, unchanged — and deliberately identical
+                # for a username that exists and one that does not.
+                raise
+            # The audit row names the attempt, never whether the account is
+            # real: `username` here is whatever was typed.
+            audit_event(
+                actor=None, action="auth.login_locked", request=request,
+                details={"username": str(username)[:150],
+                         "client": lockout.client_ip(request),
+                         "seconds": triggered},
+            )
+            return self._locked(request, triggered, username)
 
         user = serializer.validated_data["user"]
+
+        # Signing in forgets every failure before it.
+        lockout.reset(request, username)
 
         token, _ = Token.objects.get_or_create(user=user)
 

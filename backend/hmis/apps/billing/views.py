@@ -1,6 +1,6 @@
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal, InvalidOperation
-from django.db import models
+from django.db import models, transaction
 from django.db.models.functions import Coalesce
 from django.utils import timezone
 
@@ -12,16 +12,19 @@ from rest_framework.response import Response
 from django_filters.rest_framework import DjangoFilterBackend
 from apps.core.services import audit_event
 from apps.core.config import ProtectedConfigMixin
-from apps.accounts.permissions import BILLING_ROLES, CANCEL_ROLES, REFUND_ROLES, IsAdmin
+from apps.accounts.permissions import (BILLING_ROLES, CANCEL_ROLES, CLINICIAN_ROLES,
+                                       REFUND_ROLES, IsAdmin)
 from .models import (PatientLedger, Charge, Payment, Adjustment, BillingItem, Refund,
                      PaymentAllocation, PaymentDeferral)
 from .serializers import (PatientLedgerSerializer, ChargeSerializer, PaymentSerializer,
                           AdjustmentSerializer, BillingItemSerializer, RefundSerializer,
                           RefundRequestSerializer)
+from .notifications import announce
 from .services import (add_charge, record_payment, refresh_ledger, waive_charge, cancel_charge,
                        apply_percentage_discount, apply_amount_discount, discount_patient_balance,
                        defer_charge, refund_payment, cancel_and_refund, refund_charge,
                        refundable_for_charge, RefundRequired)
+from . import catalogue
 from .withdrawn import annotate_withdrawn, withdrawn_q
 from apps.accounts.permissions import RoleRequired
 from rest_framework.views import APIView
@@ -56,6 +59,14 @@ CATALOG_ROLES = ["cashier", "accountant"]
 # waivers (rule 13) is the same one drawn here.
 FINANCE_REPORT_ROLES = ["cashier", "accountant"]
 
+# Who reads the composed list of billable services (`billing/catalogue.py`).
+# It is a price list, not a chart — but it carries the laboratory catalogue's
+# names, so it is drawn no wider than the roles that already read
+# `/api/lab-tests/` plus the desks that bill. A pharmacist works a different
+# catalogue (products) and is deliberately not here.
+SERVICE_CATALOGUE_ROLES = [*BILLING_ROLES, *CLINICIAN_ROLES, "laboratory", "radiology",
+                           "optometrist", "nurse"]
+
 
 class BillingItemViewSet(ProtectedConfigMixin, viewsets.ModelViewSet):
     """
@@ -68,7 +79,9 @@ class BillingItemViewSet(ProtectedConfigMixin, viewsets.ModelViewSet):
     """
     queryset = BillingItem.objects.all(); serializer_class = BillingItemSerializer
     filter_backends = [DjangoFilterBackend]; filterset_fields = ["is_active", "category"]
-    protected_relations = ("lab_tests",)
+    # Both the laboratory catalogue and the referrals that have ordered this
+    # examination point at it. Retire it instead (rule 31).
+    protected_relations = ("lab_tests", "route_services")
     def get_permissions(self):
         # Everyone signed in can read the price list — reception bills from
         # it, the pharmacy quotes from it.
@@ -159,7 +172,7 @@ def _cancellation_audit(charge, *, amount_paid, amount_refunded, refunds=(),
                    f"been paid for it, so no money moved.")
     return {
         "summary": summary,
-        "patient": str(patient),
+        "patient": patient.display_name,
         "patient_number": patient.patient_number,
         "patient_uuid": str(patient.uuid),
         "charge": charge.pk,
@@ -331,6 +344,72 @@ class ChargeViewSet(viewsets.ModelViewSet):
         # No notification here: `add_charge` announced it. Raising it a second
         # time from the view is exactly how one action becomes two bells.
         return Response(self.get_serializer(charge).data, status=status.HTTP_201_CREATED)
+    @action(detail=False, methods=["post"], url_path="bill-services")
+    def bill_services(self, request):
+        """
+        Bill several configured services at once — what the counter does when
+        a doctor has asked for five tests and the patient is at the window.
+
+        `POST {patient, services: ["lab_test:12", "billing_item:7", …]}`.
+
+        **The request carries identities, never money.** Each key is resolved
+        through `billing/catalogue.py` on this side of the wire, the price is
+        the catalogue's, and the total is worked out here — a figure typed
+        into a request body is not money in this system. A key naming nothing
+        billable (retired since the screen loaded, deleted, malformed) is
+        refused by name with **nothing billed**: five charges where the desk
+        meant six is worse than an error.
+
+        Each service is an ordinary `add_charge` — same chokepoint, same
+        attribution, same price snapshot as a single charge typed at the
+        counter, so nothing downstream can tell the difference. The
+        announcement is made **once** for the whole decision (rule 35), the
+        way the laboratory's order does, so a bill of six tests is one line on
+        the cash desk's bell rather than six.
+        """
+        patient = Patient.objects.filter(pk=request.data.get("patient")).first()
+        if patient is None:
+            return Response({"patient": "Choose the patient being billed."},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        keys = request.data.get("services") or []
+        if not isinstance(keys, (list, tuple)):
+            keys = [keys]
+        chosen, unknown = catalogue.resolve(keys)
+        if unknown:
+            return Response(
+                {"code": "unknown_service", "services": unknown,
+                 "detail": "One of these services is no longer available to bill. "
+                           "Reload the list and choose again — nothing has been billed."},
+                status=status.HTTP_400_BAD_REQUEST)
+        if not chosen:
+            return Response({"services": "Choose at least one service to bill.",
+                             "code": "no_services"},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        with transaction.atomic():
+            charges = [
+                add_charge(patient=patient, description=row["name"], amount=Decimal(row["price"]),
+                           created_by=request.user, source_type=row["source_type"], notify=False)
+                for row in chosen
+            ]
+        total = catalogue.total_of(chosen)
+        ledger = refresh_ledger(patient)
+        announce(event="charge_raised", patient=patient, amount=total, actor=request.user,
+                 detail=(charges[0].description if len(charges) == 1
+                         else f"{len(charges)} services billed at the counter"),
+                 outstanding=ledger.outstanding_balance)
+        audit_event(actor=request.user, action="billing.services_billed", instance=patient,
+                    details={"services": [row["key"] for row in chosen],
+                             "descriptions": [row["name"] for row in chosen],
+                             "total": str(total)}, request=request)
+        return Response({
+            "charges": ChargeSerializer(charges, many=True).data,
+            "total": f"{total:.2f}",
+            "count": len(charges),
+            "outstanding": f"{ledger.outstanding_balance:.2f}",
+        }, status=status.HTTP_201_CREATED)
+
     @action(detail=True, methods=["post"])
     def discount(self, request, pk=None):
         """Take a percentage off this charge. POST {percent, reason}."""
@@ -710,3 +789,36 @@ class FinancialReportView(APIView):
         )
         report["role"] = getattr(request.user, "role", None)
         return Response(report)
+
+
+class BillableServiceView(APIView):
+    """
+    Everything the counter can bill, from the catalogues that already define
+    it — `billing/catalogue.py` says why this is one read over several
+    catalogues rather than one more catalogue.
+
+    `?category=` narrows it, `?search=` filters by name, `?all=1` includes
+    retired rows for a screen that wants to show them. Deliberately **not
+    paginated**: it is a picker over configuration, and the bug it was
+    written to fix was a desk seeing one laboratory test where the doctor
+    ordered from sixty-six.
+    """
+
+    def get_permissions(self):
+        return [RoleRequired(SERVICE_CATALOGUE_ROLES)]
+
+    def get(self, request):
+        params = request.query_params
+        category = (params.get("category") or "").strip() or None
+        rows = catalogue.services(
+            category=category,
+            search=params.get("search") or "",
+            active_only=params.get("all") not in ("1", "true", "yes"),
+        )
+        return Response({
+            "count": len(rows),
+            "results": rows,
+            "categories": [{"category": value, "label": label,
+                            "count": catalogue.counts().get(value, 0)}
+                           for value, label in catalogue.CATEGORIES],
+        })

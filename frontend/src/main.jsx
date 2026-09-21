@@ -7,7 +7,9 @@ import "./index.css";
 
 import { AuthProvider } from "./auth/AuthContext.jsx";
 import RequireAuth from "./auth/RequireAuth.jsx";
+import ErrorBoundary from "./components/ErrorBoundary.jsx";
 import {
+  ADMIN_ROLES,
   BED_BOARD_ROLES, BILLING_ROLES, CANCEL_ROLES, CHART_ROLES, CLINICAL_ROLES, FINANCE_REPORT_ROLES,
   REFUND_ROLES, PATIENT_LOOKUP_ROLES, POS_HISTORY_ROLES, POS_ROLES, QUEUE_ROLES,
 } from "./auth/roles.js";
@@ -30,6 +32,8 @@ import ReferPatient from "./pages/ReferPatient.jsx";
 import DepartmentStation from "./pages/DepartmentStation.jsx";
 import LabCatalogue from "./pages/LabCatalogue.jsx";
 import Admissions from "./pages/Admissions.jsx";
+import AdminDischarge from "./pages/AdminDischarge.jsx";
+import DischargedPatients from "./pages/DischargedPatients.jsx";
 import DepartmentsAdmin from "./pages/DepartmentsAdmin.jsx";
 import UsersAdmin from "./pages/UsersAdmin.jsx";
 import Billing from "./pages/Billing.jsx";
@@ -47,6 +51,7 @@ import HospitalSettingsPage, { NotificationSettingsPage }
   from "./pages/admin/HospitalSettingsPage.jsx";
 import AppShell from "./components/AppShell.jsx";
 import { ToastProvider } from "./components/Toaster.jsx";
+import { ConfirmProvider } from "./components/ConfirmAlert.jsx";
 
 const queryClient = new QueryClient();
 
@@ -56,9 +61,16 @@ ReactDOM.createRoot(document.getElementById("root")).render(
       <BrowserRouter>
         <AuthProvider>
         <ToastProvider>
+          <ConfirmProvider>
           <Routes>
             <Route path="/login" element={<Login />} />
-            <Route element={<RequireAuth><AppShell /></RequireAuth>}>
+            {/* One floor under every routed page: a render-time bug in one
+                screen used to unmount the tree and leave a white page with no
+                way back. `ErrorBoundary` is for that alone — an API failure is
+                still handled where it happens, with a message from
+                `api/errors.js`. It sits inside the shell so the navigation
+                survives and the person can go somewhere else. */}
+            <Route element={<RequireAuth><ErrorBoundary><AppShell /></ErrorBoundary></RequireAuth>}>
             <Route path="/" element={<Dashboard />} />
             {/* Looking a patient up is not reading their chart, but it is
                 still not for every role: the API refuses the rest, so a
@@ -314,6 +326,27 @@ ReactDOM.createRoot(document.getElementById("root")).render(
               }
             />
 
+            {/* The Admin Discharge workspace and its register. **Both**
+                administrators, mirroring `IsAdmin` on `/admin-discharges/` —
+                and the guard here is the courtesy, never the control (rule
+                28). The ward's own discharge stays on /admissions, unchanged. */}
+            <Route
+              path="/discharge"
+              element={
+                <RequireAuth roles={ADMIN_ROLES}>
+                  <AdminDischarge />
+                </RequireAuth>
+              }
+            />
+            <Route
+              path="/discharged"
+              element={
+                <RequireAuth roles={ADMIN_ROLES}>
+                  <DischargedPatients />
+                </RequireAuth>
+              }
+            />
+
             {/* Each referral unit works from its own station — the same page
                 driven by the purpose it handles. Admin roles reach all three. */}
             <Route
@@ -426,6 +459,7 @@ ReactDOM.createRoot(document.getElementById("root")).render(
             <Route path="*" element={<NotFound />} />
             </Route>
           </Routes>
+          </ConfirmProvider>
         </ToastProvider>
         </AuthProvider>
       </BrowserRouter>

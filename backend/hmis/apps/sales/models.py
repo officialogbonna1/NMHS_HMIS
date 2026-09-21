@@ -168,7 +168,7 @@ class Sale(_Referenced):
     @property
     def customer_label(self):
         if self.patient_id:
-            return str(self.patient)
+            return self.patient.display_name
         return self.customer_name or "Walk-in customer"
 
     @property
@@ -275,3 +275,7 @@ class SaleReturnLine(TimeStampedModel):
 
     class Meta:
         ordering = ["id"]
+
+    def __str__(self):
+        """What came back off which sold line, and how much of it."""
+        return f"{self.sale_item} ×{self.quantity}"

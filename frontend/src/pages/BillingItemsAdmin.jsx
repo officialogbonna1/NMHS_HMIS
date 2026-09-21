@@ -75,7 +75,11 @@ function CategorySection({ category, title, description, namePlaceholder }) {
 
   const { data: items, isLoading } = useQuery({
     queryKey,
-    queryFn: () => api.get("/billing-items/", { params: { category } }).then((r) => r.data.results ?? r.data),
+    // The default page is 25 rows. A hospital with thirty ultrasound
+    // examinations would have silently edited the first twenty-five and
+    // wondered where the rest went, so the catalogue page asks for the lot.
+    queryFn: () => api.get("/billing-items/", { params: { category, page_size: 500 } })
+      .then((r) => r.data.results ?? r.data),
   });
 
   const save = useMutation({

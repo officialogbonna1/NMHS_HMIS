@@ -137,11 +137,19 @@ function DispensingQueue() {
         message: `${response.data.item_name} — ${currency(response.data.dispensed_value)} charged to ${response.data.patient_name}`,
       });
     },
-    onError: (error) => showToast({
-      title: "Could not dispense",
-      message: error.response?.data?.detail || "Please try again.",
-      tone: "error",
-    }),
+    onError: (error) => {
+      // A shelf that emptied while this queue was on screen: the figures the
+      // pharmacist is looking at are already wrong, so re-read them rather
+      // than leave a toast arguing with the page behind it. The server is
+      // what decided (it re-checks under lock); this only catches the screen
+      // up. Any other refusal leaves the page alone.
+      if (error.response?.data?.code === "insufficient_stock") refresh();
+      showToast({
+        title: "Could not dispense",
+        message: error.response?.data?.detail || "Please try again.",
+        tone: "error",
+      });
+    },
   });
 
   const cancel = useMutation({

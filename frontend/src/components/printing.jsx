@@ -6,7 +6,8 @@ import { PatientCardSheet, PatientBillSheet, ReceiptSheet } from "./PrintDocumen
 import LabReportSheet from "./LabReportSheet.jsx";
 import {
   LabRequestSheet, ReferralDocumentSheet, PrescriptionSheet, DispensingSheet,
-  AdmissionSheet, VitalsRecordSheet, ClinicalSummarySheet,
+  AdmissionSheet, VitalsRecordSheet, ClinicalSummarySheet, ConsultationNoteSheet,
+  DischargeLetterSheet,
 } from "./DepartmentDocuments.jsx";
 
 /**
@@ -181,6 +182,21 @@ export const DOCUMENTS = {
     ),
   },
 
+  // The completed discharge, printed and handed to the patient. `roles` is the
+  // Super Admin alone, mirroring `IsSuperAdmin` on `/admin-discharges/` — the
+  // endpoint the sheet reads — so no other role is offered a button that would
+  // only 403 (rule: `roles` mirrors the backend and never widens it). The
+  // ward's own discharge is unaffected and still prints its admission slip.
+  discharge_letter: {
+    label: "Discharge letter",
+    description: "The completed discharge, for the patient",
+    roles: ["admin"],
+    needs: ["dischargeId"],
+    render: (context, onClose) => (
+      <DischargeLetterSheet dischargeId={context.dischargeId} onClose={onClose} />
+    ),
+  },
+
   vitals_record: {
     label: "Observation record",
     description: "Readings and nursing notes",
@@ -188,6 +204,19 @@ export const DOCUMENTS = {
     needs: ["patientId"],
     render: (context, onClose) => (
       <VitalsRecordSheet patientId={context.patientId} onClose={onClose} />
+    ),
+  },
+
+  // *This* note, printed from the note itself — a per-record document, so it
+  // belongs to the note's own row and header, never to the chart's masthead,
+  // which would have to guess which note you meant (rule 3 of this registry).
+  consultation_note: {
+    label: "Medical note",
+    description: "This consultation, as documented",
+    roles: CLINICAL,
+    needs: ["note"],
+    render: (context, onClose) => (
+      <ConsultationNoteSheet note={context.note} patient={context.patient} onClose={onClose} />
     ),
   },
 

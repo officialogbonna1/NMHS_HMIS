@@ -4,86 +4,291 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "../auth/AuthContext.jsx";
 import { EYE_EXAMINATION_ROLES } from "../auth/roles.js";
 import EyeExaminationFields from "../components/EyeExaminationFields.jsx";
+import { PrintButton } from "../components/printing.jsx";
+import { useToast } from "../components/Toaster.jsx";
+import {
+  Alert, Badge, Button, Card, CardBody, CardFooter, CardHeader, EmptyState,
+  Field, Input, Section, Select, Textarea, SkeletonRows,
+} from "../components/ui.jsx";
+import { Icon } from "../components/icons.jsx";
 import api from "../api/client";
 
-// Mirrors the manual's Medical Notes section: reverse-chronological list,
-// "Add Medical Note" button, any doctor can view all notes but only the
-// author can edit their own (before it locks). Editing a locked note
-// (admin only) creates an amendment snapshot rather than overwriting.
+// The patient's clinical notes, as a longitudinal record.
 //
-// The eye doctor writes the same note, with an eye examination under it.
+// **A visit is a note; a correction is an amendment.** Returning next month
+// creates a new `ConsultationNote` — nothing overwrites the last one. Fixing
+// something already written amends *that* note, which archives what it said
+// before in `ConsultationNoteAmendment`. The server holds both rules; this
+// page is careful to say which one a button is about, because confusing them
+// is how a follow-up ends up overwriting the consultation before it.
+//
+// Viewing is read-only by design: you have to press Amend to change anything,
+// so a saved record cannot be altered by landing on it and typing.
+//
+// The eye doctor writes this same note with an eye examination under it.
 // `?new=1` opens a new note straight away — the eye clinic station's
 // "Eye consultation" lands here.
-export default function MedicalNotesTab({ patientId }) {
-  const [searchParams] = useSearchParams();
-  // undefined = closed, null = new, object = editing
-  const [editingNote, setEditingNote] = useState(searchParams.get("new") ? null : undefined);
-  const queryClient = useQueryClient();
 
-  const { data: notes } = useQuery({
+const dateTime = (value) => (value ? new Date(value).toLocaleString() : "—");
+
+export default function MedicalNotesTab({ patientId, patient }) {
+  const [searchParams] = useSearchParams();
+  const queryClient = useQueryClient();
+  // null = writing a new one, a note = the one being read, undefined = the list
+  const [open, setOpen] = useState(searchParams.get("new") ? null : undefined);
+
+  const { data: notes, isLoading } = useQuery({
     queryKey: ["notes", patientId],
-    queryFn: () => api.get("/notes/", { params: { patient: patientId } }).then((r) => r.data.results ?? r.data),
+    queryFn: () => api.get("/notes/", { params: { patient: patientId } })
+      .then((r) => r.data.results ?? r.data),
   });
 
-  if (editingNote !== undefined) {
-    return (
-      <NoteEditor
-        patientId={patientId}
-        note={editingNote}
-        onDone={() => {
-          queryClient.invalidateQueries({ queryKey: ["notes", patientId] });
-          setEditingNote(undefined);
-        }}
-        onCancel={() => setEditingNote(undefined)}
-      />
-    );
+  const done = (saved) => {
+    queryClient.invalidateQueries({ queryKey: ["notes", patientId] });
+    queryClient.invalidateQueries({ queryKey: ["patient-overview", String(patientId)] });
+    // Land on the saved note, so Print is one press away from saving it.
+    setOpen(saved ?? undefined);
+  };
+
+  if (open === null) {
+    return <NoteEditor patientId={patientId} note={null} onDone={done}
+                       onCancel={() => setOpen(undefined)} />;
+  }
+  if (open) {
+    // Read the live copy: an amendment just written has to show on the page
+    // that sent it, not the stale row the list was holding.
+    const live = (notes ?? []).find((n) => n.id === open.id) ?? open;
+    return <NoteView note={live} patient={patient} onDone={done}
+                     onBack={() => setOpen(undefined)} />;
   }
 
   return (
-    <div>
-      <div className="flex justify-between items-center mb-4">
-        <h2 className="font-semibold text-lg">Medical Notes</h2>
-        <button
-          onClick={() => setEditingNote(null)}
-          className="bg-brand-600 text-white px-4 py-2 rounded-full text-sm"
-        >
-          Add Medical Note
-        </button>
-      </div>
+    <Section
+      title="Clinical notes"
+      description="Every consultation, newest first. A new visit is a new note; a correction amends the note it belongs to."
+      actions={<Button onClick={() => setOpen(null)}>
+        <Icon name="plus" className="h-4 w-4" aria-hidden="true" />
+        New note
+      </Button>}
+    >
+      {isLoading && <SkeletonRows rows={3} />}
 
-      <div className="grid gap-3">
-        {notes?.map((note) => (
-          <button
-            key={note.id}
-            onClick={() => setEditingNote(note)}
-            className="text-left border rounded-lg p-4 hover:bg-gray-50"
-          >
-            <div className="flex justify-between text-sm text-slate-600">
-              <span>{new Date(note.visit_time).toLocaleString()}</span>
-              {note.is_locked && <span className="text-xs text-slate-500">🔒 locked</span>}
-            </div>
-            <div className="font-medium mt-1">
-              {note.reason_for_visit}
-              {note.eye_examination && (
-                <span className="ml-2 rounded-full border border-brand-200 bg-brand-50 px-2 py-0.5 text-xs font-medium text-brand-700">
-                  Eye examination
-                </span>
-              )}
-            </div>
-            <div className="text-sm text-slate-700 line-clamp-2">{note.note_text}</div>
-          </button>
+      {!isLoading && !notes?.length && (
+        <Card>
+          <EmptyState
+            icon="list"
+            title="No clinical notes yet"
+            description="The first consultation written for this patient appears here, and every one after it."
+          />
+        </Card>
+      )}
+
+      <div className="grid gap-2.5">
+        {(notes ?? []).map((note) => (
+          <NoteRow key={note.id} note={note} patient={patient} onOpen={() => setOpen(note)} />
         ))}
-        {!notes?.length && <p className="text-slate-500 text-sm">No medical notes yet.</p>}
+      </div>
+    </Section>
+  );
+}
+
+function NoteRow({ note, patient, onOpen }) {
+  const { user } = useAuth();
+  return (
+    <div className="flex flex-col gap-3 rounded-xl border border-slate-200 bg-white p-4 shadow-sm
+      transition hover:border-slate-300 sm:flex-row sm:items-center sm:justify-between">
+      <button onClick={onOpen} className="min-w-0 flex-1 text-left">
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
+          <span className="font-semibold text-slate-900">{note.reason_for_visit}</span>
+          {note.eye_examination && <Badge tone="brand">Eye examination</Badge>}
+          {/* Quiet, but impossible to miss — the point is that nobody reads an
+              amended note believing it is still as first written. */}
+          {note.is_amended && <Badge tone="warning">Amended</Badge>}
+        </div>
+        <p className="mt-1 text-sm text-slate-600">
+          {dateTime(note.visit_time)} · {note.doctor_name ?? "—"}
+          {note.is_amended && ` · last amended ${dateTime(note.last_amended_at)}`}
+        </p>
+        {note.diagnosis && (
+          <p className="mt-1 line-clamp-2 text-sm text-slate-700">{note.diagnosis}</p>
+        )}
+      </button>
+      <div className="flex shrink-0 flex-wrap items-center gap-2">
+        <PrintButton role={user?.role} variant="secondary" size="sm"
+                     documents={["consultation_note"]} context={{ note, patient }} />
+        <Button variant="link" size="sm" onClick={onOpen}>
+          View
+          <Icon name="chevronRight" className="h-4 w-4" aria-hidden="true" />
+        </Button>
       </div>
     </div>
   );
 }
 
+/** A saved note, read-only until Amend is pressed. */
+function NoteView({ note, patient, onDone, onBack }) {
+  const { user } = useAuth();
+  const [amending, setAmending] = useState(false);
+  const [showHistory, setShowHistory] = useState(false);
+
+  if (amending) {
+    return (
+      <NoteEditor
+        patientId={note.patient}
+        note={note}
+        onDone={(saved) => { setAmending(false); onDone(saved); }}
+        onCancel={() => setAmending(false)}
+      />
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      <Button variant="link" size="xs" onClick={onBack}>
+        <Icon name="back" className="h-4 w-4" aria-hidden="true" />
+        Back to the notes
+      </Button>
+
+      <Card>
+        <CardHeader
+          title={note.reason_for_visit}
+          description={`${dateTime(note.visit_time)} · ${note.doctor_name ?? "—"}`}
+          actions={
+            <>
+              {/* The server decides this (`may_amend`); the button only
+                  reflects it. A caller who forges the request is refused. */}
+              {note.can_amend && (
+                <Button variant="secondary" onClick={() => setAmending(true)}>Amend note</Button>
+              )}
+              <PrintButton role={user?.role} variant="secondary"
+                           documents={["consultation_note"]} context={{ note, patient }} />
+            </>
+          }
+        />
+        <CardBody className="space-y-4">
+          <dl className="grid gap-x-8 gap-y-2 sm:grid-cols-2">
+            <Fact label="Documented by" value={note.doctor_name} />
+            <Fact label="Staff number" value={note.doctor_staff_number} />
+            <Fact label="Created" value={dateTime(note.created_at)} />
+            <Fact label="Status" value={note.is_amended ? "Amended" : "Original"} />
+            {note.is_amended && (
+              <Fact label="Last amended" value={dateTime(note.last_amended_at)} />
+            )}
+            {note.is_amended && (
+              <Fact label="Last amended by" value={note.last_amended_by_name} />
+            )}
+          </dl>
+
+          {note.is_amended && (
+            <Alert tone="warning" title="This note has been amended">
+              What is shown below is the current record.{" "}
+              <button type="button" onClick={() => setShowHistory((v) => !v)}
+                      className="font-medium underline underline-offset-2">
+                {showHistory ? "Hide" : "View"} amendment history
+              </button>
+              {" "}to see what it said before, and why it was changed.
+            </Alert>
+          )}
+
+          {showHistory && <AmendmentHistory note={note} />}
+
+          <ReadOnlyField label="Chief complaint" value={note.chief_complaint} />
+          <ReadOnlyField label="Notes" value={note.note_text} />
+          <ReadOnlyField label="Diagnosis" value={note.diagnosis} />
+          <ReadOnlyField label="Plan" value={note.plan} />
+
+          {note.eye_examination && (
+            <EyeExaminationFields value={note.eye_examination} onChange={() => {}} disabled />
+          )}
+        </CardBody>
+      </Card>
+    </div>
+  );
+}
+
+/** The trail, newest first, with what each correction actually changed. */
+function AmendmentHistory({ note }) {
+  const amendments = note.amendments ?? [];
+  return (
+    <section aria-label="Amendment history"
+             className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+      <h3 className="text-sm font-semibold uppercase tracking-wide text-slate-700">
+        Amendment history
+      </h3>
+      <ol className="mt-3 space-y-3">
+        {amendments.map((amendment, index) => (
+          <li key={amendment.id} className="border-l-2 border-slate-300 pl-3">
+            <p className="text-sm font-medium text-slate-900">
+              Amendment #{amendments.length - index} · {dateTime(amendment.created_at)}
+            </p>
+            <p className="text-sm text-slate-700">
+              By {amendment.amended_by_name ?? "—"}
+              {amendment.reason_label && ` · ${amendment.reason_label}`}
+            </p>
+            {amendment.detail && (
+              <p className="mt-1 text-sm text-slate-700">“{amendment.detail}”</p>
+            )}
+            {amendment.changes?.length > 0 && (
+              <dl className="mt-2 space-y-1.5">
+                {amendment.changes.map((change) => (
+                  <div key={change.field} className="text-sm">
+                    <dt className="font-medium text-slate-800">{change.label}</dt>
+                    <dd className="text-slate-700">
+                      <span className="line-through decoration-slate-400">
+                        {change.previous || "(blank)"}
+                      </span>
+                      {" → "}
+                      <span className="font-medium text-slate-900">
+                        {change.current || "(blank)"}
+                      </span>
+                    </dd>
+                  </div>
+                ))}
+              </dl>
+            )}
+          </li>
+        ))}
+        {/* The original is the foot of the chain, so the trail reads all the
+            way back to who first documented it. */}
+        <li className="border-l-2 border-slate-300 pl-3">
+          <p className="text-sm font-medium text-slate-900">
+            Original · {dateTime(note.created_at)}
+          </p>
+          <p className="text-sm text-slate-700">Created by {note.doctor_name ?? "—"}</p>
+        </li>
+      </ol>
+    </section>
+  );
+}
+
+function Fact({ label, value }) {
+  return (
+    <div className="min-w-0">
+      <dt className="text-xs font-medium uppercase tracking-wide text-slate-500">{label}</dt>
+      <dd className="text-slate-800">{value || "—"}</dd>
+    </div>
+  );
+}
+
+function ReadOnlyField({ label, value }) {
+  if (!value) return null;
+  return (
+    <div className="min-w-0">
+      <p className="text-xs font-medium uppercase tracking-wide text-slate-500">{label}</p>
+      <p className="mt-0.5 whitespace-pre-wrap text-slate-800">{value}</p>
+    </div>
+  );
+}
+
+/**
+ * Writing a new note, or amending a saved one. The same fields either way —
+ * what differs is that an amendment must say why, and archives what the note
+ * said before it.
+ */
 function NoteEditor({ patientId, note, onDone, onCancel }) {
   const { user } = useAuth();
+  const { showToast } = useToast();
   const isNew = note === null;
-  const isOwner = !isNew && note.doctor === user?.id;
-  const canEdit = isNew || (isOwner && !note.is_locked) || user?.role === "admin";
 
   const [form, setForm] = useState({
     visit_time: note?.visit_time ?? new Date().toISOString().slice(0, 16),
@@ -93,120 +298,129 @@ function NoteEditor({ patientId, note, onDone, onCancel }) {
     diagnosis: note?.diagnosis ?? "",
     plan: note?.plan ?? "",
   });
+  const [reason, setReason] = useState("");
+  const [detail, setDetail] = useState("");
+  const [reasonChoices, setReasonChoices] = useState(null);
   const [error, setError] = useState(null);
-  // The eye examination travels only on a note that has one, or that the eye
-  // doctor is writing — a general doctor's note is sent exactly as before.
   const [eyeExamination, setEyeExamination] = useState(note?.eye_examination ?? {});
   const [eyeErrors, setEyeErrors] = useState(null);
+
+  // The eye examination travels only on a note that has one, or that the eye
+  // doctor is writing — a general doctor's note is sent exactly as before.
   const showEye = Boolean(note?.eye_examination)
-    || (canEdit && EYE_EXAMINATION_ROLES.includes(user?.role));
+    || EYE_EXAMINATION_ROLES.includes(user?.role);
 
   const mutation = useMutation({
     mutationFn: () => {
-      const body = showEye && canEdit ? { ...form, eye_examination: eyeExamination } : form;
-      return isNew
-        ? api.post("/notes/", { patient: patientId, ...body })
-        : api.patch(`/notes/${note.id}/`, body);
+      const body = showEye ? { ...form, eye_examination: eyeExamination } : { ...form };
+      if (isNew) return api.post("/notes/", { patient: patientId, ...body });
+      return api.patch(`/notes/${note.id}/`, {
+        ...body, amendment_reason: reason, amendment_detail: detail,
+      });
     },
-    onSuccess: onDone,
+    onSuccess: (response) => {
+      showToast({
+        title: isNew ? "Medical note saved" : "Medical note amended",
+        message: isNew
+          ? "It is on the patient's record. Print it from here."
+          : "The previous version is kept in the amendment history.",
+      });
+      onDone(response.data);
+    },
     onError: (err) => {
       const data = err.response?.data;
       setEyeErrors(data?.eye_examination ?? null);
-      setError(data?.detail
-        ?? (data?.eye_examination ? "Check the eye examination below." : "Could not save note."));
+      if (data?.code === "amendment_reason_required") setReasonChoices(data.choices ?? []);
+      setError(data?.amendment_reason ?? data?.detail
+        ?? (data?.eye_examination ? "Check the eye examination below." : "Could not save this note."));
     },
   });
 
+  const REASONS = reasonChoices ?? [
+    { value: "correction", label: "Correction of error" },
+    { value: "additional_information", label: "Additional clinical information" },
+    { value: "clarification", label: "Clarification" },
+    { value: "documentation", label: "Documentation correction" },
+    { value: "other", label: "Other" },
+  ];
+
+  const set = (key) => (e) => setForm((f) => ({ ...f, [key]: e.target.value }));
+  const ready = form.reason_for_visit.trim() && (isNew || reason);
+
   return (
-    <div>
-      <button onClick={onCancel} className="text-sm text-brand-600 mb-4">← Back</button>
+    <div className="space-y-4">
+      <Button variant="link" size="xs" onClick={onCancel}>
+        <Icon name="back" className="h-4 w-4" aria-hidden="true" />
+        {isNew ? "Back to the notes" : "Back to the note"}
+      </Button>
 
-      {!canEdit && (
-        <div className="mb-4 p-3 bg-amber-50 border border-amber-200 rounded-md text-sm text-amber-800">
-          This note is locked. {isOwner ? "Only an admin can amend it now." : "You can only edit your own notes."}
-        </div>
-      )}
+      <Card>
+        <CardHeader
+          title={isNew ? "New clinical note" : "Amend this note"}
+          description={isNew
+            ? "A note of its own for this visit. Nothing written before is changed."
+            : `Correcting the note ${note.doctor_name ?? "—"} wrote on ${dateTime(note.visit_time)}. What it says now is kept in the amendment history.`}
+        />
+        <CardBody className="space-y-4">
+          {!isNew && (
+            <>
+              <Field label="Reason for amendment" required>
+                <Select value={reason} onChange={(e) => setReason(e.target.value)}>
+                  <option value="">Choose a reason…</option>
+                  {REASONS.map((r) => (
+                    <option key={r.value} value={r.value}>{r.label}</option>
+                  ))}
+                </Select>
+              </Field>
+              <Field label="Additional explanation"
+                     hint="What you are correcting, in your own words. Kept with the amendment.">
+                <Textarea rows={2} value={detail} onChange={(e) => setDetail(e.target.value)} />
+              </Field>
+            </>
+          )}
 
-      <div className="bg-white border rounded-xl p-6 space-y-4">
-        <div className="grid grid-cols-2 gap-4">
-          <Field label="Reason for Visit" value={form.reason_for_visit} disabled={!canEdit}
-            onChange={(v) => setForm((f) => ({ ...f, reason_for_visit: v }))} />
-          <Field label="Chief Complaint (optional)" value={form.chief_complaint} disabled={!canEdit}
-            onChange={(v) => setForm((f) => ({ ...f, chief_complaint: v }))} />
-        </div>
-        <TextAreaField label="Notes" value={form.note_text} disabled={!canEdit}
-          onChange={(v) => setForm((f) => ({ ...f, note_text: v }))} />
-        <div className="grid grid-cols-2 gap-4">
-          <TextAreaField label="Diagnosis" value={form.diagnosis} disabled={!canEdit}
-            onChange={(v) => setForm((f) => ({ ...f, diagnosis: v }))} />
-          <TextAreaField label="Plan" value={form.plan} disabled={!canEdit}
-            onChange={(v) => setForm((f) => ({ ...f, plan: v }))} />
-        </div>
-
-        {showEye && (
-          <EyeExaminationFields
-            value={eyeExamination}
-            onChange={setEyeExamination}
-            disabled={!canEdit}
-            errors={eyeErrors}
-          />
-        )}
-
-        {note?.amendments?.length > 0 && (
-          <div className="border-t pt-4">
-            <p className="text-sm font-medium text-slate-700 mb-2">Previous edits</p>
-            {note.amendments.map((a) => (
-              <div key={a.id} className="text-xs text-slate-600 border-l-2 pl-3 mb-2">
-                {new Date(a.created_at).toLocaleString()} — amended by admin
-              </div>
-            ))}
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Field label="Reason for visit" required>
+              <Input value={form.reason_for_visit} onChange={set("reason_for_visit")} />
+            </Field>
+            <Field label="Chief complaint">
+              <Input value={form.chief_complaint} onChange={set("chief_complaint")} />
+            </Field>
           </div>
-        )}
-
-        {error && <p className="text-red-500 text-sm">{error}</p>}
-
-        {canEdit && (
-          <div className="flex justify-end gap-2 pt-2">
-            <button onClick={onCancel} className="px-4 py-2 rounded-full border">Cancel</button>
-            <button
-              onClick={() => mutation.mutate()}
-              disabled={mutation.isPending}
-              className="px-4 py-2 rounded-full bg-brand-600 text-white disabled:opacity-50"
-            >
-              {mutation.isPending ? "Saving…" : "Save"}
-            </button>
+          <Field label="Notes">
+            <Textarea rows={4} value={form.note_text} onChange={set("note_text")} />
+          </Field>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Field label="Diagnosis">
+              <Textarea rows={4} value={form.diagnosis} onChange={set("diagnosis")} />
+            </Field>
+            <Field label="Plan">
+              <Textarea rows={4} value={form.plan} onChange={set("plan")} />
+            </Field>
           </div>
-        )}
-      </div>
-    </div>
-  );
-}
 
-function Field({ label, value, onChange, disabled }) {
-  return (
-    <div>
-      <label className="text-xs text-slate-600 uppercase">{label}</label>
-      <input
-        className="w-full border rounded-md px-3 py-2 mt-1 disabled:bg-gray-50"
-        value={value}
-        disabled={disabled}
-        onChange={(e) => onChange(e.target.value)}
-      />
-    </div>
-  );
-}
+          {showEye && (
+            <EyeExaminationFields value={eyeExamination} onChange={setEyeExamination}
+                                  errors={eyeErrors} />
+          )}
 
-function TextAreaField({ label, value, onChange, disabled }) {
-  return (
-    <div>
-      <label className="text-xs text-slate-600 uppercase">{label}</label>
-      <textarea
-        className="w-full border rounded-md px-3 py-2 mt-1 disabled:bg-gray-50"
-        rows={4}
-        value={value}
-        disabled={disabled}
-        onChange={(e) => onChange(e.target.value)}
-      />
+          {error && <Alert tone="danger">{error}</Alert>}
+        </CardBody>
+
+        <CardFooter>
+          <Button onClick={() => { setError(null); mutation.mutate(); }}
+                  disabled={!ready || mutation.isPending}
+                  loading={mutation.isPending} loadingText="Saving…">
+            {isNew ? "Save medical note" : "Save amendment"}
+          </Button>
+          <Button variant="secondary" onClick={onCancel}>Cancel</Button>
+          {!isNew && !reason && (
+            <span className="text-sm text-slate-600">
+              Choose a reason for the amendment to save it.
+            </span>
+          )}
+        </CardFooter>
+      </Card>
     </div>
   );
 }

@@ -42,7 +42,7 @@ class AdmissionTests(TestCase):
         self.assertEqual(admission.status, "admitted")
         self.assertEqual(admission.admitted_by, self.ward_manager)
         # The page reads these rather than fetching each patient.
-        self.assertEqual(response.data["patient_name"], str(self.patient))
+        self.assertEqual(response.data["patient_name"], self.patient.display_name)
         self.assertEqual(response.data["ward_name"], "Male Medical")
         self.assertEqual(response.data["bed_number"], "1")
 
@@ -57,7 +57,7 @@ class AdmissionTests(TestCase):
         self._admit()
         beds = {b["number"]: b for b in self.client.get("/api/beds/").data["results"]}
         self.assertTrue(beds["1"]["occupied"])
-        self.assertEqual(beds["1"]["occupant"], str(self.patient))
+        self.assertEqual(beds["1"]["occupant"], self.patient.display_name)
         self.assertFalse(beds["2"]["occupied"])
         self.assertIsNone(beds["2"]["occupant"])
 

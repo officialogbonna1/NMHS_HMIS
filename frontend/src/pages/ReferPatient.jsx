@@ -1,11 +1,14 @@
 import { useMemo, useState } from "react";
+import { useConfirm } from "../components/ConfirmAlert.jsx";
 import { Link } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import api from "../api/client";
 import { readError } from "../api/errors";
 import PatientPicker, { patientLabel } from "../components/PatientPicker.jsx";
+import { useAuth } from "../auth/AuthContext.jsx";
 import { useToast } from "../components/Toaster.jsx";
 import { Button, Page, PageHeader } from "../components/ui.jsx";
+import { ServiceChooser } from "../components/ServicePicker.jsx";
 
 // The doctor's hand-off, mirroring nursing's Send to Doctor: pick the
 // patient, pick where they are going, and the unit is notified and sees the
@@ -19,13 +22,19 @@ import { Button, Page, PageHeader } from "../components/ui.jsx";
 const DESTINATIONS = [
   { purpose: "laboratory", label: "Laboratory", icon: "🧫",
     blurb: "Blood work, urinalysis, swabs — anything the lab runs." },
-  { purpose: "ultrasound", label: "Ultrasound / Imaging", icon: "🩻",
-    blurb: "Scans and imaging." },
+  { purpose: "ultrasound", label: "Radiology / Ultrasound", icon: "🩻",
+    blurb: "Scans and imaging — pick the examinations you want performed." },
   { purpose: "eye", label: "Eye clinic", icon: "👁",
     blurb: "Refraction, eye pressure, and the eye doctors." },
   { purpose: "procedure", label: "Procedure", icon: "🩹",
     blurb: "Dressings, injections and minor procedures." },
 ];
+
+// A clinician who runs a station of their own does not refer to it: they are
+// the unit. The server refuses it (`code: "self_referral"`); this is what
+// stops the eye doctor being offered "Eye clinic" and sending the patient
+// back to their own queue. Everyone else sees every destination.
+const OWN_STATION = { ophthalmologist: "eye", optometrist: "eye" };
 
 const PRIORITIES = [
   ["routine", "Routine"],
@@ -36,8 +45,14 @@ const PRIORITIES = [
 // Which tests the doctor wants, when the referral is going to the lab.
 // The list is the catalogue's — never a hard-coded one — so a test the lab
 // added this morning is orderable this afternoon.
-function LabTestChooser({ chosen, onToggle }) {
+//
+// Exported for `ReferPatient.labAlert.test.jsx` and for no other reason: the
+// page around it needs a patient, a doctor list and an auth context to render
+// at all, and none of that is what the panel confirmation is about. The page
+// still renders it itself — this is not a second entry point.
+export function LabTestChooser({ chosen, onToggle }) {
   const [term, setTerm] = useState("");
+  const { ask } = useConfirm();
 
   const { data: tests } = useQuery({
     queryKey: ["lab-tests", term],
@@ -78,18 +93,34 @@ function LabTestChooser({ chosen, onToggle }) {
               key={panel.id}
               type="button"
               title={panel.description}
-              onClick={() => {
+              onClick={async () => {
                 const adding = panel.test_details.filter((t) => !chosen.some((c) => c.id === t.id));
                 const total = adding.reduce((sum, t) => sum + Number(t.charge_amount ?? 0), 0);
                 // A panel is several tests and several charges. Asking first
                 // is the difference between ordering a profile and ordering
                 // twelve tests by accident.
-                if (adding.length && window.confirm(
-                  `Add all ${adding.length} tests in "${panel.name}"?\n\n`
-                  + adding.map((t) => `• ${t.name}`).join("\n")
-                  + `\n\nThis adds ₦${total.toLocaleString()} to the patient's bill.`)) {
-                  adding.forEach(onToggle);
-                }
+                //
+                // The same question as before, asked as a proper alert rather
+                // than a browser confirm: each test is a row with its own
+                // price beside it, and the total is called out. Every name and
+                // figure is the catalogue's own — nothing here is written into
+                // the page.
+                if (!adding.length) return;
+                const agreed = await ask({
+                  title: "Laboratory tests selected",
+                  message: `Add all ${adding.length} test${adding.length === 1 ? "" : "s"} `
+                    + `in “${panel.name}” to this referral?`,
+                  details: adding.map((t) => ({
+                    label: t.name,
+                    value: Number(t.charge_amount) > 0
+                      ? `₦${Number(t.charge_amount).toLocaleString()}`
+                      : "No price set",
+                  })),
+                  total: { label: "Added to the patient's bill", value: `₦${total.toLocaleString()}` },
+                  confirmLabel: `Add ${adding.length} test${adding.length === 1 ? "" : "s"}`,
+                  tone: "info",
+                });
+                if (agreed) adding.forEach(onToggle);
               }}
               className="rounded-full border border-brand-200 bg-brand-50 px-3 py-1.5 text-xs font-semibold text-brand-700 transition hover:bg-brand-100"
             >
@@ -166,6 +197,8 @@ function LabTestChooser({ chosen, onToggle }) {
 export default function ReferPatient() {
   const queryClient = useQueryClient();
   const { showToast } = useToast();
+  const { user } = useAuth();
+  const destinations = DESTINATIONS.filter((d) => d.purpose !== OWN_STATION[user?.role]);
 
   const [patient, setPatient] = useState(null);
   const [purpose, setPurpose] = useState("");
@@ -174,6 +207,11 @@ export default function ReferPatient() {
   const [sent, setSent] = useState(null);
   const [error, setError] = useState(null);
   const [labTests, setLabTests] = useState([]);
+  // The imaging examinations asked for, from the same configured catalogue
+  // Reception bills from. Each one raises its own charge at the catalogue's
+  // price the moment the referral is sent — the laboratory's rule (rule 24),
+  // applied to the second unit that performs a priced, ordered service.
+  const [examinations, setExaminations] = useState([]);
 
   const refer = useMutation({
     // Two calls on purpose: the referral is the existing workflow and must
@@ -188,10 +226,19 @@ export default function ReferPatient() {
         await api.post(`/lab-orders/${order.id}/add-tests/`,
           { tests: labTests.map((t) => t.id) });
       }
+      // Imaging names its examinations on the route itself — there is no
+      // second order model, because a scan's report is prose and the route
+      // already carries it. The call is separate from the referral for the
+      // same reason the lab's is: a catalogue hiccup must not swallow the
+      // hand-off that has already been made.
+      if (purpose === "ultrasound" && examinations.length) {
+        await api.post(`/patient-routes/${route.id}/request-services/`,
+          { services: examinations.map((service) => service.id) });
+      }
       return route;
     },
     onSuccess: (route) => {
-      const where = DESTINATIONS.find((d) => d.purpose === purpose);
+      const where = destinations.find((d) => d.purpose === purpose);
       // The server says who it actually reached. Silence is deliberate for
       // doctor-work nobody is holding, but the referrer has to know.
       if (route?.notice) {
@@ -206,7 +253,7 @@ export default function ReferPatient() {
       });
       setSent({ patient, where: where?.label ?? purpose });
       setPatient(null); setPurpose(""); setPriority("routine"); setNotes("");
-      setLabTests([]); setError(null);
+      setLabTests([]); setExaminations([]); setError(null);
     },
     onError: (err) => setError(readError(err, "Could not send this referral.")),
   });
@@ -248,7 +295,7 @@ export default function ReferPatient() {
           person.
         </p>
         <div className="grid gap-3 sm:grid-cols-2">
-          {DESTINATIONS.map((d) => (
+          {destinations.map((d) => (
             <button
               key={d.purpose}
               onClick={() => { setPurpose(d.purpose); setError(null); }}
@@ -308,6 +355,22 @@ export default function ReferPatient() {
             ))}
           />
         )}
+
+        {purpose === "ultrasound" && patient && (
+          <ServiceChooser
+            category="ultrasound"
+            chosen={examinations}
+            title="Which examination?"
+            blurb={"These, and only these, go onto the radiology worklist. Each raises a charge on "
+              + "the patient at the price shown — the same configured service Reception bills — "
+              + "which the front desk or the cash desk collects."}
+            onToggle={(service) => setExaminations((current) => (
+              current.some((s) => s.key === service.key)
+                ? current.filter((s) => s.key !== service.key)
+                : [...current, service]
+            ))}
+          />
+        )}
       </section>
 
       {error && (
@@ -324,7 +387,8 @@ export default function ReferPatient() {
         </button>
         <Button variant="link" size="xs" to="/queue">My queue</Button>
         <span className="text-sm text-slate-700">
-          {purpose === "laboratory" && labTests.length > 0
+          {(purpose === "laboratory" && labTests.length > 0)
+            || (purpose === "ultrasound" && examinations.length > 0)
             ? "The charge is raised with the order; the patient settles it at Reception or the cash desk."
             : "The counter bills the service separately."}
         </span>

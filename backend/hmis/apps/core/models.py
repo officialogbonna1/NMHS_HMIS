@@ -6,6 +6,7 @@ from django.contrib.contenttypes.models import ContentType
 from django.db import models
 from django.utils import timezone
 
+from . import labels
 from .mixins import TimeStampedModel
 
 
@@ -22,6 +23,12 @@ class AuditLog(TimeStampedModel):
     class Meta:
         ordering = ["-created_at"]
         indexes = [models.Index(fields=["content_type", "object_id"]), models.Index(fields=["action"])]
+
+    def __str__(self):
+        """What was done, by whom, when — the three columns an audit row is
+        read for, so a log entry names itself the same way in a dropdown as
+        it does on the changelist."""
+        return f"{self.action} · {labels.person(self.actor)} · {labels.on(self.created_at, '%d %b %Y %H:%M')}"
 
 
 class NotificationQuerySet(models.QuerySet):
@@ -86,6 +93,10 @@ class Notification(TimeStampedModel):
         ordering = ["-created_at"]
         indexes = [models.Index(fields=["recipient", "is_read"]),
                    models.Index(fields=["recipient", "archived_at"])]
+
+    def __str__(self):
+        """What somebody was told, and who was told it."""
+        return f"{self.title} → {labels.person(self.recipient)}"
 
     @property
     def is_archived(self):

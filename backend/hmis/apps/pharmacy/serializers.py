@@ -3,7 +3,7 @@ from .models import Prescription
 
 
 class PrescriptionSerializer(serializers.ModelSerializer):
-    patient_name = serializers.CharField(source="patient.__str__", read_only=True)
+    patient_name = serializers.CharField(source="patient.display_name", read_only=True)
     # On the row because the pharmacy's own paperwork needs it — a dispensing
     # label identifies the patient by file number, and refetching the patient
     # for every line of a script is a request per drug.

@@ -1,3 +1,4 @@
+from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework import viewsets, permissions, status as drf_status
 from rest_framework.decorators import action
 from rest_framework.exceptions import NotFound
@@ -17,9 +18,12 @@ from apps.clinical.models import ConsultationNote, Vitals, NursingNote
 from apps.inventory.models import Item, StockRecord
 from apps.pharmacy.models import Prescription
 from apps.inpatient.models import Admission, Bed
-from apps.billing.models import Charge, Payment, PatientLedger, Adjustment
+from apps.billing.models import BillingItem, Charge, Payment, PatientLedger, Adjustment
 from django_filters.rest_framework import DjangoFilterBackend
 from apps.core.services import audit_event, notify
+from . import access
+from . import report_fields
+from . import services as workflow_services
 from .models import Visit, PatientRoute
 from .serializers import VisitSerializer, PatientRouteSerializer
 from apps.accounts.models import User
@@ -67,6 +71,23 @@ STATION_ROLES = set(ROLE_STATION_PURPOSE)
 
 def _display_name(user):
     return user.get_full_name() or user.username
+
+
+def _report_payload(data):
+    """
+    The structured report a station sent, whichever way its form sent it.
+
+    JSON gives a nested `report` object; a multipart post (the one that also
+    carries the scanned printout) cannot nest, so the same sections arrive as
+    `report.findings`, `report.impression`. One reader, so the two cannot
+    disagree.
+    """
+    nested = data.get("report")
+    if isinstance(nested, dict):
+        return nested
+    flat = {key.split(".", 1)[1]: value for key, value in data.items()
+            if isinstance(key, str) and key.startswith("report.")}
+    return flat or None
 
 
 # Roles that work a shared queue: the whole team sees the list, one person
@@ -160,7 +181,7 @@ def _no_vitals_refusal(patient, request):
     if _acknowledged(request):
         return None
     return Response(
-        {"code": "no_vitals", "detail": NO_VITALS_WARNING.format(patient=patient)},
+        {"code": "no_vitals", "detail": NO_VITALS_WARNING.format(patient=patient.display_name)},
         status=drf_status.HTTP_400_BAD_REQUEST,
     )
 
@@ -221,7 +242,7 @@ def _queue_consultation(*, visit, doctor, nurse, notes, department, priority, cl
     for route in replacing:
         if route.assigned_to_id and route.assigned_to_id != doctor.pk:
             notify(recipient=route.assigned_to,
-                   title=f"Reassigned: {visit.patient}",
+                   title=f"Reassigned: {visit.patient.display_name}",
                    message=f"{_display_name(nurse)} moved this patient to {_display_name(doctor)}.",
                    category="routing", action_url="/queue")
 
@@ -230,7 +251,7 @@ def _queue_consultation(*, visit, doctor, nurse, notes, department, priority, cl
                          "reassigned_from": [_display_name(r.assigned_to) for r in replacing if r.assigned_to]},
                 request=request)
     notify(recipient=doctor,
-           title=f"{'⚠ No vitals — ' if without_vitals else ''}Queued for consultation: {visit.patient}",
+           title=f"{'⚠ No vitals — ' if without_vitals else ''}Queued for consultation: {visit.patient.display_name}",
            message=notes or f"Sent from Nursing by {_display_name(nurse)} — vitals are on the chart.",
            category="routing", action_url=f"/patients/{visit.patient.uuid}")
     return onward
@@ -314,7 +335,7 @@ def _notify_result(route, author):
         return
     summary = route.result[:300] or "The report has been uploaded to the chart."
     notify(recipient=doctor,
-           title=f"{route.get_purpose_display()} result: {route.visit.patient}",
+           title=f"{route.get_purpose_display()} result: {route.visit.patient.display_name}",
            message=f"{summary} — {_display_name(author)}",
            category="clinical", action_url=chart_url_for(route))
 
@@ -339,7 +360,7 @@ def _notify_referral(route, doctor):
     targets = route_targets(route)
     for user in targets:
         notify(recipient=user,
-               title=f"{route.get_purpose_display()} requested: {route.visit.patient}",
+               title=f"{route.get_purpose_display()} requested: {route.visit.patient.display_name}",
                message=(route.notes or "No clinical note given.") + f" — Dr. {_display_name(doctor)}",
                category="routing", action_url=station)
     return targets
@@ -355,13 +376,33 @@ def _route_link_for(user, route):
     return f"/patients/{route.visit.patient.uuid}"
 
 
+def _route_message(route):
+    """
+    What the receiving unit needs to read in the bell itself: who the patient
+    is on paper, who sent them, who it was named to, and what was asked for.
+    A line saying only "Eye clinic requested" makes everyone open the queue to
+    find out whether it is theirs.
+    """
+    lines = [f"{route.visit.patient.display_name} · {route.visit.patient.patient_number}"]
+    if route.routed_by:
+        lines.append(f"From {_display_name(route.routed_by)} ({route.routed_by.get_role_display()})")
+    lines.append(f"Assigned to {_display_name(route.assigned_to)}" if route.assigned_to
+                 else f"Unassigned — in the {route.department.name} queue")
+    reason = (route.notes or route.visit.reason or "").strip()
+    if reason:
+        lines.append(reason)
+    if route.priority != "routine":
+        lines.append(route.get_priority_display().upper())
+    return " · ".join(lines)
+
+
 def _notify_route(route):
     for user in route_targets(route):
-        notify(recipient=user, title=f"{route.get_purpose_display()} requested: {route.visit.patient}",
-               message=route.notes, category="routing", action_url=_route_link_for(user, route))
+        notify(recipient=user, title=f"{route.get_purpose_display()} requested: {route.visit.patient.display_name}",
+               message=_route_message(route), category="routing", action_url=_route_link_for(user, route))
 
 
-def work_routes_for(user, statuses=("queued", "in_progress")):
+def work_routes_for(user, statuses=("queued", "in_progress"), include_unit=False):
     """
     The routes this user works.
 
@@ -369,6 +410,20 @@ def work_routes_for(user, statuses=("queued", "in_progress")):
     A *document* outlives the queue — the bench reprints the request form for
     a scan it finished this morning — so the printable endpoint passes
     `statuses=None` and gets the same ownership rule without the time limit.
+
+    `include_unit` widens it for a **station** role (`STATION_ROLES`: the
+    laboratory, radiology, the eye clinic) to that unit's whole live board —
+    including the work a colleague has already claimed. Those units share a
+    room, a machine and a list, and a request that disappeared the moment
+    somebody pressed Accept left everyone else guessing whether it had been
+    picked up or lost. **Seeing it is not being able to do it**: `_own_route`
+    still says only the person holding it may start, write a result or close
+    it, and `accept` still answers 409 to a second claim.
+
+    Nursing is deliberately not a station role: a vitals hand-off is one nurse
+    to one patient, and "accepting claims the patient from the other nurses"
+    is a rule with a test on it
+    (`test_nurse_handoff.test_accepting_claims_the_patient_from_the_other_nurses`).
     """
     routes = PatientRoute.objects.all() if statuses is None \
         else PatientRoute.objects.filter(status__in=list(statuses))
@@ -393,7 +448,11 @@ def work_routes_for(user, statuses=("queued", "in_progress")):
     # request is a nurse's, not every doctor who happens to be listed in that
     # department. Department membership is the fallback only for purposes
     # that map to no particular role.
-    unclaimed_for_me = models.Q(assigned_to__isnull=True, purpose__in=ROLE_PURPOSES.get(user.role, []))
+    my_purposes = ROLE_PURPOSES.get(user.role, [])
+    unclaimed_for_me = models.Q(assigned_to__isnull=True, purpose__in=my_purposes)
+    if include_unit and user.role in STATION_ROLES:
+        # The unit's board: everything sent to this unit, claimed or not.
+        unclaimed_for_me = models.Q(purpose__in=my_purposes)
     unmapped = models.Q(assigned_to__isnull=True) & ~models.Q(purpose__in=list(PURPOSE_ROLE))
     by_department = unmapped & (
         models.Q(department__staff=user)
@@ -425,12 +484,31 @@ class VisitViewSet(viewsets.ModelViewSet):
     def perform_create(self, serializer):
         visit = serializer.save(opened_by=self.request.user); audit_event(actor=self.request.user, action="visit.opened", instance=visit, request=self.request)
 class PatientRouteViewSet(viewsets.ModelViewSet):
-    queryset = PatientRoute.objects.select_related("visit__patient", "department", "assigned_to"); serializer_class = PatientRouteSerializer; filter_backends = [DjangoFilterBackend]; filterset_fields = ["visit", "department", "status", "assigned_to"]
+    queryset = PatientRoute.objects.select_related("visit__patient", "department", "assigned_to").prefetch_related("services__charge", "lab_order__items__charge"); serializer_class = PatientRouteSerializer; filter_backends = [DjangoFilterBackend]; filterset_fields = ["visit", "department", "status", "assigned_to"]
 
     def get_queryset(self):
-        if self.action == "document":
+        if self.action in {"document", "request_services"}:
+            # Naming the examinations on a referral is the *referrer's* act as
+            # much as the unit's, and a doctor does not own the route they
+            # raised — it belongs to the unit it was sent to. So this reads the
+            # same set a printable document does: wider than the live queue in
+            # one direction only (time), with ownership unchanged. The
+            # laboratory reaches the same place through its own order viewset.
             return self._document_queryset()
-        return work_routes_for(self.request.user).select_related("visit__patient", "department", "assigned_to")
+        # The queue is live work, so that stays the default. A caller asking
+        # for a state by name — the station's "Completed" tab looking back at
+        # the clinic it has already seen — gets that state instead, and the
+        # filterset narrows it. **The ownership rule is unchanged either way**
+        # (`work_routes_for`); only the time limit lifts, exactly as it does
+        # for a printable document.
+        statuses = None if self.request.query_params.get("status") else ("queued", "in_progress")
+        # The queue page is the unit's board for a station role (see
+        # `work_routes_for`): a colleague's claimed request stays on the list,
+        # named, rather than vanishing. The dashboard deliberately does *not*
+        # pass this — "My queue" counts work that is actually mine.
+        return work_routes_for(self.request.user, statuses=statuses, include_unit=True).select_related(
+            "visit__patient", "department", "assigned_to", "routed_by"
+        ).prefetch_related("services__charge", "lab_order__items__charge")
 
     def _document_queryset(self):
         """
@@ -453,7 +531,8 @@ class PatientRouteViewSet(viewsets.ModelViewSet):
         """
         user = self.request.user
         base = PatientRoute.objects.select_related(
-            "visit__patient", "department", "assigned_to", "routed_by", "result_by")
+            "visit__patient", "department", "assigned_to", "routed_by", "result_by"
+        ).prefetch_related("services__charge", "lab_order__items__charge")
         if user.role in {"admin", "hospital_admin"}:
             return base
         if user.role == "reception":
@@ -482,6 +561,11 @@ class PatientRouteViewSet(viewsets.ModelViewSet):
             # The eye doctor sends a patient to the lab or for a scan the same
             # way a general doctor does.
             return [RoleRequired(CLINICIAN_ROLES)]
+        if self.action == "request_services":
+            # Whoever may refer, plus the unit itself — the sonographer who
+            # adds a Doppler mid-scan is the laboratory bench adding a test,
+            # and both are recorded against the name that asked.
+            return [RoleRequired([*CLINICIAN_ROLES, *STATION_ROLES])]
         if self.action == "cancel":
             return [RoleRequired(["reception", "doctor", "nurse"])]
         # Reading the queue: everyone a route can be sent to, or referred
@@ -492,17 +576,11 @@ class PatientRouteViewSet(viewsets.ModelViewSet):
         _notify_route(route)
 
     def _own_route(self, route):
-        """The staff member the work is actually waiting on."""
-        user = self.request.user
-        if user.is_admin or route.assigned_to_id == user.id:
-            return True
-        if route.assigned_to_id:
-            return False
-        if route.purpose in ROLE_PURPOSES.get(user.role, []):
-            return True
-        if route.purpose in PURPOSE_ROLE:
-            return False
-        return route.department.staff.filter(pk=user.pk).exists() or route.department.name.lower() == (user.department or "").lower()
+        """The staff member the work is actually waiting on — `access.may_work`,
+        which the serializer's `can_work` reads too, so the button on screen
+        and the answer from the API can never disagree."""
+        return access.may_work(self.request.user, route,
+                               role_purposes=ROLE_PURPOSES, purpose_role=PURPOSE_ROLE)
 
     @action(detail=True, methods=["post"])
     def accept(self, request, pk=None):
@@ -544,7 +622,7 @@ class PatientRouteViewSet(viewsets.ModelViewSet):
 
         route.refresh_from_db()
         audit_event(actor=user, action="patient.route_accepted", instance=route, request=request)
-        notify(recipient=route.routed_by, title=f"{_display_name(user)} accepted {route.visit.patient}",
+        notify(recipient=route.routed_by, title=f"{_display_name(user)} accepted {route.visit.patient.display_name}",
                message=route.get_purpose_display(), category="routing", action_url="/queue")
         return Response(self.get_serializer(route).data)
 
@@ -602,7 +680,7 @@ class PatientRouteViewSet(viewsets.ModelViewSet):
 
         visit = Visit.objects.filter(patient=patient, status="open").order_by("-created_at").first()
         if not visit:
-            return Response({"detail": f"{patient} has no open visit — the front desk opens one when they arrive."},
+            return Response({"detail": f"{patient.display_name} has no open visit — the front desk opens one when they arrive."},
                             status=drf_status.HTTP_400_BAD_REQUEST)
         without_vitals = not Vitals.objects.filter(patient=patient, created_at__gte=visit.created_at).exists()
         if without_vitals:
@@ -620,13 +698,13 @@ class PatientRouteViewSet(viewsets.ModelViewSet):
             who = _display_name(waiting.assigned_to) if waiting.assigned_to else "a doctor"
             if waiting.assigned_to_id == doctor.pk:
                 return Response({"code": "already_queued",
-                                 "detail": f"{patient} is already queued for consultation with {who}."},
+                                 "detail": f"{patient.display_name} is already queued for consultation with {who}."},
                                 status=drf_status.HTTP_409_CONFLICT)
             if not _acknowledged(request, "acknowledge_reassign"):
                 return Response({
                     "code": "reassign",
                     "current_doctor": who,
-                    "detail": (f"{patient} is already with {who}. Move them to "
+                    "detail": (f"{patient.display_name} is already with {who}. Move them to "
                                f"{_display_name(doctor)} instead?"),
                 }, status=drf_status.HTTP_400_BAD_REQUEST)
             replacing = [waiting]
@@ -679,15 +757,29 @@ class PatientRouteViewSet(viewsets.ModelViewSet):
             return Response({"purpose": f"Choose where to send them: {', '.join(REFERRAL_PURPOSES)}."},
                             status=drf_status.HTTP_400_BAD_REQUEST)
 
+        # A referral is a hand-off to somebody else. A clinician who runs a
+        # station of their own referring *to that station* is sending the
+        # patient back to themselves: the queue gains a row nobody else works
+        # and the patient waits for a clinician who is already in the room.
+        # The eye doctor examines the patient on the chart and refers onward —
+        # to the lab, to imaging, for a procedure. Only station roles are
+        # caught, so a general doctor's procedure referral is untouched.
+        if user.role in STATION_ROLES and purpose == ROLE_STATION_PURPOSE[user.role]:
+            return Response({
+                "code": "self_referral",
+                "purpose": ("You already work this unit — see the patient on their chart, or refer "
+                            "them on to another department."),
+            }, status=drf_status.HTTP_400_BAD_REQUEST)
+
         visit = Visit.objects.filter(patient=patient, status="open").order_by("-created_at").first()
         if not visit:
-            return Response({"detail": f"{patient} has no open visit — the front desk opens one when they arrive."},
+            return Response({"detail": f"{patient.display_name} has no open visit — the front desk opens one when they arrive."},
                             status=drf_status.HTTP_400_BAD_REQUEST)
 
         already = visit.routes.filter(purpose=purpose, status__in=["queued", "in_progress"]).first()
         if already:
             return Response({"code": "already_referred",
-                             "detail": f"{patient} is already waiting on {already.get_purpose_display()}."},
+                             "detail": f"{patient.display_name} is already waiting on {already.get_purpose_display()}."},
                             status=drf_status.HTTP_409_CONFLICT)
 
         # Named person optional; it has to be somebody who can do the work.
@@ -729,7 +821,7 @@ class PatientRouteViewSet(viewsets.ModelViewSet):
         data["notified"] = [_display_name(person) for person in told]
         if not told:
             data["notice"] = (
-                f"{patient} is in the queue, but nobody has been notified — no doctor is "
+                f"{patient.display_name} is in the queue, but nobody has been notified — no doctor is "
                 "currently holding them. Name who should do this if it is urgent."
             )
         return Response(data, status=drf_status.HTTP_201_CREATED)
@@ -751,7 +843,64 @@ class PatientRouteViewSet(viewsets.ModelViewSet):
         """
         return self._transition(status="completed", from_statuses={"queued", "in_progress"},
                                 action_name="patient.route_completed", guard=_needs_vitals_first,
-                                result=request.data.get("result", ""))
+                                result=request.data.get("result", ""),
+                                report=_report_payload(request.data))
+
+    @action(detail=False, methods=["get"], url_path="report-fields")
+    def report_fields_for(self, request):
+        """
+        `GET /api/patient-routes/report-fields/?purpose=ultrasound` — the
+        sections this unit's report is written in, served from the one
+        definition the server validates against (`workflow/report_fields.py`),
+        so the form cannot hold a second copy of the field list. A purpose
+        with no sections answers `null`, which is how a station knows to show
+        the single findings box it always had.
+        """
+        purpose = (request.query_params.get("purpose") or "").strip()
+        return Response({"purpose": purpose, "schema": report_fields.schema(purpose)})
+
+    @action(detail=True, methods=["post"], url_path="request-services")
+    def request_services(self, request, pk=None):
+        """
+        Name the configured examinations this referral is asking for, and bill
+        them — the imaging half of what `/lab-orders/<id>/add-tests/` does for
+        the bench, through the same `billing.services.add_charge`.
+
+        A second call adding a study the sonographer decided on is the same
+        request, so it is the same endpoint; one already on the referral is
+        not added, and therefore not billed, twice.
+        """
+        route = self.get_object()
+        category = workflow_services.category_for(route)
+        if category is None:
+            return Response(
+                {"code": "not_a_service_referral",
+                 "detail": "This referral does not order from the price list."},
+                status=drf_status.HTTP_400_BAD_REQUEST)
+        if not may_act_for(request.user, route.visit.patient):
+            return Response({"detail": "This patient is not one of yours.", "code": "not_your_patient"},
+                            status=drf_status.HTTP_403_FORBIDDEN)
+
+        wanted = request.data.get("services") or request.data.get("items") or []
+        if not isinstance(wanted, (list, tuple)):
+            wanted = [wanted]
+        ids = [_as_id(value) for value in wanted]
+        items = list(BillingItem.objects.filter(pk__in=[i for i in ids if i],
+                                                category=category, is_active=True))
+        if not items:
+            return Response(
+                {"services": "Choose at least one examination from the catalogue.",
+                 "code": "no_services"},
+                status=drf_status.HTTP_400_BAD_REQUEST)
+
+        added = workflow_services.request_services(route=route, items=items, author=request.user)
+        audit_event(actor=request.user, action="patient.services_requested", instance=route,
+                    details={"purpose": route.purpose,
+                             "services": [row.name for row in added],
+                             "charged": [str(row.unit_price) for row in added]},
+                    request=request)
+        return Response(PatientRouteSerializer(self.get_object()).data,
+                        status=drf_status.HTTP_201_CREATED if added else drf_status.HTTP_200_OK)
 
     @action(detail=True, methods=["post"], url_path="record-result",
             parser_classes=[MultiPartParser, FormParser, JSONParser])
@@ -768,6 +917,7 @@ class PatientRouteViewSet(viewsets.ModelViewSet):
             request.data.get("result", ""),
             document=request.FILES.get("file"),
             title=request.data.get("title", ""),
+            report=_report_payload(request.data),
         )
 
     @action(detail=True, methods=["get"])
@@ -821,6 +971,17 @@ class PatientRouteViewSet(viewsets.ModelViewSet):
                 "assigned_to": _display_name(route.assigned_to) if route.assigned_to else None,
                 "visit": route.visit_id,
                 "reference": f"REF-{route.pk:06d}",
+                # What was asked for, where the referral named configured
+                # services. A billed service is not a finding: it is the line
+                # the patient is charged for and the desk collects, so the
+                # front desk reads it the way it reads any other bill
+                # (rule 17's boundary is the clinical *answer*, not the
+                # request).
+                "services": [
+                    {"name": row.name, "price": f"{row.unit_price:.2f}",
+                     "status": row.charge.settlement_status if row.charge else "unbilled"}
+                    for row in route.services.select_related("charge").all()
+                ],
             },
             "patient": {
                 "id": patient.pk,
@@ -856,18 +1017,32 @@ class PatientRouteViewSet(viewsets.ModelViewSet):
         return self._transition(status="cancelled", from_statuses={"queued", "in_progress"},
                                 action_name="patient.route_cancelled", front_desk_allowed=True)
 
-    def _save_result(self, route, text, document=None, title=""):
+    def _save_result(self, route, text, document=None, title="", report=None):
         user = self.request.user
         if not self._own_route(route):
             return Response({"detail": "This patient is not in your queue."},
                             status=drf_status.HTTP_403_FORBIDDEN)
-        if not (text or "").strip() and not document:
+        # A unit whose report has sections (imaging) sends them; one that
+        # writes prose sends `result` as it always has. The sections are
+        # rendered into `result` so every existing reader — the chart, the
+        # printed sheet, the permanent MedicalTest copy, the doctor's
+        # notification — keeps working without knowing about them.
+        try:
+            structured = report_fields.clean(route.purpose, report)
+        except DjangoValidationError as exc:
+            return Response({"report": exc.message_dict if hasattr(exc, "message_dict")
+                             else exc.messages, "code": "invalid_report"},
+                            status=drf_status.HTTP_400_BAD_REQUEST)
+        rendered = report_fields.render(route.purpose, structured)
+        text = rendered or (text or "").strip()
+        if not text and not document:
             return Response({"result": "Write what the test showed, or attach the report."},
                             status=drf_status.HTTP_400_BAD_REQUEST)
-        route.result = (text or "").strip()
+        route.result = text
+        route.result_data = structured
         route.result_by = user
         route.result_at = timezone.now()
-        route.save(update_fields=["result", "result_by", "result_at"])
+        route.save(update_fields=["result", "result_data", "result_by", "result_at"])
         # The route is the errand and closes with the visit; the patient's
         # health record is where a result has to live so it is still there
         # next time they come in. `filed_test` is that permanent copy.
@@ -878,7 +1053,7 @@ class PatientRouteViewSet(viewsets.ModelViewSet):
         return Response(self.get_serializer(route).data)
 
     def _transition(self, *, status, from_statuses, action_name, front_desk_allowed=False,
-                    guard=None, result=""):
+                    guard=None, result="", report=None):
         route = self.get_object()
         user = self.request.user
         front_desk = front_desk_allowed and user.role in {"reception", "admin", "hospital_admin"}
@@ -893,11 +1068,20 @@ class PatientRouteViewSet(viewsets.ModelViewSet):
         route.status = status
         fields = ["status"]
         document = self.request.FILES.get("file")
-        if (result or "").strip() or document:
-            route.result = (result or "").strip()
+        try:
+            structured = report_fields.clean(route.purpose, report)
+        except DjangoValidationError as exc:
+            return Response({"report": exc.message_dict if hasattr(exc, "message_dict")
+                             else exc.messages, "code": "invalid_report"},
+                            status=drf_status.HTTP_400_BAD_REQUEST)
+        rendered = report_fields.render(route.purpose, structured)
+        text = rendered or (result or "").strip()
+        if text or document:
+            route.result = text
+            route.result_data = structured
             route.result_by = user
             route.result_at = timezone.now()
-            fields += ["result", "result_by", "result_at"]
+            fields += ["result", "result_data", "result_by", "result_at"]
         route.save(update_fields=fields)
         audit_event(actor=self.request.user, action=action_name, instance=route, request=self.request)
         if "result" in fields:
@@ -923,7 +1107,7 @@ class DashboardView(APIView):
         task_routes = routes.select_related("visit__patient", "department", "assigned_to")[:8]
         tasks = [{
             "id": route.id,
-            "patient": str(route.visit.patient),
+            "patient": route.visit.patient.display_name,
             "patient_id": route.visit.patient_id,
             "department": route.department.name,
             "purpose": route.get_purpose_display(),

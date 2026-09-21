@@ -99,7 +99,7 @@ def announce(*, event, patient, amount, actor, detail="", reference="", outstand
     that has already moved money.
     """
     label, action_url = EVENTS[event]
-    title = f"{label}: {patient}"
+    title = f"{label}: {patient.display_name}"
 
     parts = [f"{_money(amount)}"]
     if detail:

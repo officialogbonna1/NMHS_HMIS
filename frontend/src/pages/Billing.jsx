@@ -7,6 +7,9 @@ import { Icon } from "../components/icons.jsx";
 import { Button, Page, PageHeader } from "../components/ui.jsx";
 import { readError } from "../api/errors";
 import { BILLING_CATEGORIES } from "./BillingItemsAdmin.jsx";
+import { ServicePicker } from "../components/ServicePicker.jsx";
+import { billServicesBody, chargeBody, isWriteIn, toggle, totalOf }
+  from "../components/billableServices";
 import { BillSheet, ReceiptSheet } from "../components/PrintDocuments.jsx";
 import PatientPicker from "../components/PatientPicker.jsx";
 import RefundAction from "../components/RefundAction.jsx";
@@ -279,7 +282,10 @@ function PatientPayments({ patient }) {
 // or remember to come back and record the payment.
 function BillAndSettle({ patient, outstanding, onDone, showToast, onPaid }) {
   const [category, setCategory] = useState("card");
-  const [itemId, setItemId] = useState("");
+  // The services the desk has ticked, as the catalogue sent them — a
+  // selection, because a patient arrives with a doctor's list of five tests
+  // and billing them one at a time was five trips through this panel.
+  const [selected, setSelected] = useState([]);
   const [method, setMethod] = useState("cash");
   const [customAmount, setCustomAmount] = useState("");
   const [busy, setBusy] = useState(null);
@@ -287,43 +293,51 @@ function BillAndSettle({ patient, outstanding, onDone, showToast, onPaid }) {
   const [writeInName, setWriteInName] = useState("");
   const [writeInPrice, setWriteInPrice] = useState("");
 
-  const { data: items } = useQuery({
-    queryKey: ["billing-items", category],
-    queryFn: () => api.get("/billing-items/", { params: { category, is_active: true, page_size: 200 } })
-      .then((r) => r.data.results ?? r.data),
-  });
-
   // Only "Other" is typed in; everything else is billed at the catalogue's
-  // price so the same service costs the same at every window.
-  const writeIn = category === "other";
-  const chosen = (items ?? []).find((i) => String(i.id) === itemId);
+  // price so the same service costs the same at every window. The list is
+  // `/billable-services/` — the price list *and* the laboratory catalogue a
+  // doctor orders from, so the desk can bill what was ordered.
+  const writeIn = isWriteIn(category);
   // Both paths end up as the same shape, so everything downstream — the
   // settle buttons, the toasts — works without knowing which it was.
-  const item = writeIn
-    ? (writeInName.trim() && Number(writeInPrice) > 0
-        ? { name: writeInName.trim(), price: writeInPrice }
-        : null)
-    : chosen;
-  const price = Number(item?.price ?? 0);
+  const writeInItem = writeInName.trim() && Number(writeInPrice) > 0
+    ? { name: writeInName.trim(), price: writeInPrice, source_type: category }
+    : null;
+  // One shape downstream whichever path it came from: the settle buttons and
+  // the toasts work off a count, a label and a total.
+  const billable = writeIn ? (writeInItem ? [writeInItem] : []) : selected;
+  const price = writeIn ? Number(writeInItem?.price ?? 0) : totalOf(selected);
+  const label = billable.length === 1
+    ? billable[0].name
+    : `${billable.length} services`;
+  const item = billable.length > 0 ? { name: label, price } : null;
 
   async function billThenPay(mode) {
     setBusy(mode);
     try {
-      // The charge is raised first either way: "pay later" is a real,
-      // recorded debt, not a skipped step.
-      const { data: charge } = await api.post("/charges/", {
-        patient: patient.id, description: item.name, amount: item.price, source_type: category,
-      });
+      // The charges are raised first either way: "pay later" is a real,
+      // recorded debt, not a skipped step. A catalogue selection is billed by
+      // **identity** — the server prices it and raises one charge per service
+      // in one transaction — and a write-in is the one case where the desk
+      // names the amount, because nothing has priced it.
+      const charges = writeIn
+        ? [(await api.post("/charges/", chargeBody(patient.id, writeInItem))).data]
+        : (await api.post("/charges/bill-services/",
+                          billServicesBody(patient.id, selected))).data.charges;
 
       if (mode === "later") {
         // And it is an *authorisation*, so it gets a name and a time against
-        // it rather than just being a charge nobody happened to collect.
-        await api.post(`/charges/${charge.id}/defer/`, {
-          reason: "Pay later approved at the counter.",
-        });
+        // it rather than just being a charge nobody happened to collect. One
+        // per charge: a deferral records the sum it let through, so several
+        // services are several authorisations, the way they are several bills.
+        for (const charge of charges) {
+          await api.post(`/charges/${charge.id}/defer/`, {
+            reason: "Pay later approved at the counter.",
+          });
+        }
         showToast({
           title: "Pay later approved",
-          message: `${item.name} · ${currency(price)} still owed — recorded against your name.`,
+          message: `${label} · ${currency(price)} still owed — recorded against your name.`,
         });
       } else {
         const amount = mode === "full" ? price : mode === "half" ? round2(price / 2) : Number(customAmount);
@@ -331,10 +345,10 @@ function BillAndSettle({ patient, outstanding, onDone, showToast, onPaid }) {
         onPaid?.(payment);
         showToast({
           title: mode === "full" ? "Paid in full" : "Part payment taken",
-          message: `${item.name} · ${currency(amount)} of ${currency(price)}`,
+          message: `${label} · ${currency(amount)} of ${currency(price)}`,
         });
       }
-      setItemId("");
+      setSelected([]);
       setCustomAmount("");
       onDone();
     } catch (error) {
@@ -373,7 +387,7 @@ function BillAndSettle({ patient, outstanding, onDone, showToast, onPaid }) {
           {BILLING_CATEGORIES.map(({ category: value, label }) => (
             <button
               key={value}
-              onClick={() => { setCategory(value); setItemId(""); setWriteInName(""); setWriteInPrice(""); }}
+              onClick={() => { setCategory(value); setSelected([]); setWriteInName(""); setWriteInPrice(""); }}
               className={`rounded-full border px-4 py-1.5 text-sm ${
                 category === value ? "border-brand-500 bg-brand-50 text-brand-700" : "hover:bg-slate-50"
               }`}
@@ -383,25 +397,16 @@ function BillAndSettle({ patient, outstanding, onDone, showToast, onPaid }) {
           ))}
         </div>
 
-        <div className="mt-3 grid gap-2 sm:grid-cols-2">
-          {(items ?? []).map((i) => (
-            <button
-              key={i.id}
-              onClick={() => setItemId(String(i.id))}
-              className={`flex items-center justify-between rounded-lg border px-3 py-2.5 text-left text-sm ${
-                itemId === String(i.id) ? "border-brand-500 bg-brand-50" : "hover:bg-slate-50"
-              }`}
-            >
-              <span>{i.name}</span>
-              <span className="font-semibold">{currency(i.price)}</span>
-            </button>
-          ))}
-          {!writeIn && items && items.length === 0 && (
-            <p className="text-sm text-amber-700">
-              Nothing priced under this yet — add it under Billing Catalog.
-            </p>
-          )}
-        </div>
+        {!writeIn && (
+          <div className="mt-3">
+            <ServicePicker
+              category={category}
+              selected={selected}
+              onToggle={(picked) => setSelected((current) => toggle(current, picked))}
+              onClear={() => setSelected([])}
+            />
+          </div>
+        )}
 
         {writeIn && (
           <div className="mt-3 grid gap-3 sm:grid-cols-[1fr,10rem]">

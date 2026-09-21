@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useConfirm } from "../components/ConfirmAlert.jsx";
 import { useParams, useNavigate, Routes, Route, useLocation } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import api from "../api/client";
@@ -247,7 +248,11 @@ export default function PatientDetail() {
           ))}
         </div>
       )}
-      {isClinical && tab === "notes" && <MedicalNotesTab patientId={patientId} />}
+      {isClinical && tab === "notes" && (
+          // `patient` is passed for the printed note's identity block; the
+          // pk still keys the query and the `?patient=` filter behind it.
+          <MedicalNotesTab patientId={patientId} patient={patient} />
+        )}
       {canSeeVitals && tab === "vitals" && <VitalsTab patientId={patientId} />}
       {isClinical && tab === "lab" && <LabResultsTab patientId={patientId} />}
       {isClinical && ["ultrasound", "eye", "procedure"].includes(tab) && (
@@ -275,6 +280,7 @@ function TabLink({ to, active, children }) {
 }
 
 function TileLoader({ patientId, tileKey, title, icon }) {
+  const { ask } = useConfirm();
   // `editing` is either null (closed), "new", or the item being edited —
   // one modal serves both, so adding a tile still means one config entry.
   const [editing, setEditing] = useState(null);
@@ -305,8 +311,13 @@ function TileLoader({ patientId, tileKey, title, icon }) {
         isDanger={config.isDanger}
         onAdd={() => setEditing("new")}
         onSelect={(item) => setEditing(item)}
-        onDelete={(item) => {
-          if (confirm(`Remove ${item[config.nameField] ?? item.name}?`)) remove.mutate(item);
+        onDelete={async (item) => {
+          if (await ask({
+            title: "Remove this entry?",
+            message: `${item[config.nameField] ?? item.name} will be removed from the `
+              + "patient's health record.",
+            confirmLabel: "Remove",
+          })) remove.mutate(item);
         }}
       />
       {editing && (

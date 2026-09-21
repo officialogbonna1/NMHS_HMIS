@@ -334,7 +334,7 @@ class LabOrderViewSet(viewsets.ModelViewSet):
         from apps.accounts.models import User
         for user in User.objects.filter(role="laboratory", is_active=True):
             notify(recipient=user,
-                   title=f"Laboratory request: {order.patient}",
+                   title=f"Laboratory request: {order.patient.display_name}",
                    message=", ".join(i.name for i in order.items.all())
                            or (order.clinical_notes or "No tests named yet."),
                    category="routing", action_url="/laboratory")
@@ -552,7 +552,7 @@ class LabOrderViewSet(viewsets.ModelViewSet):
         # One notification per test per person. Submitting tells the doctor
         # the figure is there; verifying it afterwards is the same news, and
         # sending it twice is how a chart's bell stops being read.
-        title = f"Laboratory result: {item.name} — {order.patient}"
+        title = f"Laboratory result: {item.name} — {order.patient.display_name}"
         if Notification.objects.filter(recipient=doctor, title=title,
                                        category="clinical").exists():
             return

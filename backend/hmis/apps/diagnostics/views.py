@@ -32,4 +32,4 @@ class InvestigationResultViewSet(viewsets.ModelViewSet):
         return InvestigationResult.objects.filter(order__requested_by=user).select_related("order__patient")
     def perform_create(self, serializer):
         result=serializer.save(released_by=self.request.user); order=result.order; order.status="completed"; order.performed_by=self.request.user; order.save(update_fields=["status","performed_by"])
-        notify(recipient=order.requested_by,title=f"Result released: {order.investigation.name}",message=f"Result for {order.patient}",category="diagnostics"); audit_event(actor=self.request.user,action="investigation.result_released",instance=result,request=self.request)
+        notify(recipient=order.requested_by,title=f"Result released: {order.investigation.name}",message=f"Result for {order.patient.display_name}",category="diagnostics"); audit_event(actor=self.request.user,action="investigation.result_released",instance=result,request=self.request)

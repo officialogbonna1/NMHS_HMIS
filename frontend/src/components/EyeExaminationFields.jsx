@@ -19,9 +19,59 @@ export function useEyeExaminationFields() {
   });
 }
 
-const filled = (value) => value !== undefined && value !== null && String(value).trim() !== "";
+const filled = (value) =>
+  Array.isArray(value)
+    ? value.length > 0
+    : value !== undefined && value !== null && String(value).trim() !== "";
 
 const messageOf = (error) => (Array.isArray(error) ? error.join(" ") : error);
+
+// A ticked list, read back through the catalogue's own labels so a locked
+// note shows what was recorded rather than the stored values.
+function labelsFor(spec, value) {
+  const chosen = Array.isArray(value) ? value : [];
+  return chosen.map((item) => spec.choices?.find((c) => c.value === item)?.label ?? item);
+}
+
+/**
+ * Multiple findings at once — the presenting complaint, the ocular history.
+ * Chips rather than a column of checkboxes: fourteen complaints in a list is
+ * a page of scrolling on the phone this is filled in on.
+ */
+function MultiChoice({ spec, label, value, onChange, disabled }) {
+  const chosen = Array.isArray(value) ? value : [];
+  if (disabled) {
+    return (
+      <p className="text-slate-800">
+        {chosen.length ? labelsFor(spec, chosen).join(" · ") : "—"}
+      </p>
+    );
+  }
+  return (
+    <div role="group" aria-label={label} className="flex min-w-0 flex-wrap gap-2">
+      {(spec.choices ?? []).map((choice) => {
+        const picked = chosen.includes(choice.value);
+        return (
+          <button
+            key={choice.value}
+            type="button"
+            aria-pressed={picked}
+            onClick={() =>
+              onChange(picked
+                ? chosen.filter((item) => item !== choice.value)
+                : [...chosen, choice.value])}
+            className={`min-h-[36px] rounded-full border px-3 py-1.5 text-sm font-medium transition ${
+              picked
+                ? "border-brand-500 bg-brand-600 text-white"
+                : "border-slate-300 bg-white text-slate-700 hover:border-brand-400 hover:bg-brand-50"}`}
+          >
+            {picked ? "✓ " : ""}{choice.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
 
 function Control({ spec, label, value, onChange, disabled }) {
   const common = {
@@ -30,6 +80,25 @@ function Control({ spec, label, value, onChange, disabled }) {
     "aria-label": label,
     onChange: (event) => onChange(event.target.value),
   };
+  if (spec.kind === "multi") {
+    return <MultiChoice spec={spec} label={label} value={value} onChange={onChange} disabled={disabled} />;
+  }
+  // **A saved finding is read as text, never as a greyed-out box.** A page of
+  // disabled inputs reads as a form somebody is meant to fill in — it invites
+  // clicking to find out why it will not type, and on a record that has been
+  // signed off that is exactly the wrong invitation. The value is the content
+  // here, so it is rendered as content.
+  if (disabled) {
+    const labels = new Map((spec.choices ?? []).map((c) => [c.value, c.label]));
+    const shown = labels.get(value) ?? value;
+    return (
+      <p aria-label={label} className="whitespace-pre-wrap py-1 text-slate-800">
+        {shown === undefined || shown === null || String(shown).trim() === ""
+          ? <span className="text-slate-500">Not recorded</span>
+          : `${shown}${spec.unit ? ` ${spec.unit}` : ""}`}
+      </p>
+    );
+  }
   if (spec.kind === "choice") {
     return (
       <Select {...common}>
@@ -88,8 +157,15 @@ export default function EyeExaminationFields({ value, onChange, disabled = false
       {overall && <p className="text-sm text-red-700">{overall}</p>}
 
       {sections.map((section) => (
-        <fieldset key={section.key} className="min-w-0 space-y-3">
-          <legend className="mb-1 text-sm font-semibold text-slate-700">{section.label}</legend>
+        // A card per section: the eye examination is nine groups of findings
+        // and a flat run of boxes gives the clinician nothing to navigate by.
+        <fieldset
+          key={section.key}
+          className="min-w-0 space-y-3 rounded-xl border border-slate-200 bg-white p-4 shadow-sm"
+        >
+          <legend className="px-1 text-sm font-semibold uppercase tracking-wide text-slate-700">
+            {section.label}
+          </legend>
 
           {section.rows.map((row) => (
             <div key={row.name} className="grid min-w-0 gap-2 sm:grid-cols-[9rem_1fr_1fr] sm:items-start">

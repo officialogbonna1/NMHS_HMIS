@@ -1,7 +1,7 @@
 from django.core.exceptions import PermissionDenied as DjangoPermissionDenied
 from rest_framework import viewsets, permissions
 from rest_framework.decorators import action
-from rest_framework.exceptions import PermissionDenied
+from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.response import Response
 from django_filters.rest_framework import DjangoFilterBackend
 from django.db import models, transaction
@@ -9,10 +9,12 @@ from django.utils import timezone
 
 from .models import Vitals, ConsultationNote, ConsultationNoteAmendment, NursingNote
 from . import serializers
+from .serializers import may_amend
 from apps.accounts.permissions import CLINICIAN_ROLES, ClinicalRecordAccess, ClinicianOrNurse, IsNurse
 from apps.patients.access import doctor_patient_q, doctors_for_patient, may_act_for
 from . import eye_exam
-from apps.core.services import notify
+from . import services as note_services
+from apps.core.services import audit_event, notify
 from apps.workflow.models import PatientRoute
 
 
@@ -67,7 +69,7 @@ def _tell_the_doctors(vitals, nurse):
             continue
         notify(
             recipient=doctor,
-            title=f"New vitals: {vitals.patient}",
+            title=f"New vitals: {vitals.patient.display_name}",
             message=f"{summary or 'A new reading'} — recorded by {_name(nurse)}.",
             category="clinical",
             action_url=f"/patients/{vitals.patient.uuid}/vitals",
@@ -173,7 +175,7 @@ class VitalsViewSet(viewsets.ModelViewSet):
                 # What the station links to; `patient_id` stays for the
                 # `?patient=` filters the tabs still use.
                 "patient_uuid": str(reading.patient.uuid),
-                "patient_name": str(reading.patient),
+                "patient_name": reading.patient.display_name,
                 "patient_number": reading.patient.patient_number,
                 "patient_file_number": reading.patient.patient_number,
                 "readings": _readings(reading),
@@ -243,7 +245,8 @@ class ConsultationNoteViewSet(viewsets.ModelViewSet):
     the notes written by other physicians'), but editing is restricted to
     the authoring doctor before it locks, or admin afterward.
     """
-    queryset = ConsultationNote.objects.all()
+    queryset = ConsultationNote.objects.select_related("patient", "doctor").prefetch_related(
+        "amendments__amended_by")
     serializer_class = serializers.ConsultationNoteSerializer
     permission_classes = [ClinicalRecordAccess]
     filter_backends = [DjangoFilterBackend]
@@ -251,48 +254,95 @@ class ConsultationNoteViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         user = self.request.user
+        base = ConsultationNote.objects.select_related("patient", "doctor").prefetch_related(
+            "amendments__amended_by")
         if user.role in {"admin", "hospital_admin"}:
-            return ConsultationNote.objects.all()
-        return ConsultationNote.objects.filter(
+            return base
+        return base.filter(
             models.Q(doctor=user) | doctor_patient_q(user, "patient")
         ).distinct()
+
+    def get_serializer_context(self):
+        # `can_amend` is per-caller, so the serializer needs the request.
+        return {**super().get_serializer_context(), "request": self.request}
 
     def perform_create(self, serializer):
         if not may_act_for(self.request.user, serializer.validated_data["patient"]):
             raise PermissionDenied("This patient is not one of yours.")
-        serializer.save(doctor=self.request.user)
+        note = serializer.save(doctor=self.request.user)
+        # The clinical record's own audit row, through the shared service —
+        # the same one Django admin writes (`clinical/services.py`).
+        note_services.audit_created(note=note, actor=self.request.user, request=self.request)
 
     @action(detail=False, methods=["get"], url_path="eye-examination-fields")
     def eye_examination_fields(self, request):
         """What an eye examination may hold — the note form draws itself from this."""
         return Response(eye_exam.schema())
 
+    def update(self, request, *args, **kwargs):
+        """
+        Ownership is settled **before the body is validated**.
+
+        DRF validates the payload and only then reaches `perform_update`, so a
+        field-level 400 was answering first: a doctor amending a colleague's
+        eye note was told "only the eye doctor records an eye examination"
+        rather than "this is not your note", which is both the wrong reason and
+        one that says something about a record the caller has no claim on.
+        """
+        if not may_amend(request.user, self.get_object()):
+            raise PermissionDenied("You can only amend your own notes.")
+        return super().update(request, *args, **kwargs)
+
     def perform_update(self, serializer):
+        """
+        Correcting a saved note — an **amendment**, never an in-place edit.
+
+        The note locks on its first save (`LockedRecordMixin`), and that stays
+        true: nothing here writes over clinical history without a trace. What
+        this does is let the note's **own author** correct it the way an admin
+        already could, through the same archive — a snapshot of every field the
+        note carries is written first, stamped with who is amending it and why,
+        and only then is the note itself saved.
+
+        So the record keeps both halves: the note says what is true now, and
+        the trail says what it said before and who changed it. A colleague's
+        note is still readable and still unamendable (`may_amend`), `Vitals`
+        and `NursingNote` are untouched and remain absolutely locked, and a
+        correction with no reason is refused.
+        """
         note = self.get_object()
         user = self.request.user
-        if not user.is_admin and note.doctor_id != user.id:
-            raise PermissionDenied("You can only edit your own notes.")
+        # `update` above has already settled this; repeated here because this
+        # is the method that writes the amendment, and it must not become
+        # reachable without the check if the call path ever changes.
+        if not may_amend(user, note):
+            raise PermissionDenied("You can only amend your own notes.")
 
-        # If this is a locked note and an admin is overriding it, snapshot
-        # the pre-edit content first — matches the manual's note archiving
-        # (every edit keeps a timestamped copy, never a silent overwrite).
+        amending = note.is_locked
+        reason = (self.request.data.get("amendment_reason") or "").strip()
+        detail = (self.request.data.get("amendment_detail") or "").strip()
+        if amending and not note_services.is_valid_reason(reason):
+            # Named by `code` so the form can recognise it, the way the
+            # laboratory's released-result amendment already does (rule 22).
+            raise ValidationError({
+                "code": note_services.REASON_REQUIRED,
+                "amendment_reason": "Say why this note is being amended.",
+                "choices": note_services.reason_choices(),
+            })
+
         # The snapshot and the edit are one act: a refused save must not leave
         # an archive row describing an amendment that never happened.
         try:
             with transaction.atomic():
-                if note.is_locked and user.is_admin:
-                    ConsultationNoteAmendment.objects.create(
-                        note=note,
-                        amended_by=user,
-                        previous_note_text=note.note_text,
-                        previous_diagnosis=note.diagnosis,
-                        previous_plan=note.plan,
-                        # Part of the note, so part of its archive.
-                        previous_eye_examination=note.eye_examination,
-                    )
-                serializer.save(admin_override=user.is_admin)
+                if amending:
+                    note_services.archive(note=note, actor=user, reason=reason, detail=detail)
+                serializer.save(admin_override=amending)
         except DjangoPermissionDenied as exc:
             raise PermissionDenied(str(exc))
+
+        if amending:
+            note_services.audit_amended(note=note, actor=user, reason=reason, detail=detail,
+                                        request=self.request)
 
 
 class ConsultationNoteAmendmentViewSet(viewsets.ReadOnlyModelViewSet):

@@ -20,7 +20,8 @@ export default function LabReportSheet({ orderId, onClose }) {
 
   if (isLoading || isError || !data) {
     return (
-      <PrintSheet title="Laboratory report" onClose={onClose}>
+      // Not a document yet — see `SheetStatus`.
+      <PrintSheet title="Laboratory report" onClose={onClose} watermark={false}>
         <p className="text-slate-700">
           {isError ? "Could not load this report." : "Loading the report…"}
         </p>

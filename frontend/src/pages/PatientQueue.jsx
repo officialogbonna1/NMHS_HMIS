@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useConfirm } from "../components/ConfirmAlert.jsx";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import api from "../api/client";
 import { patientNumber, patientUuidOf } from "../components/patientIdentity.js";
@@ -17,15 +18,66 @@ const PURPOSE_LABEL = {
   vitals: "Vitals",
   consultation: "Consultation",
   procedure: "Procedure",
-  eye: "Eye clinic",
+  eye: "Ophthalmology / Eye clinic",
+  laboratory: "Laboratory",
+  ultrasound: "Ultrasound / Imaging",
   investigation: "Investigation",
   other: "Other",
 };
 
+// What the front desk sends a patient for, in the order the desk works.
+// The values are `PatientRoute.PURPOSE`'s — there is no second vocabulary.
+const PURPOSES = [
+  ["vitals", "Vitals (nursing)"],
+  ["consultation", "Consultation"],
+  ["eye", "Ophthalmology / Eye clinic"],
+  ["procedure", "Procedure"],
+  ["investigation", "Investigation"],
+  ["other", "Other"],
+];
+
 // Who a route for each purpose can be named to — the mirror of
-// `PURPOSE_ROLE` in workflow/views.py. Anything not listed is a doctor's.
+// `PURPOSE_ROLE` in workflow/views.py, which the server now enforces on
+// creation as well as on `refer/`. Anything not listed is a doctor's.
 const ASSIGNEE_ROLES = { vitals: ["nurse"], eye: ["ophthalmologist", "optometrist"] };
-const ASSIGNEE_LABEL = { vitals: "nurse", eye: "eye clinic staff" };
+const ASSIGNEE_LABEL = { vitals: "nurse", eye: "eye clinician" };
+
+// How the person is described in the dropdown, so the desk assigns
+// "Dr John Doe — Ophthalmologist" rather than a bare name.
+const ROLE_LABEL = {
+  doctor: "Doctor",
+  nurse: "Nurse",
+  ophthalmologist: "Ophthalmologist",
+  optometrist: "Optometrist",
+};
+
+// The seeded department each purpose belongs to (`billing/departments.py`
+// codes, seeded by departments/migrations/0002). Choosing "Ophthalmology /
+// Eye clinic" picks the Eye Clinic department, and picking that department
+// sets the purpose — the two are one decision at the desk, and leaving them
+// to drift apart is how an eye patient ends up in the general queue.
+const PURPOSE_DEPARTMENT = {
+  eye: "eye",
+  // Nursing has a department of its own (`departments/0003`) so a vitals
+  // route has somewhere true to be filed. It is deliberately not one of the
+  // seven revenue departments — a nurse raises no charge — which is why the
+  // code is not in `billing/departments.py`.
+  vitals: "clinicals",
+  consultation: "consultation",
+  laboratory: "laboratory",
+  ultrasound: "radiology",
+  procedure: "theatre",
+};
+// Read back the other way, but only for the purposes the desk is actually
+// offered: picking the Laboratory department must not silently set a purpose
+// that is not on this form. Ordering a test is the clinician's (rule 24), and
+// this pairing is a convenience, never a new capability.
+const DESK_PURPOSES = new Set(PURPOSES.map(([value]) => value));
+const DEPARTMENT_PURPOSE = Object.fromEntries(
+  Object.entries(PURPOSE_DEPARTMENT)
+    .filter(([purpose, code]) => code && DESK_PURPOSES.has(purpose))
+    .map(([purpose, code]) => [code, purpose]),
+);
 
 // Badge tones from the design system, not a fourth hand-rolled pill.
 const PRIORITY_TONE = { emergency: "danger", urgent: "warning", routine: "neutral" };
@@ -131,6 +183,11 @@ export default function PatientQueue() {
 }
 
 function RouteRow({ route, canRoute, canWork }) {
+  const { ask } = useConfirm();
+  // Whose work this row is. `can_work` decides where the server sent one;
+  // without it, the role-level answer stands, which is what every queue did
+  // before the board existed.
+  const mine = canWork && (route.can_work ?? true);
   const queryClient = useQueryClient();
   const [error, setError] = useState("");
   // The front desk raises and calls off routes; the clinician the patient was
@@ -176,6 +233,9 @@ function RouteRow({ route, canRoute, canWork }) {
               <span className="capitalize">{route.priority}</span>
             </Badge>
           )}
+          {route.claimed_by_other && route.assigned_to_name && (
+            <Badge tone="neutral">Accepted · {route.assigned_to_name}</Badge>
+          )}
         </div>
 
         {/* The identifying line: who they are on paper, where they were sent,
@@ -207,12 +267,18 @@ function RouteRow({ route, canRoute, canWork }) {
       </div>
 
       <div className="flex shrink-0 flex-wrap items-center gap-2">
-        {canWork && route.status === "queued" && (
+        {/* A unit shares its board, so a row here can be a colleague's
+            already-claimed work. `can_work` is the server's own answer
+            (`workflow/access.py`, the rule `_own_route` refuses with), so the
+            buttons offered are the ones that would actually be allowed — with
+            the old behaviour as the fallback for a payload that predates the
+            field. */}
+        {mine && route.status === "queued" && (
           <Button size="sm" onClick={() => transition.mutate("start")} disabled={transition.isPending}>
             {route.purpose === "consultation" ? "Start consultation" : "Start"}
           </Button>
         )}
-        {canWork && route.status === "in_progress" && (
+        {mine && route.status === "in_progress" && (
           <Button
             variant="successOutline" size="sm"
             onClick={() => transition.mutate("complete")}
@@ -224,7 +290,14 @@ function RouteRow({ route, canRoute, canWork }) {
         {canRoute && route.status !== "completed" && route.status !== "cancelled" && (
           <Button
             variant="linkDanger" size="sm"
-            onClick={() => confirm(`Call off ${route.patient_name}'s visit to ${route.department_name}?`) && cancelRoute.mutate()}
+            onClick={async () => {
+              if (await ask({
+                title: "Call off this visit?",
+                message: `${route.patient_name}'s visit to ${route.department_name} will be `
+                  + "cancelled. The patient stays registered.",
+                confirmLabel: "Call it off",
+              })) cancelRoute.mutate();
+            }}
           >
             Cancel
           </Button>
@@ -253,6 +326,31 @@ function NewRouteForm() {
     queryKey: ["departments"],
     queryFn: () => api.get("/departments/").then((r) => r.data.results ?? r.data),
   });
+
+  const activeDepartments = (departments ?? []).filter((d) => d.is_active !== false);
+  const departmentByCode = (code) => activeDepartments.find((d) => d.code === code);
+
+  // Department and purpose are one decision at the desk. Picking
+  // "Ophthalmology / Eye clinic" selects the Eye Clinic department; picking a
+  // department that has a purpose of its own sets that purpose. Either can
+  // still be overridden — a hospital that runs its eye clinic out of another
+  // department is not stopped, it just is not the default.
+  const choosePurpose = (next) => {
+    setPurpose(next);
+    setAssignedTo("");
+    const paired = departmentByCode(PURPOSE_DEPARTMENT[next]);
+    if (paired) setDepartmentId(String(paired.id));
+  };
+
+  const chooseDepartment = (id) => {
+    setDepartmentId(id);
+    const chosen = activeDepartments.find((d) => String(d.id) === String(id));
+    const paired = chosen && DEPARTMENT_PURPOSE[chosen.code];
+    if (paired && paired !== purpose) {
+      setPurpose(paired);
+      setAssignedTo("");
+    }
+  };
 
   // Vitals go to a nurse, the eye clinic to its own staff, everything else
   // is usually a doctor. Naming the person is optional — an unassigned route
@@ -283,6 +381,7 @@ function NewRouteForm() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["patient-routes"] });
+      queryClient.invalidateQueries({ queryKey: ["dashboard"] });
       setPatient(null);
       setReason("");
       setNotes("");
@@ -322,34 +421,36 @@ function NewRouteForm() {
             <Input value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Reason for visit" />
           </Field>
 
+          <Field label="Send for" hint="This is what decides who the patient reaches.">
+            <Select value={purpose} onChange={(e) => choosePurpose(e.target.value)}>
+              {PURPOSES.map(([value, label]) => (
+                <option key={value} value={value}>{label}</option>
+              ))}
+            </Select>
+          </Field>
+
           <Field label="Route to department" required>
-            <Select value={departmentId} onChange={(e) => setDepartmentId(e.target.value)} required>
+            <Select value={departmentId} onChange={(e) => chooseDepartment(e.target.value)} required>
               <option value="">Select department</option>
-              {(departments ?? []).map((d) => (
+              {activeDepartments.map((d) => (
                 <option key={d.id} value={d.id}>{d.name}</option>
               ))}
             </Select>
           </Field>
 
-          <Field label="Send for">
-            <Select
-              value={purpose}
-              onChange={(e) => { setPurpose(e.target.value); setAssignedTo(""); }}
-            >
-              <option value="vitals">Vitals (nursing)</option>
-              <option value="consultation">Consultation</option>
-              <option value="procedure">Procedure</option>
-              <option value="eye">Eye clinic</option>
-              <option value="investigation">Investigation</option>
-              <option value="other">Other</option>
-            </Select>
-          </Field>
-
-          <Field label={`Assign to ${ASSIGNEE_LABEL[purpose] ?? "doctor"}`}>
+          <Field
+            label={`Assign to ${ASSIGNEE_LABEL[purpose] ?? "doctor"}`}
+            hint={`Only ${ASSIGNEE_LABEL[purpose] ?? "doctor"}s are offered — the server refuses anyone else.`}
+          >
             <Select value={assignedTo} onChange={(e) => setAssignedTo(e.target.value)}>
-              <option value="">Anyone in the department</option>
+              <option value="">
+                {purpose === "eye" ? "Anyone in the eye clinic" : "Anyone in the department"}
+              </option>
               {(assignees ?? []).map((u) => (
-                <option key={u.id} value={u.id}>{[u.first_name, u.last_name].filter(Boolean).join(" ") || u.username}</option>
+                <option key={u.id} value={u.id}>
+                  {[u.first_name, u.last_name].filter(Boolean).join(" ") || u.username}
+                  {ROLE_LABEL[u.role] ? ` — ${ROLE_LABEL[u.role]}` : ""}
+                </option>
               ))}
             </Select>
           </Field>
@@ -369,7 +470,7 @@ function NewRouteForm() {
 
         {routePatient.isError && (
           <Alert tone="danger" className="mt-4">
-            Could not route this patient. Check the fields above.
+            {readError(routePatient.error, "Could not route this patient. Check the fields above.")}
           </Alert>
         )}
       </CardBody>

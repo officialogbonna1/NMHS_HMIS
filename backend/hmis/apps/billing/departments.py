@@ -18,6 +18,14 @@ it and must never each keep their own copy:
 rename "Radiology / Ultrasound" to "Imaging" and every attribution keeps
 working; the seed never overwrites a name that has been edited.
 
+**Only revenue units belong here.** A department that never raises a charge —
+Nursing, seeded as `clinicals` by `departments/migrations/0003` so a vitals
+route has somewhere to be filed — must not be added to `REVENUE_DEPARTMENTS`.
+It would put a permanently empty column into every financial report, and
+`apps/departments/tests/test_department_registry.py` holds this list at seven
+for that reason. A department is a unit of the hospital; this registry is the
+subset of them that takes money.
+
 **What is deliberately absent.** `investigation` is not mapped. The
 diagnostics app already passes `catalog.department` explicitly, and that
 catalogue row knows which unit performs the study better than a single

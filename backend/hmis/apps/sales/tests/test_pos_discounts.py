@@ -548,7 +548,7 @@ class DiscountTouchesNothingElseTests(PosDiscountTestCase):
         details = entry.details
         self.assertEqual(entry.actor, self.cashier)
         self.assertEqual(details["reference"], sale.reference)
-        self.assertEqual(details["customer"], str(self.patient))
+        self.assertEqual(details["customer"], self.patient.display_name)
         self.assertEqual(details["patient_number"], self.patient.patient_number)
         self.assertEqual((details["reason"], details["applied_by"], details["approved_by"]),
                          ("Hospital concession", "Ada Cash", "Ngozi Books"))

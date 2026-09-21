@@ -45,6 +45,19 @@ CASH = "cashier"; ACC = "accountant"; WARD = "ward_manager"; INV = "inventory_ma
 EVERYONE = "*"  # any authenticated user, whatever their role
 
 # Which non-admin roles get a non-403 answer from a GET on each endpoint.
+#: Paths the **Super Admin alone** reaches — `IsSuperAdmin`, not `ADMIN_ROLES`.
+#: `hospital_admin` is the ordinary administrator and is refused there, which is
+#: the boundary rule 37 draws on permanently deleting a patient. Listed rather
+#: than inferred so that adding one is a decision somebody wrote down: the
+#: matrix below assumes both administrators reach everything, and this is the
+#: only sanctioned way for that to be untrue.
+#:
+#: The Admin Discharge workspace used to be here and deliberately is not any
+#: more: a discharge is a record that is written once and keeps its reference,
+#: its audit row and its letter, so running the wards is ordinary hospital
+#: administration rather than an irreversible act.
+SUPER_ADMIN_ONLY = set()
+
 REACHABLE = {
     # --- your own account and your own inbox: everyone -------------------
     "/api/": EVERYONE,                              # DRF's route index
@@ -59,6 +72,15 @@ REACHABLE = {
     "/api/departments/": EVERYONE,
     "/api/services/": EVERYONE,
     "/api/billing-items/": EVERYONE,                # the price list, quoted from everywhere
+    # Every configured billable service, composed over the price list and the
+    # laboratory catalogue (`billing/catalogue.py`). It carries the lab
+    # catalogue's names, so it is drawn no wider than the roles that already
+    # read `/api/lab-tests/`, plus the desks that bill. The pharmacy works a
+    # different catalogue and is deliberately not on it.
+    "/api/billable-services/": [R, D, N, LAB, RAD, OPT, OPH, CASH, ACC],
+    # Billing several of them at once. The same desks that may raise one
+    # charge — BILLING_ROLES, through ChargeViewSet's own permissions.
+    "/api/charges/bill-services/": [R, CASH, ACC],
     # Configuration everyone reads and an admin writes: the letterhead on
     # every printed document, and whether a category of notification is sent.
     "/api/hospital-settings/": EVERYONE,
@@ -96,6 +118,9 @@ REACHABLE = {
     "/api/appointments/": [R, D],
     "/api/patient-routes/": [R, D, N, LAB, RAD, OPT, OPH],
     "/api/patient-routes/refer/": [R, D, N, LAB, RAD, OPT, OPH],
+    # The shape of a unit's report, read by whoever works the queue — it is a
+    # field list, not a record.
+    "/api/patient-routes/report-fields/": [R, D, N, LAB, RAD, OPT, OPH],
     "/api/patient-routes/send-to-doctor/": [R, D, N, LAB, RAD, OPT, OPH],
 
     # --- the ward --------------------------------------------------------
@@ -108,6 +133,17 @@ REACHABLE = {
     "/api/admissions/": [WARD, D, N, OPH],
     "/api/bed-transfers/": [WARD, D, N, OPH],
     "/api/discharges/": [WARD, D, N, OPH],
+
+    # The Admin Discharge workspace: the same DischargeSummary rows and the
+    # same `inpatient/services.discharge_patient`, reached by **both**
+    # administrators (`IsAdmin`). Empty here because `admin` and
+    # `hospital_admin` are excluded from this table by definition and both now
+    # pass — which `apps/inpatient/tests/test_admin_discharge.py` asserts
+    # directly, for each of them. No clinical role is on it, and the ward's own
+    # endpoint above is deliberately unchanged.
+    "/api/admin-discharges/": [],
+    "/api/admin-discharges/dischargeable/": [],
+    "/api/admin-discharges/discharge/": [],
 
     # --- money -----------------------------------------------------------
     "/api/ledgers/": [CASH, ACC, R, PH],
@@ -270,9 +306,15 @@ class RoleMatrix(TestCase):
                 continue  # reported by test_every_endpoint_is_declared
             actual = set(self._reachable_roles(path))
 
-            missing_admin = ALWAYS - actual
+            # Both administrators reach everything — except the handful of
+            # paths the Super Admin keeps to itself, which are asserted the
+            # other way round below.
+            expected_admins = {"admin"} if path in SUPER_ADMIN_ONLY else ALWAYS
+            missing_admin = expected_admins - actual
             if missing_admin:
                 wrong.append(f"{path}: admin refused ({sorted(missing_admin)})")
+            if path in SUPER_ADMIN_ONLY and "hospital_admin" in actual:
+                wrong.append(f"{path}: hospital_admin reaches a Super Admin path")
 
             actual -= ALWAYS
             if expected == EVERYONE:

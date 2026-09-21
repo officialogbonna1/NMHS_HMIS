@@ -9,6 +9,8 @@ import { useAuth } from "../auth/AuthContext.jsx";
 import { useToast } from "../components/Toaster.jsx";
 import CancelServiceModal from "../components/CancelServiceModal.jsx";
 import { chargeActions } from "../components/refundPolicy.js";
+import { ServicePicker } from "../components/ServicePicker.jsx";
+import { billServicesBody, isWriteIn, toggle, totalOf } from "../components/billableServices";
 
 const CAN_WAIVE_ROLES = ["admin", "hospital_admin", "cashier", "accountant"];
 
@@ -215,22 +217,21 @@ function TransactionRow({ tx, onDone, canWaive }) {
 // the same on the statement as a catalogued item does.
 function BillFromCatalogForm({ patientId, onDone }) {
   const [category, setCategory] = useState("consultation");
-  const [itemId, setItemId] = useState("");
+  // A selection, not a single pick: a patient arrives with a doctor's list of
+  // five tests, and billing them one at a time was five trips through this
+  // form.
+  const [selected, setSelected] = useState([]);
   const [customDescription, setCustomDescription] = useState("");
   const [customAmount, setCustomAmount] = useState("");
   const [error, setError] = useState(null);
 
   const chosen = BILLING_CATEGORIES.find((c) => c.category === category);
-  const { data: items } = useQuery({
-    queryKey: ["billing-items", category],
-    queryFn: () => api.get("/billing-items/", { params: { category, is_active: true, page_size: 200 } })
-      .then((r) => r.data.results ?? r.data),
-  });
-
-  const priced = items ?? [];
   // Only "Other" is typed in. Everything else is billed at the price the
-  // catalogue holds, so the same service costs the same at every window.
-  const writeIn = category === "other";
+  // catalogue holds, so the same service costs the same at every window —
+  // and the catalogue is the one the doctor orders from
+  // (`/billable-services/`), not a second list kept for the counter.
+  const writeIn = isWriteIn(category);
+  const total = totalOf(selected);
 
   const bill = useMutation({
     mutationFn: () => {
@@ -242,21 +243,20 @@ function BillFromCatalogForm({ patientId, onDone }) {
           source_type: category,
         });
       }
-      const item = priced.find((i) => String(i.id) === itemId);
-      return api.post("/charges/", {
-        patient: patientId, description: item.name, amount: item.price, source_type: category,
-      });
+      // Identities, never amounts: the server prices the bill from the
+      // catalogue and raises one charge per service, in one transaction.
+      return api.post("/charges/bill-services/", billServicesBody(patientId, selected));
     },
     onSuccess: () => {
       onDone();
-      setItemId(""); setCustomDescription(""); setCustomAmount(""); setError(null);
+      setSelected([]); setCustomDescription(""); setCustomAmount(""); setError(null);
     },
     onError: (err) => setError(readError(err, "Could not bill this item.")),
   });
 
   const ready = writeIn
     ? customDescription.trim().length > 0 && Number(customAmount) > 0
-    : Boolean(itemId);
+    : selected.length > 0;
 
   return (
     <form
@@ -268,7 +268,7 @@ function BillFromCatalogForm({ patientId, onDone }) {
         <label className="block text-sm font-medium mb-1 text-slate-700">What are you billing for?</label>
         <select
           value={category}
-          onChange={(e) => { setCategory(e.target.value); setItemId(""); setError(null); }}
+          onChange={(e) => { setCategory(e.target.value); setSelected([]); setError(null); }}
           className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm"
         >
           {BILLING_CATEGORIES.map((c) => (
@@ -278,23 +278,15 @@ function BillFromCatalogForm({ patientId, onDone }) {
       </div>
 
       {!writeIn && (
-        <div>
+        <div className="min-w-0">
           <label className="block text-sm font-medium mb-1 text-slate-700">{chosen?.title ?? "Item"}</label>
-          <select
-            value={itemId}
-            onChange={(e) => setItemId(e.target.value)}
-            className="w-full border border-slate-300 rounded-md px-3 py-2 text-sm"
-          >
-            <option value="">Select…</option>
-            {priced.map((i) => (
-              <option key={i.id} value={i.id}>{i.name} — {currency(i.price)}</option>
-            ))}
-          </select>
-          {items && priced.length === 0 && (
-            <p className="mt-1 text-sm text-amber-700">
-              Nothing priced under {chosen?.label} yet — add it under Billing Catalog.
-            </p>
-          )}
+          <ServicePicker
+            category={category}
+            selected={selected}
+            onToggle={(service) => setSelected((current) => toggle(current, service))}
+            onClear={() => setSelected([])}
+            emptyHint={`Nothing priced under ${chosen?.label ?? "this"} yet — add it under Billing Catalog.`}
+          />
         </div>
       )}
 
@@ -331,7 +323,11 @@ function BillFromCatalogForm({ patientId, onDone }) {
         disabled={!ready || bill.isPending}
         className="bg-brand-600 text-white px-4 py-2 rounded-md text-sm hover:bg-brand-700 disabled:opacity-50"
       >
-        {bill.isPending ? "Billing…" : "Bill"}
+        {bill.isPending
+          ? "Billing…"
+          : (!writeIn && selected.length > 0
+              ? `Bill ${currency(total)}${selected.length > 1 ? ` · ${selected.length} services` : ""}`
+              : "Bill")}
       </button>
     </form>
   );

@@ -44,7 +44,7 @@ class OutstandingListTests(TestCase):
                        received_by=self.cashier)
 
         names = [row["patient_name"] for row in self._owing()]
-        self.assertEqual(names, [str(debtor)])
+        self.assertEqual(names, [debtor.display_name])
 
     def test_paying_in_full_takes_them_off_the_list(self):
         patient = self._patient("Amaka")
@@ -97,8 +97,8 @@ class OutstandingListTests(TestCase):
         for p in Patient.objects.all():
             add_charge(patient=p, description="x", amount=Decimal("1000"), created_by=self.reception)
 
-        self.assertEqual([r["patient_name"] for r in self._owing(search="Amaka")], [str(amaka)])
-        self.assertEqual([r["patient_name"] for r in self._owing(search=amaka.file_number)], [str(amaka)])
+        self.assertEqual([r["patient_name"] for r in self._owing(search="Amaka")], [amaka.display_name])
+        self.assertEqual([r["patient_name"] for r in self._owing(search=amaka.file_number)], [amaka.display_name])
 
     def test_reception_can_read_it_too(self):
         patient = self._patient("Amaka")
@@ -134,7 +134,7 @@ class WaiverRegisterTests(TestCase):
         waive_charge(charge=charge, reason="Staff dependant", approved_by=self.cashier)
 
         row = self._adjustments(kind="waiver")[0]
-        self.assertEqual(row["patient_name"], str(self.patient))
+        self.assertEqual(row["patient_name"], self.patient.display_name)
         self.assertEqual(Decimal(row["amount"]), Decimal("5000.00"))
         self.assertEqual(row["reason"], "Staff dependant")
         self.assertEqual(row["approved_by_name"], "Ada Bello")

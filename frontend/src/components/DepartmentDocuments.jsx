@@ -2,6 +2,7 @@ import { directionsOf } from "./prescriptionDirections.js";
 import { useQuery } from "@tanstack/react-query";
 import api from "../api/client";
 import { patientNumber } from "./patientIdentity.js";
+import { useEyeExaminationFields } from "./EyeExaminationFields.jsx";
 import PrintSheet, {
   SheetHeader, PatientBlock, SheetSection, SheetFooter, SheetStatus,
   Stamp, WriteInLines, Field, money,
@@ -328,6 +329,30 @@ export function ReferralDocumentSheet({ routeId, variant = "request", onClose })
           <Field label="Department" value={route.department} />
           <Field label="Seen by" value={route.assigned_to || "Not yet claimed"} />
         </div>
+        {/* The examinations the clinician named, where the referral orders
+            from the price list. The sheet travels with the patient, so it
+            carries what was ordered and what it was priced at — the same
+            figures the bill carries, because they are the same charge. */}
+        {route.services?.length > 0 && (
+          <table className="mt-3 w-full text-sm">
+            <thead>
+              <tr className="border-b border-slate-800 text-left">
+                <th className="py-1 font-semibold">Requested</th>
+                <th className="py-1 text-right font-semibold">Price</th>
+                <th className="py-1 text-right font-semibold">Billing</th>
+              </tr>
+            </thead>
+            <tbody>
+              {route.services.map((service, index) => (
+                <tr key={index} className="border-b border-slate-300 last:border-b-0">
+                  <td className="py-1">{service.name}</td>
+                  <td className="py-1 text-right">{money(service.price)}</td>
+                  <td className="py-1 text-right uppercase">{service.status.replace("_", " ")}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
         <div className="mt-3 border-l-2 border-slate-800 pl-3 text-sm text-slate-900">
           <p className="font-semibold">What was asked for</p>
           <p className="whitespace-pre-wrap">{route.notes || "No clinical note was given."}</p>
@@ -893,4 +918,290 @@ function Row({ label, value }) {
       <span className="text-slate-900">{value}</span>
     </div>
   );
+}
+
+/**
+ * A consultation note as a hospital document — the general doctor's and the
+ * eye doctor's alike, because they are one record (`ConsultationNote`) and
+ * this is one sheet.
+ *
+ * It prints **what was recorded and nothing else**. An eye section with no
+ * findings in it does not appear, because a printed heading with nothing
+ * under it reads as "examined, normal" to whoever picks the sheet up, which
+ * is the one thing a clinical document must never imply.
+ *
+ * A note that has been corrected says so on its face, at the top and at the
+ * foot: a sheet that has left the building is the version somebody will act
+ * on, so it has to carry its own status with it.
+ */
+export function ConsultationNoteSheet({ note, patient, onClose }) {
+  const { data: schema } = useEyeExaminationFields();
+
+  if (!note) {
+    return <SheetStatus title="Consultation note" isError onClose={onClose} />;
+  }
+
+  const exam = note.eye_examination ?? null;
+  const isEye = Boolean(exam && Object.keys(exam).length);
+  const title = isEye ? "Ophthalmology Medical Note" : "Consultation Note";
+  const filled = (value) => value !== undefined && value !== null
+    && (Array.isArray(value) ? value.length > 0 : String(value).trim() !== "");
+
+  // Read a stored value back through the catalogue's own labels, so the sheet
+  // prints "Blurred vision", never "blurred_vision".
+  const show = (spec, value) => {
+    if (!filled(value)) return "";
+    const labels = new Map((spec?.choices ?? []).map((c) => [c.value, c.label]));
+    return Array.isArray(value)
+      ? value.map((item) => labels.get(item) ?? item).join(", ")
+      : String(labels.get(value) ?? value);
+  };
+
+  // Only the sections, rows and fields that actually hold a finding.
+  const sections = (schema?.sections ?? [])
+    .map((section) => ({
+      ...section,
+      rows: section.rows.filter((row) =>
+        schema.eyes.some((eye) => filled(exam?.[row[eye.key]]))),
+      fields: section.fields.filter((field) => filled(exam?.[field.key])),
+    }))
+    .filter((section) => section.rows.length || section.fields.length);
+
+  return (
+    <PrintSheet title={`${title} — ${patientNumber(patient ?? note)}`} onClose={onClose}>
+      <SheetHeader
+        documentTitle={title}
+        reference={patientNumber(patient ?? note)}
+        date={dateTime(note.visit_time)}
+      />
+
+      {/* A word, not a colour — the driver drops a coloured panel. */}
+      {note.is_amended && <Stamp>Amended</Stamp>}
+
+      <PatientBlock
+        patient={patient ?? { name: note.patient_name, patient_number: note.patient_number }}
+      />
+
+      <SheetSection title="Documented by">
+        <div className="grid grid-cols-2 gap-x-8 gap-y-1 text-sm">
+          <Field label="Doctor" value={note.doctor_name || "—"} strong />
+          <Field label="Staff No." value={note.doctor_staff_number || "—"} />
+        </div>
+      </SheetSection>
+
+      {note.reason_for_visit && (
+        <SheetSection title="Reason for visit">
+          <p className="whitespace-pre-wrap text-sm text-slate-900">{note.reason_for_visit}</p>
+        </SheetSection>
+      )}
+      {note.chief_complaint && (
+        <SheetSection title="Chief complaint">
+          <p className="whitespace-pre-wrap text-sm text-slate-900">{note.chief_complaint}</p>
+        </SheetSection>
+      )}
+      {note.note_text && (
+        <SheetSection title="Notes">
+          <p className="whitespace-pre-wrap text-sm text-slate-900">{note.note_text}</p>
+        </SheetSection>
+      )}
+
+      {sections.map((section) => (
+        <SheetSection key={section.key} title={section.label}>
+          {section.rows.length > 0 && (
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-slate-400">
+                  <th className="w-1/2 py-1 text-left font-semibold text-slate-700" />
+                  {schema.eyes.map((eye) => (
+                    <th key={eye.key} className="py-1 text-left font-semibold text-slate-700">
+                      {eye.label}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {section.rows.map((row) => (
+                  <tr key={row.name} className="border-b border-slate-200 last:border-0">
+                    <td className="py-1 pr-4 text-slate-700">
+                      {row.label}{row.unit && !row.label.includes(row.unit) ? ` (${row.unit})` : ""}
+                    </td>
+                    {schema.eyes.map((eye) => (
+                      <td key={eye.key} className="py-1 pr-4 text-slate-900">
+                        {show(row, exam?.[row[eye.key]]) || "—"}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+          {section.fields.length > 0 && (
+            <div className={`grid grid-cols-2 gap-x-8 gap-y-1 text-sm ${
+              section.rows.length ? "mt-2" : ""}`}>
+              {section.fields.map((field) => (
+                <Field key={field.key} label={field.label} value={show(field, exam?.[field.key])} />
+              ))}
+            </div>
+          )}
+        </SheetSection>
+      ))}
+
+      {note.diagnosis && (
+        <SheetSection title="Diagnosis">
+          <p className="whitespace-pre-wrap text-sm text-slate-900">{note.diagnosis}</p>
+        </SheetSection>
+      )}
+      {note.plan && (
+        <SheetSection title="Plan">
+          <p className="whitespace-pre-wrap text-sm text-slate-900">{note.plan}</p>
+        </SheetSection>
+      )}
+
+      {/* The provenance block: who documented it, when, and whether what is
+          on this page is still what was first written. */}
+      <SheetSection title="Record status">
+        <div className="grid grid-cols-2 gap-x-8 gap-y-1 text-sm">
+          <Field label="Documented by" value={note.doctor_name || "—"} strong />
+          <Field label="Created" value={dateTime(note.created_at)} />
+          <Field label="Status" value={note.is_amended ? "Amended" : "Original"} strong />
+          {note.is_amended && (
+            <Field label="Last amended" value={dateTime(note.last_amended_at)} />
+          )}
+          {note.is_amended && (
+            <Field label="Last amended by" value={note.last_amended_by_name || "—"} />
+          )}
+          {note.is_amended && (
+            <Field
+              label="Amendments"
+              value={`${note.amendment_count} on record`}
+            />
+          )}
+        </div>
+      </SheetSection>
+
+      <SheetFooter signatory="Doctor's signature" />
+    </PrintSheet>
+  );
+}
+
+/* ========================================================= discharge letter */
+
+/**
+ * The completed discharge letter, printed after a discharge.
+ *
+ * Reads `/admin-discharges/<id>/letter/`, which assembles the whole document
+ * server-side so the sheet cannot disagree with the record and needs no second
+ * call for demographics. It prints **only fields the data model actually
+ * holds** — the discharge diagnosis, the summary of the stay, the instructions
+ * given, the condition on discharge and the follow-up date, all typed by the
+ * person who signed it. Nothing clinical is invented to fill the page: a
+ * section with nothing in it is omitted, because a printed heading with blank
+ * space under it reads as "considered, nothing found" (the same reasoning
+ * rule 45 applies to the empty eye sections on a consultation note).
+ *
+ * It is the existing printing architecture — `PrintSheet` into `#print-area`,
+ * the shared `SheetHeader` / `PatientBlock` / `SheetSection` / `SheetFooter`,
+ * black on white — reached through the registry in `printing.jsx`. There is no
+ * second print framework here.
+ */
+export function DischargeLetterSheet({ dischargeId, onClose }) {
+  const { data, isLoading, isError } = useQuery({
+    queryKey: ["discharge-letter", String(dischargeId)],
+    queryFn: () => api.get(`/admin-discharges/${dischargeId}/letter/`).then((r) => r.data),
+    enabled: Boolean(dischargeId),
+  });
+
+  if (isLoading || isError || !data) {
+    return <SheetStatus title="Discharge letter" isError={isError} onClose={onClose} />;
+  }
+
+  const { patient, admission, discharge } = data;
+  const stay = lengthOfStay(admission.admitted_at, admission.discharged_at);
+
+  return (
+    <PrintSheet title={`Discharge letter — ${patient.patient_number}`} onClose={onClose}>
+      <SheetHeader
+        documentTitle="Discharge Letter"
+        reference={data.reference}
+        date={dateTime(discharge.completed_at)}
+      />
+
+      <PatientBlock
+        patient={{
+          name: patient.name,
+          patient_number: patient.patient_number,
+          sex: patient.sex,
+          age: patient.age,
+          phone: patient.phone,
+          address: patient.address,
+        }}
+      />
+
+      <SheetSection title="Admission">
+        <div className="grid grid-cols-2 gap-x-8 gap-y-1 text-sm">
+          <Field label="Admission ref." value={admission.reference} strong />
+          <Field label="Ward / bed" value={`${admission.ward || "—"} · Bed ${admission.bed || "—"}`} />
+          <Field label="Admitted" value={dateTime(admission.admitted_at)} strong />
+          <Field label="Discharged" value={dateTime(admission.discharged_at)} strong />
+          <Field label="Length of stay" value={stay} />
+          <Field label="Attending doctor" value={admission.attending_doctor || "—"} />
+        </div>
+        {admission.admission_diagnosis && (
+          <p className="mt-3 border-l-2 border-slate-800 pl-3 text-sm text-slate-900">
+            <span className="font-semibold">Diagnosis on admission: </span>
+            {admission.admission_diagnosis}
+          </p>
+        )}
+      </SheetSection>
+
+      <SheetSection title="Discharge diagnosis">
+        <p className="whitespace-pre-line text-sm text-slate-900">{discharge.diagnosis}</p>
+      </SheetSection>
+
+      <SheetSection title="Course of admission">
+        <p className="whitespace-pre-line text-sm text-slate-900">{discharge.summary}</p>
+      </SheetSection>
+
+      {discharge.instructions && (
+        <SheetSection title="Discharge instructions">
+          <p className="whitespace-pre-line text-sm text-slate-900">{discharge.instructions}</p>
+        </SheetSection>
+      )}
+
+      <SheetSection title="Condition and follow-up">
+        <div className="grid grid-cols-2 gap-x-8 gap-y-1 text-sm">
+          <Field
+            label="Condition on discharge"
+            value={discharge.condition || "Not stated"}
+            strong
+          />
+          <Field
+            label="Follow-up appointment"
+            value={discharge.follow_up ? new Date(discharge.follow_up).toLocaleDateString() : "None scheduled"}
+            strong
+          />
+        </div>
+        {!discharge.follow_up && (
+          <p className="mt-2 text-sm text-slate-700">
+            The patient should return to the hospital if symptoms worsen.
+          </p>
+        )}
+      </SheetSection>
+
+      <SheetFooter
+        signatory={`Discharged by ${discharge.completed_by}`}
+        note={
+          "This letter is the hospital's record of the discharge named above. "
+          + "Please bring it to any follow-up appointment."
+        }
+      />
+    </PrintSheet>
+  );
+}
+
+function lengthOfStay(from, to) {
+  if (!from || !to) return "—";
+  const days = Math.max(0, Math.round((new Date(to) - new Date(from)) / 86400000));
+  if (days === 0) return "Same day";
+  return `${days} day${days === 1 ? "" : "s"}`;
 }

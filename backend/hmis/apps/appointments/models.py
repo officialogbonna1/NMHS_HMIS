@@ -1,5 +1,6 @@
 from django.conf import settings
 from django.db import models
+from apps.core import labels
 from apps.core.mixins import TimeStampedModel
 from apps.patients.models import Patient
 
@@ -29,3 +30,11 @@ class Appointment(TimeStampedModel):
 
     class Meta:
         ordering = ["created_at"]  # first queued, first seen
+
+    def __str__(self):
+        """
+        A queue entry names the patient, the doctor they are waiting for and
+        where it has got to — the three things that distinguish one row from
+        the next, since there is no booked time to name it by.
+        """
+        return f"{self.patient} · {labels.person(self.doctor)} ({self.get_status_display()})"

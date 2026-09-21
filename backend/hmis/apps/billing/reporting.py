@@ -674,7 +674,7 @@ def transactions(period, *, limit=50):
         rows.append({
             "id": charge.pk,
             "time": charge.created_at,
-            "patient": str(charge.patient),
+            "patient": charge.patient.display_name,
             "patient_uuid": str(charge.patient.uuid),
             "patient_number": charge.patient.patient_number,
             "department": label,

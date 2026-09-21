@@ -140,7 +140,7 @@ class SaleSerializer(serializers.ModelSerializer):
         return (user.get_full_name() or user.username) if user else None
 
     def get_patient_name(self, obj):
-        return str(obj.patient) if obj.patient_id else None
+        return obj.patient.display_name if obj.patient_id else None
 
     def get_patient_number(self, obj):
         return obj.patient.patient_number if obj.patient_id else None

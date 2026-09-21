@@ -137,11 +137,15 @@ class PrescriptionViewSet(viewsets.ModelViewSet):
         try:
             prescription = dispense_prescription(prescription=prescription, pharmacist=request.user)
         except ValidationError as exc:
-            return Response({"detail": _message(exc)}, status=status.HTTP_400_BAD_REQUEST)
+            # A shelf that has emptied since the queue was drawn is an ordinary
+            # answer, not a fault: 400 with the figures, never a 500. `code`
+            # lets the counter tell it from "already dispensed" and refresh
+            # what it is showing (rules 22, 38).
+            return Response(_refusal(exc), status=status.HTTP_400_BAD_REQUEST)
         audit_event(actor=request.user, action="prescription.dispensed", instance=prescription, request=request)
         notify(
             recipient=prescription.doctor,
-            title=f"Dispensed: {prescription.item.name} for {prescription.patient}",
+            title=f"Dispensed: {prescription.item.name} for {prescription.patient.display_name}",
             message=f"{prescription.quantity} {prescription.item.unit_label}(s) handed over by the pharmacy.",
             category="pharmacy",
             action_url=f"/patients/{prescription.patient.uuid}",
@@ -190,10 +194,10 @@ def _notify_pharmacy_of_script(prescriptions):
     first = prescriptions[0]
     drugs = ", ".join(f"{p.item.name} ×{p.quantity}" for p in prescriptions)
     title = (f"New prescription: {first.item.name}" if len(prescriptions) == 1
-             else f"New prescription: {len(prescriptions)} drugs for {first.patient}")
+             else f"New prescription: {len(prescriptions)} drugs for {first.patient.display_name}")
     for pharmacist in User.objects.filter(role="pharmacist", is_active=True):
         notify(recipient=pharmacist, title=title,
-               message=f"{drugs} — for {first.patient}",
+               message=f"{drugs} — for {first.patient.display_name}",
                category="pharmacy", action_url="/pharmacy")
 
 
@@ -204,7 +208,7 @@ def _notify_pharmacy(prescription):
         notify(
             recipient=pharmacist,
             title=f"New prescription: {prescription.item.name}",
-            message=f"{prescription.quantity} {prescription.item.unit_label}(s) for {prescription.patient}",
+            message=f"{prescription.quantity} {prescription.item.unit_label}(s) for {prescription.patient.display_name}",
             category="pharmacy",
             action_url="/pharmacy",
         )
@@ -212,3 +216,22 @@ def _notify_pharmacy(prescription):
 
 def _message(exc):
     return "; ".join(exc.messages) if hasattr(exc, "messages") else str(exc)
+
+
+def _refusal(exc):
+    """
+    A service's refusal as the counter reads it: the sentence, plus whatever
+    the exception chose to carry beside it.
+
+    `OutOfStockError` carries `code`, `available` and `requested` so the screen
+    can show the true figure and refresh the queue rather than re-parsing the
+    message. Everything else answers with `detail` alone, exactly as before.
+    """
+    body = {"detail": _message(exc)}
+    code = getattr(exc, "code", None)
+    if code:
+        body["code"] = code
+    for field in ("available", "requested"):
+        if hasattr(exc, field):
+            body[field] = getattr(exc, field)
+    return body

@@ -51,7 +51,7 @@ class AppointmentViewSet(viewsets.ModelViewSet):
         if existing:
             doctor_name = doctor.get_full_name() or doctor.username
             return Response(
-                {"detail": f"{patient} is already in Dr. {doctor_name}'s queue "
+                {"detail": f"{patient.display_name} is already in Dr. {doctor_name}'s queue "
                            f"({existing.get_status_display().lower()}). Cancel that entry first "
                            f"if you need to re-queue them."},
                 status=status.HTTP_400_BAD_REQUEST,
@@ -59,7 +59,7 @@ class AppointmentViewSet(viewsets.ModelViewSet):
         appointment = serializer.save(status="queued")
         notify(
             recipient=doctor,
-            title=f"New appointment: {appointment.patient}",
+            title=f"New appointment: {appointment.patient.display_name}",
             message=appointment.reason,
             category="appointments",
             action_url="/appointments",

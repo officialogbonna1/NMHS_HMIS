@@ -97,7 +97,7 @@ class SendToDoctorTests(TestCase):
         response = self._send()
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.data["code"], "no_vitals")
-        self.assertIn(str(self.patient), response.data["detail"])
+        self.assertIn(self.patient.display_name, response.data["detail"])
         self.assertIn("anyway", response.data["detail"])
         self.assertFalse(PatientRoute.objects.filter(purpose="consultation").exists())
 

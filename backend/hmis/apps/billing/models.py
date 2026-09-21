@@ -1,6 +1,7 @@
 from decimal import Decimal
 from django.conf import settings
 from django.db import models
+from apps.core import labels
 from apps.core.mixins import TimeStampedModel
 from apps.patients.models import Patient
 from apps.departments.models import Department
@@ -36,6 +37,10 @@ class PatientLedger(TimeStampedModel):
     class Meta: ordering = ["patient__last_name", "patient__first_name"]
     @property
     def outstanding_balance(self): return self.total_charges - self.total_payments - self.total_adjustments
+
+    def __str__(self):
+        """One patient's running account, labelled by what it says they owe."""
+        return f"{self.patient} · outstanding {labels.money(self.outstanding_balance)}"
 
 class Charge(TimeStampedModel):
     STATUS = [("unpaid", "Unpaid"), ("partial", "Part paid"), ("paid", "Paid"), ("waived", "Waived"), ("cancelled", "Cancelled")]
@@ -100,6 +105,17 @@ class Charge(TimeStampedModel):
             models.Index(fields=["created_at"]),
             models.Index(fields=["source_type", "created_at"]),
         ]
+
+    def __str__(self):
+        """
+        The bill as the counter reads it out: who owes it, what for, how much
+        and whether it has been settled. The state is part of the label
+        because a cancelled charge keeps its row and its amount (rule 38),
+        and a list of identical descriptions would otherwise not say which is
+        which.
+        """
+        return (f"{self.patient} · {self.description} · {labels.money(self.amount)} "
+                f"({self.get_status_display()})")
 
     @property
     def payable(self):
@@ -241,6 +257,16 @@ class Payment(TimeStampedModel):
             models.Index(fields=["created_at"]),
             models.Index(fields=["method", "created_at"]),
         ]
+
+    def __str__(self):
+        """
+        Money received. The patient is optional — a walk-in buying medicine at
+        the POS is not one (rule 39) — so the label says so rather than
+        leaving the row nameless.
+        """
+        who = self.patient if self.patient_id else "Walk-in customer"
+        return (f"{who} · {labels.money(self.amount)} {self.get_method_display()} "
+                f"({self.get_channel_display()})")
 
     @property
     def amount_refunded(self):
@@ -425,3 +451,7 @@ class Adjustment(TimeStampedModel):
     class Meta:
         ordering = ["-created_at"]
         indexes = [models.Index(fields=["kind", "created_at"])]
+
+    def __str__(self):
+        """What was forgiven or given back, and off whose account."""
+        return f"{self.patient} · {self.get_kind_display()} {labels.money(self.amount)}"

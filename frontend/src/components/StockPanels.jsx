@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { useConfirm } from "./ConfirmAlert.jsx";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import api from "../api/client";
 import { readError } from "../api/errors";
@@ -280,6 +281,7 @@ function StockStatus({ record }) {
 }
 
 function StockRow({ record }) {
+  const { ask } = useConfirm();
   const { showToast } = useToast();
   const refresh = useRefresh();
   const [counting, setCounting] = useState(false);
@@ -331,7 +333,15 @@ function StockRow({ record }) {
             {record.is_expired && record.quantity > 0 && (
               <Button
                 variant="linkDanger" size="xs"
-                onClick={() => confirm(`Write off ${record.quantity} unit(s) of this expired batch at ${record.location_name}?`) && writeOff.mutate()}
+                onClick={async () => {
+                  if (await ask({
+                    title: "Write off this expired stock?",
+                    message: `${record.quantity} unit(s) of this expired batch at `
+                      + `${record.location_name} will be taken off the shelf. `
+                      + "The movement is recorded and cannot be undone.",
+                    confirmLabel: "Write it off",
+                  })) writeOff.mutate();
+                }}
               >
                 Write off
               </Button>

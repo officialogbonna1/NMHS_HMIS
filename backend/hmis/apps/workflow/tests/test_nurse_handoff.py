@@ -187,7 +187,7 @@ class NurseHandoffTests(TestCase):
         # Both hand-off paths run through _queue_consultation now, so the
         # doctor gets one wording whichever way the patient reached them.
         self.assertIn("Queued for consultation", note.title)
-        self.assertIn(str(self.patient), note.title)
+        self.assertIn(self.patient.display_name, note.title)
         self.assertEqual(note.message, "Febrile, complains of headache")
         self.assertEqual(note.action_url, f"/patients/{self.patient.uuid}")
 

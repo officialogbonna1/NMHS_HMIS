@@ -26,3 +26,8 @@ class Service(TimeStampedModel):
     class Meta:
         constraints = [models.UniqueConstraint(fields=["department", "code"], name="unique_department_service_code")]
         ordering = ["department__name", "name"]
+
+    def __str__(self):
+        """The service and the unit that performs it — `code` is unique only
+        within a department, so the name alone can repeat across the list."""
+        return f"{self.name} — {self.department.name}"

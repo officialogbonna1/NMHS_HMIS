@@ -52,13 +52,67 @@ class CleaningTests(SimpleTestCase):
                 clean_eye_examination(bad)
 
     def test_the_definition_holds_the_agreed_fields_and_nothing_the_note_already_has(self):
-        paired = ["distance", "near", "pinhole", "refraction", "iop", "lids", "conjunctiva", "cornea",
-                  "anterior_chamber", "iris_pupil", "lens", "optic_disc", "macula", "retina"]
+        paired = ["distance", "corrected", "near", "pinhole",
+                  "sphere", "cylinder", "axis", "add", "refraction",
+                  "iop", "pupil", "pupil_reaction",
+                  "lids", "conjunctiva", "sclera", "cornea", "anterior_chamber", "iris_pupil", "lens",
+                  "optic_disc", "macula", "vessels", "retina", "posterior_other"]
         expected = {f"{name}_{eye}" for name in paired for eye in ("right", "left")}
-        expected |= {"iop_method", "eye_movements", "visual_fields", "follow_up"}
+        expected |= {"complaints", "complaint_other", "complaint_duration", "complaint_onset",
+                     "complaint_severity", "associated_symptoms",
+                     "ocular_history", "ocular_history_notes",
+                     "iop_method", "rapd", "eye_movements", "visual_fields", "follow_up"}
         self.assertEqual(set(FIELDS), expected)
-        for already_on_the_note in ("chief_complaint", "diagnosis", "plan", "note_text", "history"):
-            self.assertNotIn(already_on_the_note, FIELDS)
+        # Everything the consultation note already carries stays on the note.
+        # The general medical history, drugs and allergies stay on the nine
+        # health-record tiles — there is no second copy of either here.
+        for already_recorded in ("chief_complaint", "diagnosis", "plan", "note_text", "history",
+                                 "allergies", "medications", "medical_conditions"):
+            self.assertNotIn(already_recorded, FIELDS)
+
+    def test_a_complaint_list_keeps_what_was_ticked_and_refuses_what_is_not_on_it(self):
+        self.assertEqual(
+            clean_eye_examination({"complaints": ["redness", "blurred_vision", "redness"],
+                                   "ocular_history": ["glaucoma"]}),
+            # Deduplicated, and in the catalogue's own order.
+            {"complaints": ["blurred_vision", "redness"], "ocular_history": ["glaucoma"]})
+        # Nothing ticked is nothing stored, not an empty list on the record.
+        self.assertIsNone(clean_eye_examination({"complaints": [], "ocular_history": None}))
+        with self.assertRaises(ValidationError) as caught:
+            clean_eye_examination({"complaints": ["redness", "toothache"]})
+        self.assertEqual(list(caught.exception.message_dict), ["complaints"])
+        self.assertIn("toothache", caught.exception.message_dict["complaints"][0])
+        # A complaint list is a list, and a stray number in one is refused.
+        with self.assertRaises(ValidationError):
+            clean_eye_examination({"complaints": [7]})
+
+    def test_each_choice_field_is_held_to_its_own_options(self):
+        self.assertEqual(
+            clean_eye_examination({"complaint_onset": "sudden", "complaint_severity": "severe",
+                                   "pupil_right": "abnormal", "pupil_reaction_left": "not_assessed",
+                                   "rapd": "present", "iop_method": "tonopen"}),
+            {"complaint_onset": "sudden", "complaint_severity": "severe", "pupil_right": "abnormal",
+             "pupil_reaction_left": "not_assessed", "rapd": "present", "iop_method": "tonopen"})
+        # A value from a *different* field's list is still not on this one's.
+        for payload in ({"complaint_onset": "severe"}, {"rapd": "normal"},
+                        {"pupil_right": "present"}, {"complaint_severity": "sudden"}):
+            with self.subTest(payload=payload), self.assertRaises(ValidationError):
+                clean_eye_examination(payload)
+
+    def test_refraction_is_written_the_way_it_is_prescribed(self):
+        # Text, not a number input: "+1.25" loses its sign to one of those.
+        self.assertEqual(
+            clean_eye_examination({"sphere_right": "+1.25", "cylinder_right": "-0.50",
+                                   "axis_right": "180", "add_left": "+2.00"}),
+            {"sphere_right": "+1.25", "cylinder_right": "-0.50", "axis_right": "180",
+             "add_left": "+2.00"})
+
+    def test_every_choice_field_the_form_is_served_actually_offers_options(self):
+        for section in schema()["sections"]:
+            for spec in [*section["rows"], *section["fields"]]:
+                if spec["kind"] in ("choice", "multi"):
+                    with self.subTest(field=spec.get("key") or spec.get("name")):
+                        self.assertTrue(spec["choices"])
 
     def test_the_form_is_served_exactly_the_fields_that_are_validated(self):
         served = schema()
@@ -118,11 +172,38 @@ class EyeConsultationTests(TestCase):
                 self.assertIn("eye_examination", response.data)
         self.assertFalse(ConsultationNote.objects.exists())
 
-    def test_the_examination_locks_with_the_note(self):
+    def test_the_examination_is_never_silently_overwritten(self):
+        """
+        The note still locks on save, so the examination cannot be changed by
+        writing over it. What the eye doctor may do is *amend* their own note,
+        which is refused without a reason and archives what it said before —
+        see `test_note_amendments.py` for the rule in full.
+        """
         note_id = self.write(self.eye_doctor, eye_examination={"iop_right": 20}).data["id"]
-        response = self.as_(self.eye_doctor).patch(
+        self.assertTrue(ConsultationNote.objects.get(pk=note_id).is_locked)
+
+        silent = self.as_(self.eye_doctor).patch(
             f"/api/notes/{note_id}/", {"eye_examination": {"iop_right": 12}}, format="json")
-        self.assertEqual(response.status_code, 403)
+        self.assertEqual((silent.status_code, silent.data["code"]),
+                         (400, "amendment_reason_required"))
+        self.assertEqual(ConsultationNote.objects.get(pk=note_id).eye_examination, {"iop_right": 20})
+
+        amended = self.as_(self.eye_doctor).patch(
+            f"/api/notes/{note_id}/",
+            {"eye_examination": {"iop_right": 12}, "amendment_reason": "correction"},
+            format="json")
+        self.assertEqual(amended.status_code, 200, amended.data)
+        self.assertEqual(ConsultationNote.objects.get(pk=note_id).eye_examination, {"iop_right": 12})
+        self.assertEqual(ConsultationNoteAmendment.objects.get(note_id=note_id)
+                         .previous_eye_examination, {"iop_right": 20})
+
+    def test_another_clinician_cannot_amend_the_eye_doctors_examination(self):
+        note_id = self.write(self.eye_doctor, eye_examination={"iop_right": 20}).data["id"]
+        refused = self.as_(self.doctor).patch(
+            f"/api/notes/{note_id}/",
+            {"eye_examination": {"iop_right": 12}, "amendment_reason": "correction"},
+            format="json")
+        self.assertEqual(refused.status_code, 403, refused.data)
         self.assertEqual(ConsultationNote.objects.get(pk=note_id).eye_examination, {"iop_right": 20})
 
     def test_an_admin_amendment_archives_the_examination_with_the_rest_of_the_note(self):
@@ -130,17 +211,54 @@ class EyeConsultationTests(TestCase):
                              eye_examination={"lens_right": "Dense NS 3+"}).data["id"]
         response = self.as_(self.admin).patch(
             f"/api/notes/{note_id}/",
-            {"diagnosis": "Cataract, right", "eye_examination": {"lens_right": "NS 2+"}}, format="json")
+            {"diagnosis": "Cataract, right", "eye_examination": {"lens_right": "NS 2+"},
+             "amendment_reason": "correction"}, format="json")
         self.assertEqual(response.status_code, 200, response.data)
 
         amendment = ConsultationNoteAmendment.objects.get(note_id=note_id)
         self.assertEqual((amendment.previous_diagnosis, amendment.previous_eye_examination),
                          ("Cataract", {"lens_right": "Dense NS 3+"}))
+        # The amendment says who and why, not only what it used to hold.
+        self.assertEqual((amendment.amended_by, amendment.reason), (self.admin, "correction"))
         self.assertEqual(ConsultationNote.objects.get(pk=note_id).eye_examination, {"lens_right": "NS 2+"})
         # The eye doctor reads the archive of their own note.
         archive = self.as_(self.eye_doctor).get("/api/note-amendments/", {"note": note_id}).data
         rows = archive["results"] if isinstance(archive, dict) else archive
         self.assertEqual(rows[0]["previous_eye_examination"], {"lens_right": "Dense NS 3+"})
+
+    def test_a_whole_structured_eye_consultation_saves_with_most_of_it_left_blank(self):
+        """The acceptance scenario: the eye doctor fills in what they
+        examined — complaint, history, acuity, refraction, pressure, pupils,
+        both segments — leaves the rest empty, and the note takes it."""
+        response = self.write(
+            self.eye_doctor,
+            chief_complaint="Blurred vision, both eyes, 3 months",
+            note_text="Gradual painless loss of vision. No trauma.",
+            diagnosis="Immature senile cataract, both eyes",
+            plan="Book for phacoemulsification. Review in 2 weeks.",
+            eye_examination={
+                "complaints": ["blurred_vision", "photophobia"],
+                "complaint_duration": "3 months", "complaint_onset": "gradual",
+                "complaint_severity": "moderate",
+                "ocular_history": ["previous_glasses", "cataract"],
+                "distance_right": "6/24", "distance_left": "6/36",
+                "corrected_right": "6/18", "pinhole_right": "6/12", "near_left": "N18",
+                "sphere_right": "+1.50", "cylinder_right": "-0.75", "axis_right": "90",
+                "iop_right": "16", "iop_left": "17", "iop_method": "applanation",
+                "pupil_right": "normal", "pupil_reaction_right": "normal", "rapd": "absent",
+                "cornea_right": "Clear", "lens_right": "NS 2+", "lens_left": "NS 3+",
+                "optic_disc_right": "CDR 0.3", "macula_left": "",
+                "vessels_right": None, "follow_up": "2 weeks",
+            })
+        self.assertEqual(response.status_code, 201, response.data)
+        exam = ConsultationNote.objects.get(pk=response.data["id"]).eye_examination
+        self.assertEqual(exam["complaints"], ["blurred_vision", "photophobia"])
+        self.assertEqual(exam["ocular_history"], ["cataract", "previous_glasses"])
+        self.assertEqual((exam["iop_right"], exam["sphere_right"], exam["rapd"]),
+                         (16, "+1.50", "absent"))
+        # Blanks were dropped rather than stored as empty findings.
+        for untouched in ("macula_left", "vessels_right", "posterior_other_right", "visual_fields"):
+            self.assertNotIn(untouched, exam)
 
     def test_a_general_doctors_note_is_what_it_was(self):
         response = self.write(self.doctor, note_text="Headache", diagnosis="Tension headache")

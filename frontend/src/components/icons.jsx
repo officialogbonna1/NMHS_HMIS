@@ -51,6 +51,15 @@ const PATHS = {
   archive: <><rect x="3" y="4" width="18" height="4.5" rx="1" /><path d="M5 8.5V19a1.5 1.5 0 0 0 1.5 1.5h11A1.5 1.5 0 0 0 19 19V8.5" /><path d="M10 12.5h4" /></>,
   paperclip: <path d="M20 11.5 12.3 19.2a4.6 4.6 0 0 1-6.5-6.5l7.7-7.7a3.1 3.1 0 0 1 4.4 4.4l-7.7 7.7a1.5 1.5 0 0 1-2.2-2.2l7.1-7.1" />,
   alert: <><path d="M12 4 2.8 20h18.4Z" /><path d="M12 10v4.5" /><circle cx="12" cy="17.4" r="1" fill="currentColor" stroke="none" /></>,
+  // Discharging a patient: the bed, emptied, with the patient on their way
+  // out. Deliberately *not* `bed` — that is Admissions, and two nav rows
+  // wearing one icon is two destinations the eye cannot tell apart. It shares
+  // the bed's frame so the pair reads as the two ends of one stay, and the
+  // arrow is what says which end.
+  discharge: <><path d="M3 18.5v-9" /><path d="M3 14h9v4.5" /><path d="M12 14a3.4 3.4 0 0 0-3.4-3.4H7.8" /><circle cx="6.2" cy="8.4" r="1.6" /><path d="M15.5 9.5h6" /><path d="m18.5 6.5 3 3-3 3" /></>,
+  // The completed register: a clipboard with a tick. Used where a record is
+  // finished and filed rather than in progress — Discharged patients.
+  clipboard: <><path d="M9 4.5H7A1.5 1.5 0 0 0 5.5 6v13A1.5 1.5 0 0 0 7 20.5h10a1.5 1.5 0 0 0 1.5-1.5V6A1.5 1.5 0 0 0 17 4.5h-2" /><rect x="9" y="2.8" width="6" height="3.4" rx="1" /><path d="m9.2 13.4 2.1 2.1 4.1-4.1" /></>,
 };
 
 export function Icon({ name, className = "h-5 w-5", ...rest }) {

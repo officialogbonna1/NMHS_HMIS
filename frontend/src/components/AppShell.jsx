@@ -27,7 +27,11 @@ const NAV_ITEMS = [
   ["/queue", "My Queue", "queue", QUEUE_ROLES, "Workspace"],
   ["/notifications", "Notifications", "bell", undefined, "Workspace"],
 
-  ["/vitals", "Vitals", "activity", VITALS_ROLES, "Clinical"],
+  // The label only. The route, the icon, the roles and the page behind it are
+  // the nursing vitals station exactly as they were — `VitalsStation.jsx` at
+  // `/vitals`, recording `clinical.Vitals`. "Triage" is what the ward calls
+  // the job; nothing underneath it is renamed.
+  ["/vitals", "Triage", "activity", VITALS_ROLES, "Clinical"],
   ["/send-to-doctor", "Send to Doctor", "handoff", VITALS_ROLES, "Clinical"],
   ["/refer", "Refer Patient", "share", CLINICAL_ROLES, "Clinical"],
   ["/appointments", "Appointments", "calendar", APPOINTMENT_ROLES, "Clinical"],
@@ -39,6 +43,19 @@ const NAV_ITEMS = [
   ["/ultrasound", "Ultrasound", "scan", ["radiology"], "Departments"],
   ["/eye", "Eye Clinic", "eye", ["optometrist", "ophthalmologist"], "Departments"],
   ["/admissions", "Admissions", "bed", BED_BOARD_ROLES, "Departments"],
+  // Both administrators, mirroring `IsAdmin` on the endpoints behind them —
+  // the Super Admin and the ordinary `hospital_admin`, because a discharge is
+  // a record written once rather than an irreversible act. Discharging from
+  // the bed board is unchanged and still lives on /admissions for the ward.
+  //
+  // Each has an icon of its own, and neither is the bed. `bed` is Admissions,
+  // and two rows wearing one icon are two destinations the eye cannot tell
+  // apart; `clipboard` was named here but did not exist in the set at all, so
+  // `Icon` returned null and that row sat in the sidebar with a blank where
+  // its icon should be. `discharge` shares the bed's frame with an arrow
+  // leaving it, so the pair reads as the two ends of one stay.
+  ["/discharge", "Discharge Patient", "discharge", ADMIN_ROLES, "Departments"],
+  ["/discharged", "Discharged Patients", "clipboard", ADMIN_ROLES, "Departments"],
 
   ["/billing", "Billing", "cash", BILLING_ROLES, "Finance"],
   // The report the cash desk and accounts reconcile from. Narrower than

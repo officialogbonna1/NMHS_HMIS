@@ -47,7 +47,7 @@ class VitalsNotificationTests(TestCase):
         note = self._notes(self.doctor).first()
         self.assertIsNotNone(note, "the doctor holding this chart was not told")
         self.assertIn("New vitals", note.title)
-        self.assertIn(str(self.patient), note.title)
+        self.assertIn(self.patient.display_name, note.title)
         # The figures are in the message, so the doctor can triage from the list.
         self.assertIn("150/95", note.message)
         self.assertIn("Ada Bello", note.message)

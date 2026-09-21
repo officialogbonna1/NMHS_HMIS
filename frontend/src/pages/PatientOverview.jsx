@@ -394,8 +394,15 @@ export default function PatientOverview({ patientId, patientUuid }) {
                   {v.routes.map((r) => (
                     <li key={r.id}>
                       <span className="text-slate-600">
+                        {r.created_at && (
+                          <span className="mr-1 tabular-nums text-slate-700">
+                            {new Date(r.created_at).toLocaleString([], {
+                              day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })}
+                          </span>
+                        )}
                         → {r.department} · {r.purpose} · {r.status}
                         {r.assigned_to && ` · ${r.assigned_to}`}
+                        {r.routed_by && ` · sent by ${r.routed_by}`}
                       </span>
                       {r.notes && <p className="text-slate-600">Asked: {r.notes}</p>}
                       {/* The answer that came back from the unit. */}
