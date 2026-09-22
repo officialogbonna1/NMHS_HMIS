@@ -1911,15 +1911,33 @@ person explicitly asks for something different.
    away and deliberately not defaulted, because sixty-six laboratory tests on a
    booking form is a different feature.
 
-   **Every active department is offered; what it offers is configuration.**
-   `booking.departments()` lists `Department.objects.filter(is_active=True)`
-   and files each ticked service under the department its *category* resolves
-   to — the same department its charge is attributed to, so an appointment and
-   its bill can never name two different units. Seeing a department is not the
-   same as it having services: Nursing, Pharmacy and Reception appear as the
-   units they are and offer nothing, rather than being hidden by a rule or
-   given invented ones. A department with an empty list cannot be booked into,
-   and the form says so.
+   **Two switches: which departments, and what each offers.**
+   `Department.is_appointment_available` ("Available for appointments",
+   default False, editable in Django admin's Department list) decides whether
+   Reception is offered the department at all; `BillingItem
+   .is_appointment_service` decides what can be booked inside it. It is
+   deliberately **not** `is_active`: Pharmacy is active every day and is not
+   an appointment destination, and closing it for appointments touches nothing
+   else it does — staff, stock, POS, billing, workflows. `booking
+   .bookable_departments()` (`is_active=True, is_appointment_available=True`)
+   is the one query behind the dropdown *and* the API's refusal, so a
+   department cannot vanish from the form while still being bookable over the
+   wire. Each ticked service is filed under the department its *category*
+   resolves to — the same department its charge is attributed to — and a
+   service under a closed department is simply not offered: it never adds its
+   department back. An open department with nothing ticked appears and offers
+   nothing. `departments/0005` switched the flag on for what already worked —
+   derived from the ticked services, plus Consultation, because the general
+   consultation needs no catalogue row and a fresh install has none — and never
+   turns anything off.
+
+   **The server refuses a closed department** (`department_not_available`),
+   including the general consultation when Consultation is closed. The
+   department is never submitted — it is resolved from the service — so
+   `booking.refusal_for` is the one place it can be checked. It governs **new
+   bookings only**: an appointment already made keeps its department, its
+   services, its provider, its charge and its place in the queue, and its
+   provider can still accept, start and end it.
 
    **Several services, one appointment, one charge each.** `Appointment
    .services` (migration `0006`) is the order-time snapshot of every service
@@ -2532,7 +2550,7 @@ Done:
   hospital number, never a pk), department, service, due, discount, waiver,
   paid, balance, method and settlement status. The dashboards' money cards
   open it on the period they count.
-- Tests: ~1,497 passing (backend; frontend `npm test`: 525) — the PostgreSQL-only two-thread race in
+- Tests: ~1,497 passing (backend; frontend `npm test`: 528) — the PostgreSQL-only two-thread race in
   `test_cancel_and_refund_hardening.py` (`./venv/bin/python manage.py test` — the venv is at
   `backend/hmis/venv`; a bare `python` has no Django and fails misleadingly) — pharmacy dispensing +
   payment flow, charge settlement (full / half / later, oldest-first

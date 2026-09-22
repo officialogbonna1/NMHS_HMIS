@@ -349,10 +349,10 @@ function BookAppointmentForm({ onDone }) {
         )}
 
         {!isLoading && !isError && departmentsOf(options).length === 0 && (
-          <Alert tone="warning" title="No appointment services are configured">
-            No priced service has been marked bookable yet, so there is nothing to queue a patient
-            for. An administrator ticks “bookable as an appointment” on a service in the Billing
-            Catalog.
+          <Alert tone="warning" title="No department is open for appointments">
+            No department has been made available for appointments yet, so there is nowhere to
+            queue a patient. An administrator ticks “Available for appointments” on a department
+            in Django admin.
           </Alert>
         )}
 
@@ -554,6 +554,8 @@ function ServiceChoices({ services, selected, onToggle, onClear }) {
 // are different conversations: one is a configuration problem, one is a
 // staffing problem, and one is a patient already in a queue.
 const TITLE_FOR = {
+  // The department was closed for appointments after this screen loaded.
+  department_not_available: "That department is not taking appointments",
   service_not_bookable: "That service cannot be booked",
   services_span_departments: "One appointment goes to one department",
   provider_not_eligible: "That provider cannot take this appointment",

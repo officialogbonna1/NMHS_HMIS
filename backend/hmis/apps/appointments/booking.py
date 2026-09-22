@@ -342,8 +342,8 @@ def general_consultation():
 
 def departments():
     """
-    Every active department, each with the services it offers — which may be
-    none.
+    Every department open for appointments, each with the services it offers —
+    which may be none.
 
     **Two switches, and they answer different questions.** A department is
     offered when an administrator has ticked *Available for appointments* on it
@@ -372,14 +372,13 @@ def departments():
             # configuration gap, not a reason to hide the service: it is
             # reported under its category so somebody can see and fix it.
             continue
-        entry = grouped.setdefault(department.pk, {
-            "id": department.pk,
-            "code": department.code,
-            "name": department.name,
-            "services": [],
-        })
+        entry = grouped.get(department.pk)
+        if entry is None:
+            # The department is closed for appointments, or retired. Its
+            # services stay configured and billable at the counter; they are
+            # simply not offered here, because the department is not. Adding
+            # the department back because it has something ticked would let a
+            # service override the administrator's switch.
+            continue
         entry["services"].append(service)
-        # A retired department that still performs a ticked service is listed
-        # so the service is reachable — hiding it would strand the service
-        # with nowhere to be booked.
     return [grouped[key] for key in sorted(grouped, key=lambda pk: grouped[pk]["name"].lower())]

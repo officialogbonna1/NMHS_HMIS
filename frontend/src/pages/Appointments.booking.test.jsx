@@ -219,7 +219,7 @@ describe("the booking form, step by step", () => {
     mockApi({ options: { departments: [] } });
     renderWithApp(<Appointments />, { user: RECEPTION });
 
-    expect(await screen.findByText(/No appointment services are configured/))
+    expect(await screen.findByText(/No department is open for appointments/))
       .toBeInTheDocument();
   });
 
@@ -249,16 +249,75 @@ describe("the booking form, step by step", () => {
     expect(screen.getByRole("button", { name: "Queue appointment" })).toBeDisabled();
   });
 
-  it("offers every active department, configured or not", async () => {
+  it("offers exactly the departments the server sends, and no others", async () => {
+    // Which departments take appointments is `Department.is_appointment_available`,
+    // decided in Django admin and applied by the server. The page holds no
+    // list of its own: it renders what `/booking-options/` returned.
     const user = userEvent.setup();
     mockApi();
     renderWithApp(<Appointments />, { user: RECEPTION });
     await choosePatient(user);
 
     const departments = await form().findByLabelText("Department");
-    for (const name of ["Consultation", "Eye Clinic", "Radiology / Ultrasound", "Pharmacy"]) {
-      expect(within(departments).getByRole("option", { name })).toBeInTheDocument();
-    }
+    const offered = within(departments).getAllByRole("option")
+      .map((option) => option.textContent).filter((name) => name !== "Select a department");
+    expect(offered).toEqual(OPTIONS.departments.map((d) => d.name));
+  });
+
+  it("does not offer a department the server has closed", async () => {
+    const user = userEvent.setup();
+    // Laboratory exists in the hospital; an administrator has not opened it
+    // for appointments, so the server leaves it out.
+    mockApi();
+    renderWithApp(<Appointments />, { user: RECEPTION });
+    await choosePatient(user);
+
+    const departments = await form().findByLabelText("Department");
+    expect(within(departments).queryByRole("option", { name: "Laboratory" }))
+      .not.toBeInTheDocument();
+    // And it cannot be chosen: there is no option to choose.
+    await expect(user.selectOptions(departments, "Laboratory")).rejects.toThrow();
+  });
+
+  it("drops a department the moment the refreshed options leave it out", async () => {
+    const user = userEvent.setup();
+    const state = { options: OPTIONS };
+    vi.spyOn(api, "get").mockImplementation((url) => {
+      if (url === "/appointments/booking-options/") return Promise.resolve({ data: state.options });
+      if (url === "/appointments/") return Promise.resolve({ data: [] });
+      if (url === "/patients/") return Promise.resolve({ data: { results: [PATIENT] } });
+      return Promise.resolve({ data: [] });
+    });
+    const { client } = renderWithApp(<Appointments />, { user: RECEPTION });
+    await choosePatient(user);
+    expect(within(await form().findByLabelText("Department"))
+      .getByRole("option", { name: "Radiology / Ultrasound" })).toBeInTheDocument();
+
+    // Radiology is switched off in Django admin; the next read omits it.
+    state.options = { ...OPTIONS,
+      departments: OPTIONS.departments.filter((d) => d.code !== "radiology") };
+    await client.invalidateQueries({ queryKey: ["appointment-booking-options"] });
+
+    await waitFor(() => expect(within(form().getByLabelText("Department"))
+      .queryByRole("option", { name: "Radiology / Ultrasound" })).not.toBeInTheDocument());
+  });
+
+  it("says so plainly when the server closes a department mid-booking", async () => {
+    const user = userEvent.setup();
+    mockApi();
+    vi.spyOn(api, "post").mockRejectedValue({
+      response: { status: 400, data: { code: "department_not_available",
+                                       detail: "Eye Clinic is not currently available for appointments." } },
+    });
+    renderWithApp(<Appointments />, { user: RECEPTION });
+    await choosePatient(user);
+    await user.selectOptions(await form().findByLabelText("Department"), "3");
+    await user.click(await form().findByRole("checkbox", { name: /Eye Consultation/ }));
+    await user.selectOptions(await form().findByLabelText("Provider"), "9");
+    await user.click(screen.getByRole("button", { name: "Queue appointment" }));
+
+    expect(await screen.findByText("That department is not taking appointments"))
+      .toBeInTheDocument();
   });
 
   it("surfaces the server's refusal rather than its own guess", async () => {
