@@ -349,10 +349,8 @@ function BookAppointmentForm({ onDone }) {
         )}
 
         {!isLoading && !isError && departmentsOf(options).length === 0 && (
-          <Alert tone="warning" title="No department is open for appointments">
-            No department has been made available for appointments yet, so there is nowhere to
-            queue a patient. An administrator ticks “Available for appointments” on a department
-            in Django admin.
+          <Alert tone="warning" title="No appointment departments available">
+            There are currently no departments available for booking.
           </Alert>
         )}
 

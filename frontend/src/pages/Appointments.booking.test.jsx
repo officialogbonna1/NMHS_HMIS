@@ -219,7 +219,7 @@ describe("the booking form, step by step", () => {
     mockApi({ options: { departments: [] } });
     renderWithApp(<Appointments />, { user: RECEPTION });
 
-    expect(await screen.findByText(/No department is open for appointments/))
+    expect(await screen.findByText(/No appointment departments available/))
       .toBeInTheDocument();
   });
 
