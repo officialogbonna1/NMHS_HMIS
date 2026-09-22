@@ -12,6 +12,8 @@ import {
   Alert, Badge, Button, Card, CardBody, CardFooter, CardHeader, Field, Input,
   MetaStat, Page, PageHeader, TextLink, Textarea, waitedFor,
 } from "../components/ui.jsx";
+import AcceptedBadge from "../components/AcceptedBadge.jsx";
+import { acceptanceOf } from "../components/routeAcceptance.js";
 import LabResultEntry from "../components/LabResultEntry.jsx";
 import { PaymentBadge, PaymentLines, PaymentNotice } from "../components/PaymentStatus.jsx";
 import { PrintButton } from "../components/printing.jsx";
@@ -290,6 +292,10 @@ function QueueRow({ route, user, onOpen, chartActions }) {
   // `workflow/access.py` — the same rule that gates start / record-result),
   // with the local comparison as the fallback for a payload that predates it.
   const claimedByOther = route.claimed_by_other ?? Boolean(route.assigned_to && !isMine);
+  // Whether the work has been taken up, read off the route's own status —
+  // which is what `accept` moves, so there is no second answer to keep in
+  // step and a reload of this page says exactly what the last one did.
+  const { accepted, canAccept } = acceptanceOf(route, user);
 
   const accept = useMutation({
     mutationFn: () => api.post(`/patient-routes/${route.id}/accept/`),
@@ -358,18 +364,23 @@ function QueueRow({ route, user, onOpen, chartActions }) {
         {chartActions && opensChart(route, user) && (
           <Button variant="link" size="sm" to={`/patients/${route.patient_uuid}`}>Open chart</Button>
         )}
+        {/* Accepting is a one-way step, so the control it was made with does
+            not survive it: once the route carries a holder, the slot reads as
+            a finished state instead. A greyed-out "Accept" would invite a
+            second press and a 409. */}
+        {accepted && <AcceptedBadge tone={isMine ? "success" : "neutral"} />}
         {isMine ? (
           <button onClick={() => onOpen()} className="rounded-md border px-3 py-1.5 text-sm font-medium hover:bg-white">
             Open →
           </button>
         ) : claimedByOther ? (
-          // No Accept and no Start: the server would refuse both (409 / 403),
-          // and a control that only fails is worse than none. What the rest
-          // of the unit needs from this row is who is doing it.
+          // No Start either: the server would refuse it (403), and a control
+          // that only fails is worse than none. What the rest of the unit
+          // needs from this row is who is doing it.
           <span className="text-sm text-slate-600">
             With {route.assigned_to_name}
           </span>
-        ) : (
+        ) : canAccept ? (
           <button
             onClick={() => accept.mutate()}
             disabled={accept.isPending}
@@ -377,7 +388,7 @@ function QueueRow({ route, user, onOpen, chartActions }) {
           >
             {accept.isPending ? "Accepting…" : "Accept"}
           </button>
-        )}
+        ) : null}
       </div>
     </div>
   );

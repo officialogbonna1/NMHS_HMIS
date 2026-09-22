@@ -1882,6 +1882,133 @@ person explicitly asks for something different.
    `frontend/src/components/billingStatus.test.js` and
    `frontend/src/pages/DepartmentStation.payment.test.jsx`.
 
+55. **One appointment queue, and a destination on it.** Reception picks the
+   patient, the unit, what they are being seen for and who is seeing them; the
+   provider decides *when*. It is **still a queue and not a diary** — nothing
+   books a slot, `start_time`/`end_time` are still stamped by the provider's
+   own transitions, and rule 5 is unchanged in every word.
+
+   **The join already existed, which is why there is no new catalogue.**
+   `BillingItem.category` is read by two maps this hospital already keeps, and
+   between them they answer every question a booking form asks:
+
+       BillingItem.category
+         ├── billing/departments.py      → the Department that performs it
+         └── workflow/views.PURPOSE_ROLE → the roles that may be named on it
+
+   So `appointments/booking.py` is a **reading**, not a configuration: no
+   `AppointmentService` model, no appointment department table, no provider
+   directory and no appointment price list. The service is the `BillingItem`
+   the counter already bills and the doctor already orders from (rule 50), the
+   fee is that row's `price`, the department is the seeded row (rule 34), and
+   the provider is a `User` with the role the work calls for — plus anybody on
+   `Department.staff`, the fallback rule 16 already draws.
+
+   **`BillingItem.is_appointment_service` is the whole configuration**, and it
+   defaults to False: a priced row is something the counter can bill, which is
+   not the same as something a patient can be queued for. `billing/0021` ticks
+   consultation, eye and ultrasound once; Laboratory and Theatre are one tick
+   away and deliberately not defaulted, because sixty-six laboratory tests on a
+   booking form is a different feature.
+
+   **Every active department is offered; what it offers is configuration.**
+   `booking.departments()` lists `Department.objects.filter(is_active=True)`
+   and files each ticked service under the department its *category* resolves
+   to — the same department its charge is attributed to, so an appointment and
+   its bill can never name two different units. Seeing a department is not the
+   same as it having services: Nursing, Pharmacy and Reception appear as the
+   units they are and offer nothing, rather than being hidden by a rule or
+   given invented ones. A department with an empty list cannot be booked into,
+   and the form says so.
+
+   **Several services, one appointment, one charge each.** `Appointment
+   .services` (migration `0006`) is the order-time snapshot of every service
+   booked — key, name, fee and the charge it raised — a JSON list rather than a
+   related model, for the reason `PatientRoute.result_data` (rule 53) and
+   `LabOrderTest.parameters` are: nothing filters, groups or joins on it. What
+   *is* queried is the `Charge` rows, found by the `source_id` link
+   `add_charge` already writes, so each service keeps its own price,
+   department, settlement status, discounts, waivers and refunds (rule 52's
+   traceability, reached with no join table). The single-service columns keep
+   their exact meaning — with one service `service_name` is its name and
+   `service_fee` is its fee; with several they are the combined label and the
+   total, which for one service is the same thing — so historical rows read
+   exactly as they did. One charge per service, **one announcement for the
+   booking** (rule 35), and the serializer reads a basket through
+   `billing.status.summarise`, which takes the *worst* of their statuses. An
+   appointment goes to one department: services spanning two are refused
+   (`services_span_departments`), and the provider is checked against every
+   one of them.
+
+   **One open appointment per patient per provider**, as a partial
+   `UniqueConstraint` on `OPEN_STATUSES` (migration `0005`).
+   `open_appointment_for` still answers the ordinary repeat with a sentence and
+   `already_queued`; the constraint is what two genuinely concurrent requests
+   meet, in the one place that cannot be interleaved — rule 30's reasoning
+   applied to the queue, since `select_for_update` is a no-op on SQLite. The
+   loser's `IntegrityError` becomes a 409 through `apps/core/exceptions.py` and
+   takes its charges with it, because both are written in one
+   `transaction.atomic`. `AppointmentSerializer.get_unique_together_validators`
+   returns `[]` deliberately: DRF builds a field validator from that constraint
+   and it runs *before* the guard, replacing the readable refusal with "The
+   fields patient, doctor must make a unique set." A completed or cancelled
+   appointment is history and never blocks the next booking.
+
+   **`Appointment` gained five nullable columns and no behaviour.**
+   `department`, `service`, `service_name`, `service_fee`, `charge` — and all
+   five are read-only on the serializer, decided at create by
+   `services.queue_appointment`. `POST /appointments/ {patient, doctor,
+   reason}` is byte-for-byte what it was: 201, queued, the doctor notified,
+   no department, no charge. The `doctor` column is the provider and keeps its
+   name — the same FK, the same PROTECT, the same queue filter — with
+   `provider` / `provider_name` as read-only aliases (rule 32's precedent).
+
+   **Server authority, because a dropdown is a courtesy.**
+   `booking.refusal_for` is the one rule, applied to what actually arrived:
+   `service_not_bookable` for anything unticked, retired or from the
+   laboratory catalogue, `provider_not_eligible` for somebody who cannot do
+   the work. Both are flat codes from the view rather than serializer
+   validation, because DRF wraps a serializer's codes in lists and
+   `api/errors.js`'s `errorCode` cannot read those.
+
+   **The fee is not a payment, and booking takes no money.** A billable
+   service raises an ordinary `add_charge` at the catalogue's price with the
+   category as its `source_type` — indistinguishable from the same service
+   billed at the counter, so the ledger, the statement, discounts, waivers,
+   refunds, cancellations and every report already understand it. A service
+   priced at zero raises **nothing**: a zero charge is noise on a bill, and
+   `billing.status.unbilled` already says "NO PAYMENT REQUIRED". The queue row
+   shows the fee and the payment state as two columns through
+   `paymentState` (rule 54), never one.
+
+   **History does not move.** `service_name` and `service_fee` are snapshots
+   taken at booking (rule 21), and `service` is SET_NULL — re-price Eye
+   Consultation, rename it, withdraw it or delete it and the appointment still
+   says what was booked and what the patient was quoted.
+
+   **The serviceless booking is a general consultation, not a way round the
+   rule.** Patient + provider + reason names no service, raises no charge and
+   is what reception has always sent — and the provider still has to be a
+   consultation provider (`booking.GENERAL_CONSULTATION`, read through the
+   same `eligible_providers`). Without that, widening the transitions from
+   `doctor` to `PROVIDER_ROLES` would have made the serviceless path the way
+   past eligibility: reception could name a laboratory scientist and that
+   account could then work the appointment. `/booking-options/` carries the
+   fast path as `general`, so the form offers "General consultation — no
+   charge" without a department code spelled into JavaScript.
+
+   **Cancelling an appointment does not cancel its charge** — rule 38's two
+   decisions. The bill is withdrawn at Service Cancellations by somebody who
+   may, with a reason and an audit row; a clinical cancellation that silently
+   cancelled a charge would be new financial behaviour.
+
+   **General Medicine stays under Consultation**: the category → department
+   map has no entry resolving there, and inventing one would let an
+   appointment and its bill name two different units. Held by
+   `apps/appointments/tests/test_booking.py`,
+   `frontend/src/components/appointmentBooking.test.js` and
+   `frontend/src/pages/Appointments.booking.test.jsx`.
+
 ## Django admin
 
 Every app has an `admin.py` and every model is registered — `Patients` is
@@ -2405,7 +2532,7 @@ Done:
   hospital number, never a pk), department, service, due, discount, waiver,
   paid, balance, method and settlement status. The dashboards' money cards
   open it on the period they count.
-- Tests: ~1,497 passing (backend; frontend `npm test`: 422) — the PostgreSQL-only two-thread race in
+- Tests: ~1,497 passing (backend; frontend `npm test`: 525) — the PostgreSQL-only two-thread race in
   `test_cancel_and_refund_hardening.py` (`./venv/bin/python manage.py test` — the venv is at
   `backend/hmis/venv`; a bare `python` has no Django and fails misleadingly) — pharmacy dispensing +
   payment flow, charge settlement (full / half / later, oldest-first

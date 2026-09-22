@@ -9,6 +9,8 @@ import { useAuth } from "../auth/AuthContext.jsx";
 import { useToast } from "../components/Toaster.jsx";
 import { Button, Page, PageHeader, MetaStat, TabBar, Tab, Badge, waitedFor } from "../components/ui.jsx";
 import { PrintButton } from "../components/printing.jsx";
+import AcceptedBadge from "../components/AcceptedBadge.jsx";
+import { acceptanceOf } from "../components/routeAcceptance.js";
 import VitalsEntryForm from "../components/VitalsEntryForm.jsx";
 import NursingNoteForm from "../components/NursingNoteForm.jsx";
 
@@ -261,6 +263,11 @@ function QueueRow({ route, onOpen }) {
   const queryClient = useQueryClient();
   const { showToast } = useToast();
   const mine = route.assigned_to === user?.id;
+  // Read off the route's own status, which is what the server's `accept`
+  // moves, so a hand-off another nurse has already taken never offers a
+  // button that would come back 409 — and a reload of this page says exactly
+  // what the last one did.
+  const { accepted, canAccept } = acceptanceOf(route, user);
 
   const accept = useMutation({
     mutationFn: () => api.post(`/patient-routes/${route.id}/accept/`),
@@ -303,11 +310,16 @@ function QueueRow({ route, onOpen }) {
         <span className={`rounded-full border px-2.5 py-1 text-xs font-medium ${PRIORITY_TONE[route.priority]}`}>
           {route.priority}
         </span>
+        {/* Accepting spends the control: a claimed hand-off reads as a
+            finished state rather than keeping a button that would only be
+            refused — by the server as a 409, and by this nurse as a patient
+            claimed twice. */}
+        {accepted && <AcceptedBadge tone={mine ? "success" : "neutral"} />}
         {mine ? (
           <button onClick={() => onOpen()} className="rounded-md border px-3 py-1.5 text-sm font-medium hover:bg-white">
             Open →
           </button>
-        ) : (
+        ) : canAccept ? (
           <button
             onClick={() => accept.mutate()}
             disabled={accept.isPending}
@@ -315,7 +327,7 @@ function QueueRow({ route, onOpen }) {
           >
             {accept.isPending ? "Accepting…" : "Accept"}
           </button>
-        )}
+        ) : null}
       </div>
     </div>
   );

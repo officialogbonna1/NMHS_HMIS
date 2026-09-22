@@ -8,13 +8,19 @@ from .models import (BillingItem, PatientLedger, Charge, Payment, Adjustment, Pa
 
 @admin.register(BillingItem)
 class BillingItemAdmin(ProtectedConfigAdmin, admin.ModelAdmin):
-    """The price list the counter bills from."""
-    list_display = ["name", "category", "price", "is_active"]
-    list_editable = ["price", "is_active"]
-    list_filter = ["category", "is_active"]
+    """
+    The price list the counter bills from — and, where a row is ticked
+    bookable, the list reception queues appointments from. One catalogue, two
+    uses: the fee, the department and the eligible providers all follow from
+    the row itself (`appointments/booking.py`), so there is nothing else to
+    configure and nowhere for a second definition to live.
+    """
+    list_display = ["name", "category", "price", "is_active", "is_appointment_service"]
+    list_editable = ["price", "is_active", "is_appointment_service"]
+    list_filter = ["category", "is_active", "is_appointment_service"]
     search_fields = ["name"]
     ordering = ["category", "name"]
-    actions = ["activate", "deactivate"]
+    actions = ["activate", "deactivate", "make_bookable", "make_unbookable"]
     # A laboratory test priced from this item keeps pointing at it, and so
     # does every referral that has ordered it (`workflow.RouteService`).
     # Deactivate rather than delete: old orders keep their price.
@@ -27,6 +33,18 @@ class BillingItemAdmin(ProtectedConfigAdmin, admin.ModelAdmin):
     @admin.action(description="Deactivate selected (old charges keep their price)")
     def deactivate(self, request, queryset):
         self.message_user(request, f"{queryset.update(is_active=False)} priced item(s) deactivated.")
+
+    @admin.action(description="Offer on the Appointments booking form")
+    def make_bookable(self, request, queryset):
+        count = queryset.update(is_appointment_service=True)
+        self.message_user(request, f"{count} service(s) can now be booked as appointments.")
+
+    @admin.action(description="Remove from the Appointments booking form")
+    def make_unbookable(self, request, queryset):
+        # Booked appointments keep their own snapshot of the name and the fee,
+        # so withdrawing a service never rewrites what was booked.
+        count = queryset.update(is_appointment_service=False)
+        self.message_user(request, f"{count} service(s) withdrawn from appointment booking.")
     ordering = ["category", "name"]
 
 

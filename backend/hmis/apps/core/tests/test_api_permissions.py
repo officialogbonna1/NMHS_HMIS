@@ -115,7 +115,16 @@ REACHABLE = {
 
     # --- workflow --------------------------------------------------------
     "/api/visits/": [R, D, N],
-    "/api/appointments/": [R, D],
+    # Reception queues; the provider works their own queue. The provider
+    # roles are `appointments.booking.PROVIDER_ROLES` — every role a bookable
+    # service's category maps to — so an eye doctor can accept an eye
+    # appointment. A nurse is absent: vitals is not a billing category, so a
+    # nurse is routed a patient rather than booked one.
+    "/api/appointments/": [R, D, LAB, RAD, OPT, OPH],
+    # The booking form's own read: which units take appointments, what they
+    # offer, at what fee, and who may be named. Reception books, so reception
+    # reads it.
+    "/api/appointments/booking-options/": [R],
     "/api/patient-routes/": [R, D, N, LAB, RAD, OPT, OPH],
     "/api/patient-routes/refer/": [R, D, N, LAB, RAD, OPT, OPH],
     # The shape of a unit's report, read by whoever works the queue — it is a

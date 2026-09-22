@@ -25,6 +25,24 @@ class BillingItem(TimeStampedModel):
     name = models.CharField(max_length=100, unique=True)
     price = models.DecimalField(max_digits=10, decimal_places=2)
     is_active = models.BooleanField(default=True)
+    # Whether reception may queue an appointment for this service.
+    #
+    # This is the *whole* of the appointment-bookable configuration, and it is
+    # a flag on the service that already exists rather than a second
+    # catalogue: `category` already says which department performs it
+    # (`billing/departments.py`) and which roles may be named on it
+    # (`workflow.views.PURPOSE_ROLE`), and `price` is already the one
+    # authoritative fee. A department appears on the booking form when at
+    # least one active service ticked here resolves to it, so nothing decides
+    # by name which units take appointments.
+    #
+    # Default False: a priced row is a thing the counter can bill, which is
+    # not the same as a thing a patient can be queued for. Ticking it is a
+    # decision somebody makes.
+    is_appointment_service = models.BooleanField(
+        "bookable as an appointment", default=False,
+        help_text="Offer this service on the Appointments booking form. The department and "
+                  "the eligible providers follow from the category; the fee is the price above.")
     class Meta: ordering = ["category", "name"]
     def __str__(self): return self.name
 

@@ -13,12 +13,22 @@ class ServiceInline(admin.TabularInline):
 
 @admin.register(Department)
 class DepartmentAdmin(ProtectedConfigAdmin, admin.ModelAdmin):
-    """The same rows the HMIS Departments screen edits."""
-    list_display = ["name", "code", "manager", "staff_count", "service_count", "is_active"]
-    list_editable = ["is_active"]
-    list_filter = ["is_active"]
+    """
+    The same rows the HMIS Departments screen edits.
+
+    **Active and available for appointments are two different switches.**
+    `is_active` says the department is running — its staff, services, stock,
+    charges and workflows are all untouched by the other one — and
+    `is_appointment_available` says Reception may book a patient into it.
+    Pharmacy is active every day and is not an appointment destination; turning
+    that off takes nothing away from the POS or the dispensing queue.
+    """
+    list_display = ["name", "code", "manager", "staff_count", "service_count",
+                    "is_active", "is_appointment_available"]
+    list_editable = ["is_active", "is_appointment_available"]
+    list_filter = ["is_active", "is_appointment_available"]
     search_fields = ["name", "code"]
-    actions = ["activate", "deactivate"]
+    actions = ["activate", "deactivate", "open_for_appointments", "close_for_appointments"]
     # A department that has routed a patient, prices a service or has taken
     # money is history. Django admin is held to the same rule the API is.
     protected_relations = ("routes", "services", "lab_tests", "charge_set")
@@ -34,6 +44,21 @@ class DepartmentAdmin(ProtectedConfigAdmin, admin.ModelAdmin):
     @admin.action(description="Deactivate selected (keeps history)")
     def deactivate(self, request, queryset):
         self.message_user(request, f"{queryset.update(is_active=False)} deactivated.")
+
+    @admin.action(description="Offer as an appointment destination")
+    def open_for_appointments(self, request, queryset):
+        count = queryset.update(is_appointment_available=True)
+        self.message_user(request, f"{count} department(s) can now be booked into.")
+
+    @admin.action(description="Stop offering as an appointment destination")
+    def close_for_appointments(self, request, queryset):
+        # Appointments already booked keep their department and their place in
+        # the queue: this governs what is offered, never what exists.
+        count = queryset.update(is_appointment_available=False)
+        self.message_user(
+            request,
+            f"{count} department(s) withdrawn from appointment booking. "
+            "Appointments already made are unaffected.")
     prepopulated_fields = {"code": ("name",)}
     filter_horizontal = ["staff"]
     autocomplete_fields = ["manager"]

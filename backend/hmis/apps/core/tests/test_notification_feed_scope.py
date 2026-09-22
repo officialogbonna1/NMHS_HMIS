@@ -86,7 +86,7 @@ class NotificationFeedScopeTests(TestCase):
         self.take_vitals(self.patient_b)
         self.assertEqual(self.feed(self.eye_a), [])
         self.assertEqual((self.unread(self.eye_a), self.dashboard_unread(self.eye_a)), (0, 0))
-        self.assertEqual(set(self.feed(self.eye_b)), {"For Eye Doctor B only", f"New vitals: {self.patient_b}"})
+        self.assertEqual(set(self.feed(self.eye_b)), {"For Eye Doctor B only", f"New vitals: {self.patient_b.display_name}"})
         self.assertEqual(self.unread(self.eye_b), 2)
 
     # 2 -------------------------------------------------------------------------
@@ -95,7 +95,7 @@ class NotificationFeedScopeTests(TestCase):
         referral = self.as_(self.doctor).post("/api/patient-routes/refer/", {
             "patient": self.general.id, "purpose": "laboratory", "notes": "FBC"}, format="json")
         self.assertEqual(referral.status_code, 201, referral.data)
-        self.assertEqual(self.feed(self.doctor), [f"New vitals: {self.general}"])
+        self.assertEqual(self.feed(self.doctor), [f"New vitals: {self.general.display_name}"])
         self.assertTrue(Notification.objects.filter(recipient=self.lab).exists())
         for user in (self.eye_a, self.eye_b):
             self.assertEqual((self.feed(user), self.unread(user)), ([], 0))
@@ -113,7 +113,7 @@ class NotificationFeedScopeTests(TestCase):
         response = self.as_(self.doctor).post("/api/patient-routes/refer/", {
             "patient": self.general.id, "purpose": "eye", "notes": "Sudden loss of vision"}, format="json")
         self.assertEqual(response.status_code, 201, response.data)
-        title = f"Eye clinic requested: {self.general}"
+        title = f"Eye clinic requested: {self.general.display_name}"
         for user in (self.eye_a, self.eye_b, self.optometrist):
             with self.subTest(user=user.username):
                 self.assertEqual(self.feed(user), [title])
@@ -133,8 +133,8 @@ class NotificationFeedScopeTests(TestCase):
         self.assertEqual(filed.status_code, 200, filed.data)
 
         feed = self.feed(self.eye_a)
-        self.assertIn(f"New vitals: {self.patient_a}", feed)
-        self.assertIn(f"Laboratory result: {self.patient_a}", feed)
+        self.assertIn(f"New vitals: {self.patient_a.display_name}", feed)
+        self.assertIn(f"Laboratory result: {self.patient_a.display_name}", feed)
         self.assertEqual(self.unread(self.eye_a), len(feed))
         self.assertEqual(self.feed(self.eye_b), [])
 

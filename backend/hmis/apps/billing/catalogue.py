@@ -79,7 +79,12 @@ def _billing_items(*, active_only, spoken_for):
         queryset = queryset.filter(is_active=True)
     return [
         _row(source="billing_item", obj=item, name=item.name, category=item.category,
-             price=item.price, is_active=item.is_active)
+             price=item.price, is_active=item.is_active,
+             # Whether reception may queue an appointment for it
+             # (`appointments/booking.py`). Carried on the row rather than
+             # queried separately, so the booking form reads this one window
+             # like every other screen does.
+             extra={"is_appointment_service": item.is_appointment_service})
         for item in queryset.order_by("category", "name")
         if item.pk not in spoken_for
     ]
