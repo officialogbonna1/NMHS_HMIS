@@ -55,6 +55,24 @@ REVENUE_DEPARTMENTS = (
     # A procedure is theatre work in this hospital's workflow — `procedure` is
     # what both the billing catalogue and the referral purposes call it.
     ("theatre", "Theatre / Procedures", ("procedure", "theatre", "surgery")),
+    # **Maternity joined the registry when it got a price list.**
+    #
+    # It was deliberately left out while the ward raised no charges of its own
+    # (rule 56: "a nurse raises no charge, so an entry here would be a
+    # permanently empty column in every financial report"). That reasoning was
+    # conditional on the ward having nothing to bill, and it no longer holds:
+    # the hospital has configured a booking visit, a delivery package, a
+    # postnatal check. The registry is "the subset of departments that takes
+    # money", so a department that now takes money belongs in it.
+    #
+    # Without this entry a ₦45,000 delivery package would post
+    # `source_type="maternity"`, match no department, and be reported as
+    # "Other / Unclassified" — the hospital's largest maternity charge landing
+    # in the bucket that exists for charges nobody can place.
+    #
+    # The department row itself is seeded by `departments/0006`, not by
+    # `departments/0002`, which is why the literal-drift test reads both.
+    ("maternity", "Maternity", ("maternity", "obstetrics", "antenatal")),
 )
 
 # The seeded codes, in the order a report presents them.

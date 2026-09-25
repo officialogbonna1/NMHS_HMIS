@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import api from "../api/client";
 import { useAuth } from "../auth/AuthContext.jsx";
-import { CLINICAL_ROLES } from "../auth/roles.js";
+import { CLINICAL_ROLES, NURSING_ROLES } from "../auth/roles.js";
 import { useToast } from "../components/Toaster.jsx";
 import VitalsEntryForm from "../components/VitalsEntryForm.jsx";
 import NursingNoteForm from "../components/NursingNoteForm.jsx";
@@ -15,7 +15,10 @@ import NursingNoteForm from "../components/NursingNoteForm.jsx";
 export default function VitalsTab({ patientId }) {
   const { user } = useAuth();
   const { showToast } = useToast();
-  const canRecord = ["nurse", "admin", "hospital_admin"].includes(user?.role);
+  // `NURSING_ROLES` rather than a retyped list: the midwife records a
+  // reading here the same way the triage nurse does, and the API is what
+  // actually decides (rule 28).
+  const canRecord = [...NURSING_ROLES, "admin", "hospital_admin"].includes(user?.role);
   const isClinician = CLINICAL_ROLES.includes(user?.role);
   const [showForm, setShowForm] = useState(false);
   // Set once the reading is in, so the note that follows is filed against it.

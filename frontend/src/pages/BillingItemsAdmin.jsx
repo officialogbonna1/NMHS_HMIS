@@ -39,6 +39,11 @@ export const BILLING_CATEGORIES = [
     namePlaceholder: "e.g. Wound dressing",
   },
   {
+    category: "maternity", title: "Maternity", label: "Maternity service",
+    description: "Antenatal visits, the delivery package, postnatal and newborn care.",
+    namePlaceholder: "e.g. Delivery Package — Normal",
+  },
+  {
     category: "other", title: "Other", label: "Other",
     description: "Anything else the counter bills for.",
     namePlaceholder: "e.g. Medical report",

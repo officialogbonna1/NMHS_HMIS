@@ -78,8 +78,10 @@ ROUTE_ROLES = {
     "/ultrasound": {"radiology"},
     "/eye": {"optometrist", "ophthalmologist"},
     "/vitals": {"nurse", "doctor"},
-    "/queue": {"reception", "doctor", "nurse", "laboratory", "radiology",
-               "optometrist", "ophthalmologist"},
+    # Mirrors `QUEUE_ROLES` in roles.js, which mirrors `WORKING_ROLES` — the
+    # midwife joined when `maternity` became a route purpose (rule 16).
+    "/queue": {"reception", "doctor", "nurse", "maternity_nurse", "laboratory",
+               "radiology", "optometrist", "ophthalmologist"},
 }
 
 ADMIN = {"admin", "hospital_admin"}

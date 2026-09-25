@@ -39,11 +39,63 @@ def doctor_patient_q(user, prefix=""):
 
 def nurse_patient_q(user, prefix=""):
     """A nurse works the patients routed to them or to their department."""
+    from apps.accounts.departments import authorized_departments
+
     return (
         models.Q(**{_prefixed(prefix, "visits__routes__assigned_to"): user})
-        | models.Q(**{_prefixed(prefix, "visits__routes__department__staff"): user})
-        | models.Q(**{_prefixed(prefix, "visits__routes__department__name__iexact"): user.department})
+        # Every department she is authorised in, not only the one her text
+        # names — the relation has always allowed several and now one helper
+        # reads it (`accounts/departments.py`).
+        | models.Q(**{_prefixed(prefix, "visits__routes__department__in"):
+                      authorized_departments(user)})
     )
+
+
+#: The seeded Maternity department (`departments/0006`). A code, never a name:
+#: an administrator may rename the department and every rule here follows.
+MATERNITY_DEPARTMENT_CODE = "maternity"
+
+
+def maternity_patient_q(prefix=""):
+    """
+    The **Maternity department's** patients — the ward's, never one midwife's.
+
+    Note what it does not take: a user. That is the whole point. A maternity
+    ward cannot depend on a patient being handed to one named nurse before the
+    rest of the ward can see her — the midwife on at 3 a.m. is not the one the
+    front desk typed in at noon. So the department is what confers visibility,
+    and `PatientRoute.assigned_to` says only who is *responsible*, narrowing
+    nothing.
+
+    Two ways a woman is Maternity's: the front desk sent her there (a route
+    filed against the Maternity department, which is the existing assignment
+    mechanism — there is no second one), or she has a pregnancy record here,
+    which is the same statement made clinically.
+    """
+    pregnancy = models.Q(**{_prefixed(prefix, "pregnancies__isnull"): False})
+    department = models.Q(**{
+        _prefixed(prefix, "visits__routes__department__code__iexact"): MATERNITY_DEPARTMENT_CODE})
+    purpose = models.Q(**{_prefixed(prefix, "visits__routes__purpose"): "maternity"})
+    return pregnancy | department | purpose
+
+
+def _on_the_maternity_team(user):
+    """
+    `maternity.access.in_maternity_team`, reached lazily — that module reads
+    this one at import time, so the other direction cannot be a module-level
+    import. One definition either way.
+    """
+    from apps.maternity.access import in_maternity_team
+
+    return in_maternity_team(user)
+
+
+def _clinician_q(user):
+    """A doctor's own patients, plus the maternity team's where they are on it."""
+    q = doctor_patient_q(user)
+    if _on_the_maternity_team(user):
+        q |= maternity_patient_q()
+    return q
 
 
 def patient_queryset_for(user):
@@ -60,9 +112,39 @@ def patient_queryset_for(user):
         # The eye doctor holds a patient the same three ways a doctor does —
         # most often an eye referral they claimed or were named on. An
         # unclaimed referral is in the shared /eye queue, not on this list.
-        return Patient.objects.filter(doctor_patient_q(user)).distinct()
+        #
+        # **Plus the team's, for a doctor on Maternity's staff.** A maternity
+        # ward is worked by its whole team: the patient must not disappear
+        # from it because a colleague is the named doctor, which is what
+        # `doctor_patient_q` alone would do. So the *department* confers the
+        # visibility — the clause `nurse_patient_q` has always carried, read
+        # here through `maternity.access.in_maternity_team`.
+        #
+        # It is the department and not the assignment: `doctor_patient_q`
+        # already gives the assigned doctor the patient through
+        # `Visit.attending_doctor`, so nothing here turns an assignment into
+        # an ACL. And it is Maternity's staff and not every doctor, so an
+        # unrelated doctor gains nothing from a patient being in Maternity.
+        return Patient.objects.filter(_clinician_q(user)).distinct()
     if user.role == "nurse":
-        return Patient.objects.filter(nurse_patient_q(user)).distinct()
+        # The same team clause for a general nurse on Maternity's staff. Her
+        # own rule already carries the department (`nurse_patient_q`), so this
+        # adds only the mother whose record is clinical rather than routed —
+        # a pregnancy opened with no maternity route behind it yet.
+        q = nurse_patient_q(user)
+        if _on_the_maternity_team(user):
+            q |= maternity_patient_q()
+        return Patient.objects.filter(q).distinct()
+    if user.role == "maternity_nurse":
+        # The ward's list, not hers. She had no entry here at all, so this
+        # fell through to `none()` and her patient picker was permanently
+        # empty — which is what made the maternity desk look as though it
+        # needed a hospital number typed in full before it would answer.
+        #
+        # It is also the boundary in the other direction: a midwife reaches
+        # Maternity's patients and **no others**, so a cardiology admission
+        # she has no part in is not on her list however she asks for it.
+        return Patient.objects.filter(maternity_patient_q()).distinct()
     if user.role == "pharmacist":
         # The queue, plus everyone the pharmacy has actually served.
         #

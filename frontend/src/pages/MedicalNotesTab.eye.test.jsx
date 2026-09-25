@@ -50,6 +50,9 @@ describe("the eye doctor's consultation note", () => {
     await user.click(await screen.findByRole("button", { name: "New note" }));
     const exam = await screen.findByRole("region", { name: "Eye examination" });
     await user.type(reasonBox(), "Blurred vision");
+    // The examination groups are collapsible and Eye pressure starts closed —
+    // a group holding a value opens itself, but an empty one is opened here.
+    await user.click(within(exam).getByRole("button", { name: /Eye pressure/i }));
     await user.type(within(exam).getByLabelText("IOP (mmHg) — right eye"), "28");
     await user.selectOptions(within(exam).getByLabelText("Measurement method"), "applanation");
     await user.click(screen.getByRole("button", { name: "Save medical note" }));
@@ -73,6 +76,7 @@ describe("the eye doctor's consultation note", () => {
     await user.click(await screen.findByRole("button", { name: "New note" }));
     await screen.findByRole("region", { name: "Eye examination" });
     await user.type(reasonBox(), "Pain");
+    await user.click(screen.getByRole("button", { name: /Eye pressure/i }));
     await user.type(screen.getByLabelText("IOP (mmHg) — right eye"), "95");
     await user.click(screen.getByRole("button", { name: "Save medical note" }));
 

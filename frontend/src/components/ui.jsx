@@ -432,6 +432,13 @@ export function Select({ className = "", children, ...props }) {
 export function SearchInput({
   value, onChange, placeholder = "Search…", label = "Search", showLabel = false,
   className = "",
+  // A search box that *is* a combobox — it opens a list of what you are
+  // searching — needs the ref and the key handling to drive it. Optional, so
+  // every existing caller is untouched: a plain filter box passes neither and
+  // is the same input it has always been. It is here rather than spelled out
+  // again in a picker because there is one search box in this application and
+  // it should look and behave like itself wherever it appears.
+  inputRef, inputProps,
 }) {
   const id = useId();
   const box = (
@@ -443,7 +450,9 @@ export function SearchInput({
       </span>
       <input
         type="search" id={id} value={value} aria-label={label} placeholder={placeholder}
+        ref={inputRef}
         onChange={(e) => onChange(e.target.value)}
+        {...(inputProps ?? {})}
         className={`${controlClass} pl-9 ${value ? "pr-10" : ""} [&::-webkit-search-cancel-button]:hidden`}
       />
       {value && (

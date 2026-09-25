@@ -11,7 +11,8 @@ import ErrorBoundary from "./components/ErrorBoundary.jsx";
 import {
   ADMIN_ROLES,
   BED_BOARD_ROLES, BILLING_ROLES, CANCEL_ROLES, CHART_ROLES, CLINICAL_ROLES, FINANCE_REPORT_ROLES,
-  REFUND_ROLES, PATIENT_LOOKUP_ROLES, POS_HISTORY_ROLES, POS_ROLES, QUEUE_ROLES,
+  MATERNITY_DESK_ROLES, REFUND_ROLES, PATIENT_LOOKUP_ROLES, POS_HISTORY_ROLES, POS_ROLES,
+  QUEUE_ROLES,
 } from "./auth/roles.js";
 import PharmacyPOS from "./pages/PharmacyPOS.jsx";
 import PosSales from "./pages/PosSales.jsx";
@@ -32,6 +33,7 @@ import ReferPatient from "./pages/ReferPatient.jsx";
 import DepartmentStation from "./pages/DepartmentStation.jsx";
 import LabCatalogue from "./pages/LabCatalogue.jsx";
 import Admissions from "./pages/Admissions.jsx";
+import Maternity from "./pages/Maternity.jsx";
 import AdminDischarge from "./pages/AdminDischarge.jsx";
 import DischargedPatients from "./pages/DischargedPatients.jsx";
 import DepartmentsAdmin from "./pages/DepartmentsAdmin.jsx";
@@ -313,6 +315,18 @@ ReactDOM.createRoot(document.getElementById("root")).render(
               element={
                 <RequireAuth roles={CLINICAL_ROLES}>
                   <ReferPatient />
+                </RequireAuth>
+              }
+            />
+
+            {/* Maternity. The desk group reads (reception looks a returning
+                mother up); the page itself refuses to record anything for a
+                role the API would refuse anyway. */}
+            <Route
+              path="/maternity"
+              element={
+                <RequireAuth roles={MATERNITY_DESK_ROLES}>
+                  <Maternity />
                 </RequireAuth>
               }
             />

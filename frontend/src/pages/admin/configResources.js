@@ -160,6 +160,34 @@ export const CONFIG_RESOURCES = {
     ],
   },
 
+  "maternity-visit-types": {
+    title: "Maternity visit types",
+    group: "Hospital",
+    icon: "maternity",
+    endpoint: "maternity-visit-types",
+    blurb: "The clinics maternity runs — booking, ANC follow-up, labour assessment, "
+      + "emergency, postnatal. A type with attendances filed under it is retired, "
+      + "never deleted: the history points at it.",
+    adminOnly: true,
+    columns: [
+      { key: "name", label: "Visit type", strong: true },
+      { key: "code", label: "Code" },
+      { key: "display_order", label: "Order", align: "right" },
+    ],
+    fields: [
+      { name: "name", label: "Name", type: "text", required: true },
+      { name: "code", label: "Code", type: "text", required: true,
+        hint: "Machine identity, e.g. anc-followup. It never changes once visits use it." },
+      { name: "description", label: "Description", type: "text" },
+      { name: "is_booking", label: "First ANC / booking visit", type: "toggle", default: false,
+        hint: "The visit that opens a pregnancy's record and takes the obstetric history." },
+      { name: "display_order", label: "Display order", type: "number", default: 0 },
+      { name: "is_active", label: "Active", type: "toggle", default: true },
+    ],
+    usedWhen: (row) => row.encounter_count > 0,
+    usedNote: "Maternity visits are filed under this type — deactivate it instead.",
+  },
+
   wards: {
     title: "Wards",
     group: "Hospital",

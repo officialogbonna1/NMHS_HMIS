@@ -35,6 +35,7 @@ INSTALLED_APPS = [
     "apps.diagnostics",
     "apps.laboratory",
     "apps.inpatient",
+    "apps.maternity",
 ]
 
 AUTH_USER_MODEL = "accounts.User"

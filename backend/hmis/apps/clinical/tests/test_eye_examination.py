@@ -56,13 +56,33 @@ class CleaningTests(SimpleTestCase):
                   "sphere", "cylinder", "axis", "add", "refraction",
                   "iop", "pupil", "pupil_reaction",
                   "lids", "conjunctiva", "sclera", "cornea", "anterior_chamber", "iris_pupil", "lens",
-                  "optic_disc", "macula", "vessels", "retina", "posterior_other"]
+                  "optic_disc", "macula", "vessels", "retina", "posterior_other",
+                  # Asked of each eye, from the manual consultation sheet.
+                  "contrast", "colour_vision", "cdr"]
         expected = {f"{name}_{eye}" for name in paired for eye in ("right", "left")}
         expected |= {"complaints", "complaint_other", "complaint_duration", "complaint_onset",
                      "complaint_severity", "associated_symptoms",
                      "ocular_history", "ocular_history_notes",
-                     "iop_method", "rapd", "eye_movements", "visual_fields", "follow_up"}
+                     "iop_method", "rapd", "eye_movements", "visual_fields", "follow_up",
+                     # The manual sheet's history questions, asked once.
+                     "family_history_blindness", "hypertension", "diabetes",
+                     "eye_drops", "eye_drops_details", "eye_drops_frequency",
+                     "symptom_eye_pain", "symptom_eye_redness", "symptom_eye_itching"}
         self.assertEqual(set(FIELDS), expected)
+
+    def test_the_manual_sheets_questions_are_in_the_definition(self):
+        """
+        The fifteen the paper consultation sheet asks for and the form did
+        not. They are listed here as well as in `SECTIONS` on purpose — this
+        is the drift detector for the file above it.
+        """
+        for added in ("family_history_blindness", "hypertension", "diabetes",
+                      "eye_drops", "eye_drops_details", "eye_drops_frequency",
+                      "symptom_eye_pain", "symptom_eye_redness", "symptom_eye_itching",
+                      "contrast_right", "contrast_left",
+                      "colour_vision_right", "colour_vision_left",
+                      "cdr_right", "cdr_left"):
+            self.assertIn(added, FIELDS, added)
         # Everything the consultation note already carries stays on the note.
         # The general medical history, drugs and allergies stay on the nine
         # health-record tiles — there is no second copy of either here.
@@ -280,3 +300,221 @@ class EyeConsultationTests(TestCase):
             self.assertEqual(response.status_code, 200)
             self.assertEqual(response.data, schema())
         self.assertEqual(self.as_(self.reception).get("/api/notes/eye-examination-fields/").status_code, 403)
+
+
+class TheManualSheetsMissingQuestions(TestCase):
+    """
+    The history and examination inputs the paper consultation sheet asks for
+    and the form did not.
+
+    **Added to `clinical/eye_exam.py` and nowhere else.** The examination is a
+    JSON field on the consultation note, so there is no migration, no second
+    model and no second copy of the field list in JavaScript — the form reads
+    `GET /api/notes/eye-examination-fields/` (rule 43). Every existing field
+    stays exactly where it was.
+    """
+
+    def setUp(self):
+        self.patient = Patient.objects.create(first_name="Ada", last_name="Obi",
+                                              sex="F")
+        self.eye_doctor = User.objects.create_user(
+            username="eyedoc", password="t", role="ophthalmologist")
+        visit = Visit.objects.create(patient=self.patient, opened_by=self.eye_doctor,
+                                     attending_doctor=self.eye_doctor)
+        PatientRoute.objects.create(
+            visit=visit, department=Department.objects.get(code="eye"),
+            purpose="eye", assigned_to=self.eye_doctor, routed_by=self.eye_doctor)
+        self.client_ = APIClient()
+        self.client_.force_authenticate(self.eye_doctor)
+
+    def write(self, examination):
+        return self.client_.post("/api/notes/", {
+            "patient": self.patient.pk, "visit_time": timezone.now().isoformat(),
+            "reason_for_visit": "Eye check", "chief_complaint": "Eye check",
+            "eye_examination": examination}, format="json")
+
+    def stored(self, response):
+        return ConsultationNote.objects.get(pk=response.data["id"]).eye_examination
+
+    # --- history -------------------------------------------------------
+    def test_the_systemic_history_questions_save(self):
+        answer = self.write({"family_history_blindness": "yes",
+                             "hypertension": "no",
+                             "diabetes": "unknown"})
+        self.assertEqual(answer.status_code, 201, answer.data)
+        self.assertEqual(self.stored(answer), {"family_history_blindness": "yes",
+                                               "hypertension": "no",
+                                               "diabetes": "unknown"})
+
+    def test_each_of_them_takes_yes_no_or_unknown_and_nothing_else(self):
+        for field in ("family_history_blindness", "hypertension", "diabetes"):
+            for value in ("yes", "no", "unknown"):
+                with self.subTest(field=field, value=value):
+                    self.assertEqual(self.write({field: value}).status_code, 201)
+            with self.subTest(field=field, value="maybe"):
+                self.assertEqual(self.write({field: "maybe"}).status_code, 400)
+
+    def test_unknown_is_a_finding_and_is_kept(self):
+        """It is not a blank: "nobody knows" and "nobody asked" differ."""
+        answer = self.write({"diabetes": "unknown"})
+        self.assertEqual(self.stored(answer), {"diabetes": "unknown"})
+
+    def test_the_eye_symptoms_save_beside_the_presenting_complaint(self):
+        answer = self.write({
+            "complaints": ["blurred_vision"],
+            "symptom_eye_pain": "yes",
+            "symptom_eye_redness": "no",
+            "symptom_eye_itching": "unknown"})
+        self.assertEqual(answer.status_code, 201, answer.data)
+        stored = self.stored(answer)
+        # The complaint selector is untouched — these are asked *as well*.
+        self.assertEqual(stored["complaints"], ["blurred_vision"])
+        self.assertEqual(stored["symptom_eye_pain"], "yes")
+        self.assertEqual(stored["symptom_eye_redness"], "no")
+        self.assertEqual(stored["symptom_eye_itching"], "unknown")
+
+    def test_the_existing_complaint_options_are_unchanged(self):
+        from apps.clinical.eye_exam import EYE_COMPLAINTS
+
+        values = [value for value, _ in EYE_COMPLAINTS]
+        self.assertIn("eye_pain", values, "the complaint list lost an option")
+        self.assertIn("blurred_vision", values)
+
+    # --- eye drops -----------------------------------------------------
+    def test_the_eye_drop_question_and_its_details_are_separate_fields(self):
+        answer = self.write({"eye_drops": "yes",
+                             "eye_drops_details": "Timolol 0.5%",
+                             "eye_drops_frequency": "twice_daily"})
+        self.assertEqual(answer.status_code, 201, answer.data)
+        self.assertEqual(self.stored(answer), {"eye_drops": "yes",
+                                               "eye_drops_details": "Timolol 0.5%",
+                                               "eye_drops_frequency": "twice_daily"})
+
+    def test_the_frequency_offers_the_three_the_sheet_asks_for(self):
+        for value in ("once_daily", "twice_daily", "other"):
+            with self.subTest(value=value):
+                self.assertEqual(
+                    self.write({"eye_drops": "yes",
+                                "eye_drops_frequency": value}).status_code, 201)
+        self.assertEqual(self.write({"eye_drops_frequency": "hourly"}).status_code, 400)
+
+    def test_the_details_are_revealed_by_the_answer_above_them(self):
+        """
+        A **display** rule, served on the field so the form holds no copy —
+        and deliberately not a validation one. Nothing in an eye examination
+        is mandatory, and a detail typed before the answer was changed is a
+        finding somebody recorded rather than an error to reject.
+        """
+        schema = self.client_.get("/api/notes/eye-examination-fields/").data
+        history = next(s for s in schema["sections"] if s["key"] == "eye_history")
+        by_key = {f["key"]: f for f in history["fields"]}
+        for field in ("eye_drops_details", "eye_drops_frequency"):
+            self.assertEqual(by_key[field]["revealed_by"],
+                             {"field": "eye_drops", "values": ["yes"]})
+        self.assertNotIn("revealed_by", by_key["eye_drops"])
+        # And the server still stores them whatever the answer says.
+        self.assertEqual(self.write({"eye_drops": "no",
+                                     "eye_drops_details": "Stopped last week"}
+                                    ).status_code, 201)
+
+    # --- examination ---------------------------------------------------
+    def test_contrast_is_recorded_for_each_eye(self):
+        answer = self.write({"contrast_right": "1.25 log units",
+                             "contrast_left": "0.90 log units"})
+        self.assertEqual(answer.status_code, 201, answer.data)
+        self.assertEqual(self.stored(answer), {"contrast_right": "1.25 log units",
+                                               "contrast_left": "0.90 log units"})
+
+    def test_colour_vision_is_recorded_for_each_eye(self):
+        answer = self.write({"colour_vision_right": "14/14 Ishihara",
+                             "colour_vision_left": "9/14 Ishihara"})
+        self.assertEqual(answer.status_code, 201, answer.data)
+        self.assertEqual(self.stored(answer), {"colour_vision_right": "14/14 Ishihara",
+                                               "colour_vision_left": "9/14 Ishihara"})
+
+    def test_cdr_is_recorded_for_each_eye_and_is_not_the_optic_disc(self):
+        answer = self.write({"cdr_right": "0.3", "cdr_left": "0.7",
+                             "optic_disc_right": "Pink, well defined margins"})
+        self.assertEqual(answer.status_code, 201, answer.data)
+        stored = self.stored(answer)
+        self.assertEqual(stored["cdr_right"], "0.3")
+        self.assertEqual(stored["cdr_left"], "0.7")
+        self.assertEqual(stored["optic_disc_right"], "Pink, well defined margins")
+
+    def test_cdr_takes_how_a_clinician_writes_it(self):
+        """A ratio, and sometimes two of them — so text, like refraction."""
+        for written in ("0.3", "0.65", "0.6 H / 0.7 V", "0.9 (glaucomatous)"):
+            with self.subTest(written=written):
+                self.assertEqual(self.write({"cdr_right": written}).status_code, 201)
+
+    def test_cdr_offers_no_options_because_none_were_invented(self):
+        from apps.clinical.eye_exam import FIELDS, OPTIONS
+
+        self.assertEqual(FIELDS["cdr_right"]["kind"], "short")
+        self.assertIsNone(FIELDS["cdr_right"]["options"])
+        self.assertNotIn("cdr", OPTIONS)
+
+    # --- the form reads it, and nothing else changed --------------------
+    def test_the_form_is_served_every_new_field(self):
+        schema = self.client_.get("/api/notes/eye-examination-fields/").data
+        keys = set()
+        for section in schema["sections"]:
+            keys.update(f["key"] for f in section["fields"])
+            for row in section["rows"]:
+                keys.update({row["right"], row["left"]})
+        for expected in ("family_history_blindness", "hypertension", "diabetes",
+                         "eye_drops", "eye_drops_details", "eye_drops_frequency",
+                         "symptom_eye_pain", "symptom_eye_redness",
+                         "symptom_eye_itching", "contrast_right", "contrast_left",
+                         "colour_vision_right", "colour_vision_left",
+                         "cdr_right", "cdr_left"):
+            self.assertIn(expected, keys, expected)
+
+    def test_every_field_the_form_had_is_still_there(self):
+        from apps.clinical.eye_exam import FIELDS
+
+        for kept in ("complaints", "complaint_other", "complaint_duration",
+                     "complaint_onset", "complaint_severity", "associated_symptoms",
+                     "ocular_history", "ocular_history_notes", "distance_right",
+                     "corrected_left", "pinhole_right", "near_left", "sphere_right",
+                     "refraction_left", "iop_right", "iop_method", "pupil_right",
+                     "pupil_reaction_left", "rapd", "lids_right", "conjunctiva_left",
+                     "sclera_right", "cornea_left", "anterior_chamber_right",
+                     "iris_pupil_left", "lens_right", "optic_disc_left",
+                     "macula_right", "vessels_left", "retina_right",
+                     "posterior_other_left", "eye_movements", "visual_fields",
+                     "follow_up"):
+            self.assertIn(kept, FIELDS, f"{kept} was removed from the eye examination")
+
+    def test_a_note_written_before_these_fields_existed_still_reads(self):
+        """Existing records stay valid — nothing became required."""
+        answer = self.write({"distance_right": "6/6", "iop_right": "14"})
+        self.assertEqual(answer.status_code, 201, answer.data)
+        note = ConsultationNote.objects.get(pk=answer.data["id"])
+        self.assertEqual(note.eye_examination, {"distance_right": "6/6",
+                                                "iop_right": 14})
+        read = self.client_.get(f"/api/notes/{note.pk}/")
+        self.assertEqual(read.status_code, 200)
+
+    def test_nothing_new_is_mandatory(self):
+        """An examination of one finding still saves (rule 20's direction)."""
+        self.assertEqual(self.write({"hypertension": "yes"}).status_code, 201)
+        self.assertEqual(self.write({}).status_code, 201)
+
+    def test_a_blank_is_still_dropped_rather_than_stored(self):
+        answer = self.write({"hypertension": "yes", "diabetes": "",
+                             "cdr_right": "   ", "eye_drops_details": ""})
+        self.assertEqual(self.stored(answer), {"hypertension": "yes"})
+
+    def test_an_unknown_key_is_still_refused(self):
+        self.assertEqual(self.write({"blood_group": "O+"}).status_code, 400)
+
+    def test_the_new_findings_read_back_through_their_labels(self):
+        from apps.clinical.eye_exam import describe
+
+        described = describe({"family_history_blindness": "yes", "cdr_right": "0.3",
+                              "contrast_left": "0.9"})
+        rendered = str(described)
+        self.assertIn("Family history of blindness", rendered)
+        self.assertIn("Cup-to-disc ratio", rendered)
+        self.assertIn("Contrast", rendered)

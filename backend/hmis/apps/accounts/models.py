@@ -9,6 +9,15 @@ class Role(models.TextChoices):
     HOSPITAL_ADMIN = "hospital_admin", "Hospital Admin"
     DOCTOR = "doctor", "Doctor"
     NURSE = "nurse", "Nurse"
+    # The midwife. A maternity nurse is a nurse by training and a different
+    # job by rota: she works the labour ward rather than the triage queue, and
+    # naming her is what lets maternity be hers without every nurse in the
+    # hospital inheriting it (the breadth rule 56 recorded as a known one).
+    # She is "Maternity" on the role list — the unit she works, the way
+    # Laboratory and Reception are named — while the stored value stays
+    # `maternity_nurse`, because a code is the machine identity and a name is
+    # a label (rule 34).
+    MATERNITY_NURSE = "maternity_nurse", "Maternity"
     RECEPTION = "reception", "Reception"
     PHARMACIST = "pharmacist", "Pharmacist"
     LABORATORY = "laboratory", "Laboratory Scientist"

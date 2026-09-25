@@ -32,6 +32,12 @@ class PatientRoute(TimeStampedModel):
     # being asked of them — a nurse's list reads "vitals", not just a name.
     PURPOSE = [("vitals", "Vitals"), ("consultation", "Consultation"), ("procedure", "Procedure"),
                ("laboratory", "Laboratory"), ("ultrasound", "Ultrasound / Imaging"), ("eye", "Eye clinic"),
+               # The labour ward. A maternity route is what says a patient is
+               # in Maternity's care: `department` is the seeded Maternity
+               # row and `assigned_to` is the midwife responsible for her —
+               # optional, because a ward cannot wait for somebody to be
+               # named before the rest of it can see her.
+               ("maternity", "Maternity"),
                # Kept for routes raised before the three above existed.
                ("investigation", "Investigation"), ("other", "Other")]
     visit = models.ForeignKey(Visit, on_delete=models.CASCADE, related_name="routes")

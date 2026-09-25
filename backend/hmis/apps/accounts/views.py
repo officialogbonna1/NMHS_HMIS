@@ -176,11 +176,21 @@ class UserViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         user = serializer.save()
-        audit_event(actor=self.request.user, action="user.created", instance=user, request=self.request)
+        audit_event(actor=self.request.user, action="user.created", instance=user,
+                    request=self.request,
+                    details={"authorized_departments":
+                             sorted(d.name for d in user.department_memberships.all())})
 
     def perform_update(self, serializer):
+        # Where they were posted before, so the audit row says what changed
+        # rather than only that something did (rule 26: the existing AuditLog).
+        before = sorted(d.name for d in serializer.instance.department_memberships.all())
         user = serializer.save()
-        audit_event(actor=self.request.user, action="user.updated", instance=user, request=self.request)
+        after = sorted(d.name for d in user.department_memberships.all())
+        audit_event(actor=self.request.user, action="user.updated", instance=user,
+                    request=self.request,
+                    details=({"authorized_departments": {"before": before, "after": after}}
+                             if before != after else None))
 
     @action(detail=True, methods=["post"])
     def set_password(self, request, pk=None):

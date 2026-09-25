@@ -93,6 +93,24 @@ SEVERITY = [("mild", "Mild"), ("moderate", "Moderate"), ("severe", "Severe")]
 NORMALITY = [("normal", "Normal"), ("abnormal", "Abnormal"), ("not_assessed", "Not assessed")]
 PRESENCE = [("present", "Present"), ("absent", "Absent"), ("not_assessed", "Not assessed")]
 
+# A history question the manual sheet asks as a tick: asked, and answered one
+# of three ways. **"Unknown" is a finding, not a blank** — a patient who does
+# not know whether anyone in the family went blind is a different record from
+# one nobody asked, and only the first is worth storing.
+YES_NO_UNKNOWN = [
+    ("yes", "Yes"),
+    ("no", "No"),
+    ("unknown", "Unknown"),
+]
+
+# How often the drops are taken. `other` carries the rest in the details box
+# beside it rather than being a free-text frequency nobody can group.
+EYE_DROP_FREQUENCY = [
+    ("once_daily", "Once daily"),
+    ("twice_daily", "Twice daily"),
+    ("other", "Other"),
+]
+
 # Field base name -> its options. A choice or multi-choice field without an
 # entry here would have nothing to offer, so `_fields()` refuses to build one.
 OPTIONS = {
@@ -104,9 +122,33 @@ OPTIONS = {
     "pupil": NORMALITY,
     "pupil_reaction": NORMALITY,
     "rapd": PRESENCE,
+    # The manual sheet's history questions.
+    "family_history_blindness": YES_NO_UNKNOWN,
+    "hypertension": YES_NO_UNKNOWN,
+    "diabetes": YES_NO_UNKNOWN,
+    "eye_drops": YES_NO_UNKNOWN,
+    "eye_drops_frequency": EYE_DROP_FREQUENCY,
+    "symptom_eye_pain": YES_NO_UNKNOWN,
+    "symptom_eye_redness": YES_NO_UNKNOWN,
+    "symptom_eye_itching": YES_NO_UNKNOWN,
 }
 
 MAX_LENGTH = {SHORT: 60, TEXT: 1000}
+
+# A field the form only asks once another has been answered a particular way.
+#
+# {field: (other field, the values that reveal it)}. Served on the field's own
+# spec so `EyeExaminationFields.jsx` reads it like everything else and holds no
+# copy of the rule — the same reason the field list itself is served.
+#
+# **It is a display rule, never a validation one.** The server still stores
+# whatever it is given: nothing in an eye examination is mandatory (rule 20's
+# reasoning), and a detail typed before the answer was changed to "no" is a
+# finding somebody recorded, not an error to reject.
+REVEALED_BY = {
+    "eye_drops_details": ("eye_drops", ("yes",)),
+    "eye_drops_frequency": ("eye_drops", ("yes",)),
+}
 
 # (key, label, [paired right/left rows], [single fields])
 # A paired row stores `<name>_right` and `<name>_left`.
@@ -126,11 +168,43 @@ SECTIONS = [
         ("ocular_history", "Past eye history", MULTI),
         ("ocular_history_notes", "Details", TEXT),
     ]),
+    # The manual consultation sheet's history questions, asked of the patient
+    # rather than measured. They are **beside** the presenting complaint, not
+    # instead of it: "what brought them in" is what the patient volunteers and
+    # these are what the clinician asks, and a sheet records both.
+    #
+    # The systemic questions are here and not in the nine health-record tiles
+    # because they are asked at *this* consultation and stored with it — the
+    # tiles hold the patient's standing conditions, which is a different
+    # record and is read on the chart.
+    ("eye_history", "History", [], [
+        ("family_history_blindness", "Family history of blindness", CHOICE),
+        ("hypertension", "Hypertension", CHOICE),
+        ("diabetes", "Diabetes", CHOICE),
+        ("eye_drops", "Currently using eye drops?", CHOICE),
+        # Asked only where the answer above is yes. Kept as their own fields
+        # rather than folded into it: "twice daily" is not an answer to "are
+        # you using drops", and a single field could not hold both.
+        ("eye_drops_details", "Eye drops / medication details", SHORT),
+        ("eye_drops_frequency", "Frequency", CHOICE),
+        ("symptom_eye_pain", "Eye pain", CHOICE),
+        ("symptom_eye_redness", "Eye redness", CHOICE),
+        ("symptom_eye_itching", "Eye itching", CHOICE),
+    ]),
     ("vision", "Visual acuity", [
         ("distance", "Distance (unaided)", SHORT),
         ("corrected", "With correction", SHORT),
         ("pinhole", "Pinhole", SHORT),
         ("near", "Near", SHORT),
+    ], []),
+    # Measured per eye like acuity, but not acuity — kept as their own section
+    # so the Visual acuity block stays the four readings it has always been.
+    # Text for the same reason refraction is text: a bench writes "1.25 log
+    # units", "6/6", "14/14 Ishihara plates", and a number input discards all
+    # three.
+    ("visual_function", "Contrast & colour vision", [
+        ("contrast", "Contrast", SHORT),
+        ("colour_vision", "Colour", SHORT),
     ], []),
     # Written the way a prescription is written — "+1.25", "-0.50", "180" —
     # so the boxes are text. A number input silently discards a leading "+".
@@ -163,6 +237,13 @@ SECTIONS = [
     ], []),
     ("posterior", "Posterior segment", [
         ("optic_disc", "Optic disc", TEXT),
+        # **A measurement, kept apart from the disc description.** Written as
+        # a ratio — "0.3", "0.6", sometimes "0.6 H / 0.7 V" — so it is text
+        # for the reason refraction is: a number input cannot hold any of
+        # those. No options are offered, because this file does not invent
+        # clinical vocabulary (see the note on the manual sheet's own "CDR"
+        # row in the module docstring).
+        ("cdr", "Cup-to-disc ratio (CDR)", SHORT),
         ("macula", "Macula", TEXT),
         ("vessels", "Vessels", TEXT),
         ("retina", "Retina", TEXT),
@@ -222,6 +303,10 @@ def schema():
         options = _options_for(name, kind)
         if options:
             out["choices"] = [{"value": value, "label": label} for value, label in options]
+        revealed = REVEALED_BY.get(name)
+        if revealed:
+            depends, values = revealed
+            out["revealed_by"] = {"field": depends, "values": list(values)}
         return out
 
     return {

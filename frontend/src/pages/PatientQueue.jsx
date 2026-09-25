@@ -31,6 +31,7 @@ const PURPOSES = [
   ["vitals", "Vitals (nursing)"],
   ["consultation", "Consultation"],
   ["eye", "Ophthalmology / Eye clinic"],
+  ["maternity", "Maternity"],
   ["procedure", "Procedure"],
   ["investigation", "Investigation"],
   ["other", "Other"],
@@ -39,8 +40,23 @@ const PURPOSES = [
 // Who a route for each purpose can be named to — the mirror of
 // `PURPOSE_ROLE` in workflow/views.py, which the server now enforces on
 // creation as well as on `refer/`. Anything not listed is a doctor's.
-const ASSIGNEE_ROLES = { vitals: ["nurse"], eye: ["ophthalmologist", "optometrist"] };
-const ASSIGNEE_LABEL = { vitals: "nurse", eye: "eye clinician" };
+const ASSIGNEE_ROLES = {
+  vitals: ["nurse"],
+  eye: ["ophthalmologist", "optometrist"],
+  // The midwife, and only her. `PURPOSE_ROLE["maternity"]` names this one
+  // role, so offering the desk a general nurse would be offering a choice the
+  // server then refuses. Sending her with nobody named is the normal case:
+  // the whole ward sees a maternity patient either way.
+  maternity: ["maternity_nurse"],
+};
+const ASSIGNEE_LABEL = { vitals: "nurse", eye: "eye clinician",
+                         maternity: "maternity nurse" };
+// Where naming nobody leaves the patient — the department's shared list, in
+// that department's own words.
+const UNASSIGNED_LABEL = {
+  eye: "Anyone in the eye clinic",
+  maternity: "The maternity ward — every midwife sees her",
+};
 
 // How the person is described in the dropdown, so the desk assigns
 // "Dr John Doe — Ophthalmologist" rather than a bare name.
@@ -49,6 +65,7 @@ const ROLE_LABEL = {
   nurse: "Nurse",
   ophthalmologist: "Ophthalmologist",
   optometrist: "Optometrist",
+  maternity_nurse: "Maternity",
 };
 
 // The seeded department each purpose belongs to (`billing/departments.py`
@@ -63,6 +80,9 @@ const PURPOSE_DEPARTMENT = {
   // seven revenue departments — a nurse raises no charge — which is why the
   // code is not in `billing/departments.py`.
   vitals: "clinicals",
+  // Maternity is a department of the hospital and not a revenue one
+  // (`departments/0006`), seeded on the same reasoning as Clinicals.
+  maternity: "maternity",
   consultation: "consultation",
   laboratory: "laboratory",
   ultrasound: "radiology",
@@ -444,7 +464,7 @@ function NewRouteForm() {
           >
             <Select value={assignedTo} onChange={(e) => setAssignedTo(e.target.value)}>
               <option value="">
-                {purpose === "eye" ? "Anyone in the eye clinic" : "Anyone in the department"}
+                {UNASSIGNED_LABEL[purpose] ?? "Anyone in the department"}
               </option>
               {(assignees ?? []).map((u) => (
                 <option key={u.id} value={u.id}>

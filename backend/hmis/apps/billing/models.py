@@ -16,10 +16,21 @@ class BillingItem(TimeStampedModel):
     does not raise the charge; the counter bills it from this catalogue, so
     money is only ever created by the roles that collect it.
     """
+    #: The categories the counter bills under. This list is the definition:
+    #: `billing/catalogue.py` reads it (`CATEGORIES = list(BillingItem.CATEGORY)`),
+    #: the Billing screen groups by it, and `billing/departments.py` maps it to
+    #: the unit that earned the money. Adding a category here is what makes a
+    #: department billable — there is nowhere else to add one.
     CATEGORY = [
         ("consultation", "Consultation Fee"), ("card", "Card"),
         ("laboratory", "Laboratory"), ("ultrasound", "Ultrasound / Imaging"),
-        ("eye", "Eye clinic"), ("procedure", "Procedure"), ("other", "Other"),
+        ("eye", "Eye clinic"), ("procedure", "Procedure"),
+        # Maternity's own services — the booking visit, the delivery package,
+        # the postnatal check. The ward had no billable catalogue of its own
+        # until the hospital configured one, which is why this arrived after
+        # the other six.
+        ("maternity", "Maternity"),
+        ("other", "Other"),
     ]
     category = models.CharField(max_length=20, choices=CATEGORY, default="card")
     name = models.CharField(max_length=100, unique=True)

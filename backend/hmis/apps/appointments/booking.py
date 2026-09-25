@@ -35,6 +35,14 @@ are absent without being excluded by name.
 """
 from django.db.models import Q
 
+from apps.accounts.departments import staff_of
+
+
+def posted_to(department):
+    """The ids of everyone authorised in `department` — the relation an
+    administrator sets, plus the legacy text (`accounts/departments.py`)."""
+    return list(staff_of(department).values_list("pk", flat=True))
+
 from apps.billing import catalogue
 from apps.billing.departments import department_for_source
 
@@ -153,11 +161,11 @@ def eligible_providers(service):
     department = department_of(service)
     query = User.objects.filter(is_active=True)
     if roles and department is not None:
-        query = query.filter(Q(role__in=roles) | Q(department_memberships=department))
+        query = query.filter(Q(role__in=roles) | Q(pk__in=posted_to(department)))
     elif roles:
         query = query.filter(role__in=roles)
     elif department is not None:
-        query = query.filter(department_memberships=department)
+        query = query.filter(pk__in=posted_to(department))
     else:
         return User.objects.none()
     return query.distinct().order_by("last_name", "first_name", "username")

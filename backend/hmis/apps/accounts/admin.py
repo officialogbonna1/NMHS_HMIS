@@ -1,9 +1,68 @@
+from django import forms
 from django.contrib import admin, messages
 from django.contrib.auth.admin import UserAdmin
+from django.contrib.auth.forms import UserChangeForm
 from django.urls import reverse
 from django.utils.html import format_html
 
+from apps.departments.models import Department
+
 from .models import User
+
+
+class StaffForm(UserChangeForm):
+    """
+    The staff form, plus **Authorized departments**.
+
+    It subclasses Django's own `UserChangeForm` rather than a bare `ModelForm`:
+    that is what keeps the password column a read-only hash link instead of a
+    text box, which this admin's docstring exists to warn about.
+
+    `Department.staff` is declared on `Department`, so this is the reverse side
+    of an existing many-to-many and Django cannot put it on the user form by
+    itself. This is the standard pattern for that: an unbound
+    `ModelMultipleChoiceField` that reads the relation on load and writes it on
+    save. No new model, no new column, no second relation.
+    """
+    authorized_departments = forms.ModelMultipleChoiceField(
+        queryset=Department.objects.filter(is_active=True),
+        required=False,
+        widget=admin.widgets.FilteredSelectMultiple("departments", is_stacked=False),
+        help_text="Where this member of staff may work. Their role still decides "
+                  "what they may do there — a doctor authorised for Maternity is a "
+                  "doctor in Maternity, not a midwife. Leave empty for staff who "
+                  "work no department of their own.",
+    )
+
+    class Meta(UserChangeForm.Meta):
+        model = User
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        if self.instance.pk:
+            self.fields["authorized_departments"].initial = (
+                self.instance.department_memberships.all())
+
+    def save(self, commit=True):
+        user = super().save(commit=commit)
+
+        def write_departments():
+            chosen = self.cleaned_data.get("authorized_departments")
+            if chosen is None:
+                return
+            # Only the departments this form manages: an inactive one somebody
+            # was posted to is left alone rather than silently revoked, because
+            # the widget never offered it to be unticked.
+            offered = set(self.fields["authorized_departments"].queryset)
+            keep = set(user.department_memberships.all()) - offered
+            user.department_memberships.set(set(chosen) | keep)
+
+        if commit:
+            write_departments()
+        else:
+            # A deferred save (the add form) runs this once the row exists.
+            self.save_m2m_departments = write_departments
+        return user
 
 
 @admin.register(User)
@@ -20,6 +79,21 @@ class HMISUserAdmin(UserAdmin):
     person out.
     """
 
+    form = StaffForm
+
+    def save_related(self, request, form, formsets, change):
+        """
+        Write the authorised departments once the row exists.
+
+        On the add form Django saves the user with `commit=False` first, so the
+        many-to-many cannot be written yet; `StaffForm` defers it and this is
+        where it runs — the same place Django writes every other m2m.
+        """
+        super().save_related(request, form, formsets, change)
+        deferred = getattr(form, "save_m2m_departments", None)
+        if deferred is not None:
+            deferred()
+
     fieldsets = UserAdmin.fieldsets + (
         ("Staff number", {
             "fields": ("staff_number",),
@@ -28,8 +102,17 @@ class HMISUserAdmin(UserAdmin):
                            "and it never moves.",
         }),
         ("HMIS role", {
-            "fields": ("role", "department", "sensitive_record_access", "must_change_password"),
+            "fields": ("role", "sensitive_record_access", "must_change_password"),
             "description": "Role decides what this account can reach in the app.",
+        }),
+        ("Department & access", {
+            "fields": ("department", "authorized_departments"),
+            "description": "<b>Primary department</b> is the organisational label shown on "
+                           "the staff list — free text, and not an authorisation. "
+                           "<b>Authorized departments</b> decide which departments this "
+                           "member of staff may work in; role permissions still apply. "
+                           "Staff cannot change this for themselves: it is set here and "
+                           "is on no form in the application.",
         }),
         ("Pharmacy POS", {
             "fields": ("pos_discount_authorized",),

@@ -26,8 +26,9 @@ SUPER_ADMIN_ROLES = ["admin"]
 # the health-record tiles and the overview are gated far more tightly (see
 # ClinicalRecordAccess), and reception gets the demographics-only serializer.
 PATIENT_LOOKUP_ROLES = [
-    "reception", "doctor", "nurse", "pharmacist", "laboratory", "radiology",
-    "optometrist", "ophthalmologist", "cashier", "accountant", "ward_manager",
+    "reception", "doctor", "nurse", "maternity_nurse", "pharmacist", "laboratory",
+    "radiology", "optometrist", "ophthalmologist", "cashier", "accountant",
+    "ward_manager",
 ]
 
 # Who works a ward: the bed board, admissions, transfers and discharges.
@@ -45,6 +46,56 @@ WARD_ROLES = ["ward_manager", "doctor", "nurse"]
 # rewriting every `"doctor"`. Either role reaches only its own patients
 # (`patients.access.patient_queryset_for`).
 CLINICIAN_ROLES = ["doctor", "ophthalmologist"]
+
+# Who works maternity: the pregnancy record, the visit list, today's
+# encounter, the labour, the delivery and the babies.
+#
+# `maternity_nurse` is the midwife — her own role, so the labour ward is hers
+# without every nurse in the hospital inheriting it. The general `nurse` and
+# the maternity `doctor` keep the access they already had, because a hospital
+# this size covers maternity with whoever is on.
+#
+# It is a group and not a capability framework: the roles here reach the
+# maternity endpoints and **nothing else**. A maternity nurse cannot open a
+# chart, read the finance report, touch stock, adjust money or reach Django
+# admin, which `MaternityGrantsNothingElse` holds.
+MATERNITY_ROLES = ["doctor", "nurse", "maternity_nurse"]
+
+# Who does **nursing work**: records vitals and nursing notes, and hands a
+# patient on to a doctor when they are ready.
+#
+# The general nurse at triage, and the midwife on the labour ward — who does
+# exactly the same job for the mothers she holds, and could not do it at all
+# because `IsNurse` names the general nurse alone.
+#
+# Deliberately *not* a rewrite of `IsNurse`, which keeps meaning the general
+# nurse: the vitals **station**, reception's "send for vitals" routing and the
+# nursing dashboard are the triage queue's and stay where they are. This is
+# rule 43's pattern — widen a capability one at a time, never by rewriting
+# every `"nurse"`.
+NURSING_ROLES = ["nurse", "maternity_nurse"]
+
+# Who may put a patient into Maternity's care, and name the midwife
+# responsible for her.
+#
+# Deliberately **not** every maternity nurse. Claiming unassigned work is
+# already hers — the queue's `accept` is how a midwife takes a patient nobody
+# holds — but handing a patient to a *named* colleague, and deciding which
+# department a patient belongs to at all, is the front desk's and
+# administration's. A ward where anyone can reassign anyone is a ward where
+# nobody knows who is responsible.
+#
+# Changing the department is not here at all: that is the existing routing
+# workflow (`PatientQueue`), and nothing in maternity moves a patient out of a
+# department as a side effect of changing her nurse.
+MATERNITY_ASSIGN_ROLES = [*ADMIN_ROLES, "reception"]
+
+# Who works the maternity **desk**: the same people plus the front desk, which
+# looks a returning mother up and says whether she has an active pregnancy.
+# Reading that is not reading a chart — reception already reads a name and a
+# file number (PATIENT_LOOKUP_ROLES), and the clinical record stays where it
+# is.
+MATERNITY_DESK_ROLES = [*MATERNITY_ROLES, "reception"]
 
 # Who works the ward **for their own patients only**. They see which beds are
 # free and occupied, the name on a bed only when it is one of their patients,
@@ -216,8 +267,25 @@ class ClinicalRecordAccess(RoleRequired):
 
 
 class ClinicianOrNurse(RoleRequired):
-    """Reading vitals and nursing notes. Recording them stays `IsNurse`."""
-    allowed_roles = [*CLINICIAN_ROLES, "nurse"]
+    """
+    Reading vitals and nursing notes.
+
+    Recording them is `NursingStaff` below — the same group, because the
+    midwife who takes a reading has to be able to read it back.
+    """
+    allowed_roles = [*CLINICIAN_ROLES, *NURSING_ROLES]
+
+
+class NursingStaff(RoleRequired):
+    """
+    Recording vitals and nursing notes: `NURSING_ROLES`.
+
+    It used to be `IsNurse`, which names the general nurse alone — so a
+    midwife could not take a blood pressure in her own ward. What each of them
+    then *reads back* is still scoped per role by the viewset's queryset; this
+    only says who may write one.
+    """
+    allowed_roles = NURSING_ROLES
 
 
 class WardStaff(RoleRequired):

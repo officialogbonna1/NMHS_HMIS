@@ -57,6 +57,11 @@ const PATHS = {
   // the bed's frame so the pair reads as the two ends of one stay, and the
   // arrow is what says which end.
   discharge: <><path d="M3 18.5v-9" /><path d="M3 14h9v4.5" /><path d="M12 14a3.4 3.4 0 0 0-3.4-3.4H7.8" /><circle cx="6.2" cy="8.4" r="1.6" /><path d="M15.5 9.5h6" /><path d="m18.5 6.5 3 3-3 3" /></>,
+  // Maternity: a mother's rounded abdomen in profile, with the child within.
+  // Deliberately not a heart (that reads as cardiology) and not `users`
+  // (that is Patients) — rule 49's point that two destinations must not wear
+  // one icon.
+  maternity: <><path d="M10 3.6a1.7 1.7 0 1 0 0 .1Z" /><path d="M10 7.6c-1.9 0-3 1.4-3 3.2V21" /><path d="M10 21v-5.2" /><path d="M13 12.6a4.2 4.2 0 1 1-2.9 7.2" /><circle cx="14.6" cy="16.2" r="1.2" /></>,
   // The completed register: a clipboard with a tick. Used where a record is
   // finished and filed rather than in progress — Discharged patients.
   clipboard: <><path d="M9 4.5H7A1.5 1.5 0 0 0 5.5 6v13A1.5 1.5 0 0 0 7 20.5h10a1.5 1.5 0 0 0 1.5-1.5V6A1.5 1.5 0 0 0 17 4.5h-2" /><rect x="9" y="2.8" width="6" height="3.4" rx="1" /><path d="m9.2 13.4 2.1 2.1 4.1-4.1" /></>,

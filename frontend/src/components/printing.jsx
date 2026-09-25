@@ -9,6 +9,11 @@ import {
   AdmissionSheet, VitalsRecordSheet, ClinicalSummarySheet, ConsultationNoteSheet,
   DischargeLetterSheet,
 } from "./DepartmentDocuments.jsx";
+import {
+  AncSummarySheet, LabourSheet, DeliveryNoteSheet, BirthRecordSheet,
+  PostpartumSummarySheet, MaternityDischargeLetterSheet, PregnancySummarySheet,
+  PartogramSheet,
+} from "./MaternityDocuments.jsx";
 
 /**
  * What "Print" means, decided by where you are standing.
@@ -57,6 +62,9 @@ const LAB = ["laboratory"];
 const IMAGING = ["radiology"];
 const EYE = ["optometrist", "ophthalmologist"];
 const WARD = ["ward_manager", "doctor", "nurse"];
+// Maternity's own paper. Mirrors MATERNITY_ROLES on the backend — the desk
+// reads the record but does not print a clinical document from it.
+const MATERNITY = ["doctor", "nurse", "maternity_nurse"];
 
 export const DOCUMENTS = {
   patient_card: {
@@ -169,6 +177,95 @@ export const DOCUMENTS = {
     ),
   },
 
+  // ---------------------------------------------------------- maternity
+  // Each of these needs the record it describes, so none of them is ever
+  // offered without one (`needs`), and none opens an empty sheet.
+  pregnancy_summary: {
+    label: "Maternity summary",
+    roles: MATERNITY,
+    needs: ["pregnancyId"],
+    render: (context, onClose) => (
+      <PregnancySummarySheet pregnancyId={context.pregnancyId} onClose={onClose} />
+    ),
+  },
+
+  partogram: {
+    label: "Partogram",
+    roles: MATERNITY,
+    needs: ["labourId"],
+    render: (context, onClose) => (
+      <PartogramSheet labourId={context.labourId} onClose={onClose} />
+    ),
+  },
+
+  anc_summary: {
+    label: "ANC summary",
+    roles: MATERNITY,
+    needs: ["pregnancyId"],
+    render: (context, onClose) => (
+      <AncSummarySheet pregnancyId={context.pregnancyId} onClose={onClose} />
+    ),
+  },
+
+  labour_sheet: {
+    label: "Labour sheet",
+    roles: MATERNITY,
+    needs: ["labourId"],
+    render: (context, onClose) => (
+      <LabourSheet labourId={context.labourId} onClose={onClose} />
+    ),
+  },
+
+  delivery_note: {
+    label: "Delivery note",
+    roles: MATERNITY,
+    needs: ["deliveryId"],
+    render: (context, onClose) => (
+      <DeliveryNoteSheet deliveryId={context.deliveryId} onClose={onClose} />
+    ),
+  },
+
+  birth_record: {
+    label: "Birth record",
+    roles: MATERNITY,
+    // One baby's record, printed from that baby's row — a delivery of twins
+    // would otherwise have to guess which one you meant.
+    needs: ["newborn"],
+    render: (context, onClose) => (
+      <BirthRecordSheet newborn={context.newborn} onClose={onClose} />
+    ),
+  },
+
+  postpartum_summary: {
+    label: "Postpartum summary",
+    roles: MATERNITY,
+    needs: ["deliveryId"],
+    render: (context, onClose) => (
+      <PostpartumSummarySheet deliveryId={context.deliveryId} onClose={onClose} />
+    ),
+  },
+
+  mother_discharge_letter: {
+    label: "Mother discharge letter",
+    roles: MATERNITY,
+    needs: ["deliveryId"],
+    render: (context, onClose) => (
+      <MaternityDischargeLetterSheet deliveryId={context.deliveryId} who="mother"
+                                     onClose={onClose} />
+    ),
+  },
+
+  newborn_discharge_letter: {
+    label: "Newborn discharge letter",
+    roles: MATERNITY,
+    needs: ["deliveryId", "newborn"],
+    render: (context, onClose) => (
+      <MaternityDischargeLetterSheet deliveryId={context.deliveryId}
+                                     newborn={context.newborn} who="newborn"
+                                     onClose={onClose} />
+    ),
+  },
+
   admission_slip: {
     label: "Admission slip",
     roles: WARD,
@@ -200,7 +297,10 @@ export const DOCUMENTS = {
   vitals_record: {
     label: "Observation record",
     description: "Readings and nursing notes",
-    roles: ["nurse", ...CLINICAL],
+    // The midwife takes the reading, so she prints it. One registry entry
+    // widened, not a maternity observation sheet — the document is the same
+    // `clinical.Vitals` history whichever ward it was recorded on.
+    roles: ["nurse", "maternity_nurse", ...CLINICAL],
     needs: ["patientId"],
     render: (context, onClose) => (
       <VitalsRecordSheet patientId={context.patientId} onClose={onClose} />
@@ -276,6 +376,9 @@ const ROLE_DEFAULT_DOCUMENTS = {
   accountant: ["invoice", "statement", "patient_card"],
   doctor: ["clinical_summary", "prescription"],
   nurse: ["vitals_record"],
+  // Her default is the observation record too; the maternity documents are
+  // offered from the workspace's own rows, where each has its record.
+  maternity_nurse: ["vitals_record"],
   pharmacist: ["dispensing_note", "prescription"],
   ward_manager: ["admission_slip"],
   laboratory: ["lab_request"],

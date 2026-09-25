@@ -39,6 +39,7 @@ from apps.accounts.permissions import ADMIN_ROLES
 ALWAYS = set(ADMIN_ROLES)
 
 D = "doctor"; N = "nurse"; R = "reception"; PH = "pharmacist"
+MN = "maternity_nurse"   # the midwife — maternity, and nothing else
 LAB = "laboratory"; RAD = "radiology"; OPT = "optometrist"; OPH = "ophthalmologist"
 CASH = "cashier"; ACC = "accountant"; WARD = "ward_manager"; INV = "inventory_manager"
 
@@ -89,7 +90,9 @@ REACHABLE = {
 
     # --- patient identity ------------------------------------------------
     # A name and a file number, not a chart. Reception gets demographics only.
-    "/api/patients/": [R, D, N, PH, LAB, RAD, OPT, OPH, CASH, ACC, WARD],
+    # The midwife looks a mother up like every other clinical role
+    # (PATIENT_LOOKUP_ROLES). Reading a name is not reading a chart.
+    "/api/patients/": [R, D, N, MN, PH, LAB, RAD, OPT, OPH, CASH, ACC, WARD],
 
     # --- the chart: the clinicians only (plus admin) ---------------------
     # CLINICIAN_ROLES — the general doctor and the eye doctor, each reaching
@@ -108,10 +111,15 @@ REACHABLE = {
     "/api/note-amendments/": [D, OPH],
 
     # --- nursing ---------------------------------------------------------
-    # Read by the clinicians; recorded by nurses alone (a POST is IsNurse).
-    "/api/vitals/": [D, N, OPH],
-    "/api/vitals/recorded-today/": [D, N, OPH],
-    "/api/nursing-notes/": [D, N, OPH],
+    # Read by the clinicians; recorded by `NURSING_ROLES` — the triage nurse
+    # and the midwife, who does the same job on the labour ward and could not
+    # take a blood pressure at all while this said `IsNurse`. What each of them
+    # reads *back* is still the viewset's queryset: the general nurse her own
+    # readings (rule 11, unchanged), the midwife and the clinicians the
+    # patients on their own list.
+    "/api/vitals/": [D, N, MN, OPH],
+    "/api/vitals/recorded-today/": [D, N, MN, OPH],
+    "/api/nursing-notes/": [D, N, MN, OPH],
 
     # --- workflow --------------------------------------------------------
     "/api/visits/": [R, D, N],
@@ -120,17 +128,69 @@ REACHABLE = {
     # service's category maps to — so an eye doctor can accept an eye
     # appointment. A nurse is absent: vitals is not a billing category, so a
     # nurse is routed a patient rather than booked one.
-    "/api/appointments/": [R, D, LAB, RAD, OPT, OPH],
+    # Maternity, and the line the front desk does not cross.
+    #
+    # Reception is on exactly four of these: the lookup (is she known, is she
+    # pregnant right now), the episode behind that answer, the ward's patient
+    # list and its staff list — plus the two configuration reads. That is the
+    # front desk's job, and it is where the front desk stops.
+    #
+    # Everything **clinical** is MATERNITY_ROLES alone: the encounter (a
+    # clinician's own summary of an attendance), the labour and its partogram,
+    # the delivery, the babies and the postpartum course. Reception used to
+    # read every one of them, which put a partogram on the front-desk screen.
+    "/api/maternity/lookup/": [R, D, N, MN],
+    "/api/pregnancies/": [R, D, N, MN],
+    # The ward's patient list — what the maternity picker opens onto. The
+    # scope is `patients.access.patient_queryset_for` and is the server's: a
+    # midwife reaches Maternity's patients and no others.
+    "/api/maternity/patients/": [R, D, N, MN],
+    # Who may be named as the responsible midwife. A name, not a record.
+    "/api/maternity/staff/": [R, D, N, MN],
+    # Putting a mother in Maternity's care and naming her midwife —
+    # MATERNITY_ASSIGN_ROLES for the writes (administration and the desk that
+    # already assigns a route), the desk group for the read. A maternity nurse
+    # is deliberately not a writer: claiming unassigned work is hers through
+    # the queue, handing a patient to a named colleague is not.
+    "/api/maternity/assignment/": [R, D, N, MN],
+    "/api/maternity-visit-types/": [R, D, N, MN],
+    "/api/maternity-options/": [R, D, N, MN],
+    "/api/maternity-encounters/": [D, N, MN],
+    # The reasons a maternity record may be corrected for, so the form never
+    # hard-codes them. A list of labels, read by everyone who may open the
+    # record; `may_amend` is what decides who may actually correct one.
+    # Reception is absent: it reads the pregnancy list (is she pregnant?) and
+    # corrects nothing, so it has no use for the reasons a correction is given
+    # for. The action falls to the viewset's write group, which is right.
+    "/api/pregnancies/amendment-reasons/": [D, N, MN],
+    "/api/maternity-encounters/amendment-reasons/": [D, N, MN],
+    "/api/labour-episodes/amendment-reasons/": [D, N, MN],
+    "/api/deliveries/amendment-reasons/": [D, N, MN],
+    "/api/labour-episodes/": [D, N, MN],
+    "/api/deliveries/": [D, N, MN],
+    "/api/newborns/": [D, N, MN],
+    # The midwife joined `PROVIDER_ROLES` when the hospital configured
+    # Maternity's price list: that list is "every role a bookable category
+    # maps to", Maternity became a billing category, and `PURPOSE_ROLE`
+    # already named her. She reads the queue *scoped to herself*
+    # (`filter(doctor=user)`) and still cannot create or edit one.
+    "/api/appointments/": [R, D, MN, LAB, RAD, OPT, OPH],
     # The booking form's own read: which units take appointments, what they
     # offer, at what fee, and who may be named. Reception books, so reception
     # reads it.
     "/api/appointments/booking-options/": [R],
-    "/api/patient-routes/": [R, D, N, LAB, RAD, OPT, OPH],
-    "/api/patient-routes/refer/": [R, D, N, LAB, RAD, OPT, OPH],
+    # The midwife joined these when `maternity` became a route purpose: rule
+    # 16's "extend PURPOSE_ROLE and the queue's list/start/complete
+    # permissions follow". `work_routes_for` is what scopes it — she lists
+    # maternity routes and nothing else — and the write actions here are
+    # refused by their own narrower groups (`refer` is CLINICIAN_ROLES,
+    # `send-to-doctor` is the general nurse's).
+    "/api/patient-routes/": [R, D, N, MN, LAB, RAD, OPT, OPH],
+    "/api/patient-routes/refer/": [R, D, N, MN, LAB, RAD, OPT, OPH],
     # The shape of a unit's report, read by whoever works the queue — it is a
     # field list, not a record.
-    "/api/patient-routes/report-fields/": [R, D, N, LAB, RAD, OPT, OPH],
-    "/api/patient-routes/send-to-doctor/": [R, D, N, LAB, RAD, OPT, OPH],
+    "/api/patient-routes/report-fields/": [R, D, N, MN, LAB, RAD, OPT, OPH],
+    "/api/patient-routes/send-to-doctor/": [R, D, N, MN, LAB, RAD, OPT, OPH],
 
     # --- the ward --------------------------------------------------------
     # Was IsAuthenticated on all five: a cashier could list every inpatient,

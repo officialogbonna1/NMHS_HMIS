@@ -1,4 +1,4 @@
-import { screen, waitFor } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -19,6 +19,7 @@ const DEPARTMENTS = [
   { id: 11, code: "consultation", name: "Consultation", is_active: true },
   { id: 12, code: "eye", name: "Eye Clinic", is_active: true },
   { id: 13, code: "laboratory", name: "Laboratory", is_active: true },
+  { id: 15, code: "maternity", name: "Maternity", is_active: true },
   { id: 14, code: "retired-unit", name: "Old Annexe", is_active: false },
 ];
 
@@ -27,6 +28,10 @@ const EYE_STAFF = [
   { id: 22, first_name: "Mary", last_name: "Smith", role: "optometrist" },
 ];
 const NURSES = [{ id: 31, first_name: "Ada", last_name: "Bello", role: "nurse" }];
+const MIDWIVES = [
+  { id: 41, first_name: "Grace", last_name: "Nwosu", role: "maternity_nurse" },
+  { id: 42, first_name: "Ada", last_name: "Okafor", role: "maternity_nurse" },
+];
 
 beforeEach(() => {
   vi.spyOn(api, "get").mockImplementation((url, config) => {
@@ -34,7 +39,8 @@ beforeEach(() => {
     if (url === "/patients/") return Promise.resolve({ data: [PATIENT] });
     if (url === "/users/") {
       const role = config?.params?.role;
-      const data = role === "nurse" ? NURSES : EYE_STAFF.filter((u) => u.role === role);
+      const byRole = { nurse: NURSES, maternity_nurse: MIDWIVES };
+      const data = byRole[role] ?? EYE_STAFF.filter((u) => u.role === role);
       return Promise.resolve({ data });
     }
     return Promise.resolve({ data: [] });
@@ -145,6 +151,58 @@ describe("the front desk routing a patient to Ophthalmology", () => {
     await user.click(screen.getByRole("button", { name: "Route patient" }));
 
     expect(await screen.findByText(/Ada Bello cannot take Eye clinic work\./))
+      .toBeInTheDocument();
+  });
+});
+
+
+// **Putting a mother in Maternity's care is this form**, not a maternity
+// assignment screen of its own. The department is what the ward sees her by;
+// naming a midwife is optional and narrows nothing.
+describe("the front desk routing a patient to Maternity", () => {
+  it("offers Maternity as somewhere to send the patient", async () => {
+    render();
+    await waitFor(() => expect(sendFor()).toBeInTheDocument());
+    expect([...sendFor().options].map((o) => o.textContent)).toContain("Maternity");
+  });
+
+  it("pairs it with the Maternity department, either way round", async () => {
+    const user = userEvent.setup();
+    render();
+    await waitFor(() => expect(department().options.length).toBeGreaterThan(1));
+
+    await user.selectOptions(sendFor(), "maternity");
+    expect(department()).toHaveValue("15");
+
+    await user.selectOptions(sendFor(), "vitals");
+    await user.selectOptions(department(), "15");
+    expect(sendFor()).toHaveValue("maternity");
+  });
+
+  it("offers midwives and nobody else", async () => {
+    const user = userEvent.setup();
+    render();
+    await waitFor(() => expect(sendFor()).toBeInTheDocument());
+    await user.selectOptions(sendFor(), "maternity");
+
+    const assign = await screen.findByLabelText(/Assign to maternity nurse/);
+    await waitFor(() => expect(assign.options.length).toBe(3));
+    expect([...assign.options].map((o) => o.textContent.trim())).toEqual([
+      "The maternity ward — every midwife sees her",
+      "Grace Nwosu — Maternity",
+      "Ada Okafor — Maternity",
+    ]);
+  });
+
+  it("says that naming nobody still puts her in front of the whole ward", async () => {
+    const user = userEvent.setup();
+    render();
+    await waitFor(() => expect(sendFor()).toBeInTheDocument());
+    await user.selectOptions(sendFor(), "maternity");
+
+    const assign = await screen.findByLabelText(/Assign to maternity nurse/);
+    expect(assign).toHaveValue("");
+    expect(within(assign).getByText("The maternity ward — every midwife sees her"))
       .toBeInTheDocument();
   });
 });

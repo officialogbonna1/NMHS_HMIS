@@ -7,6 +7,7 @@ import { useAuth } from "../auth/AuthContext.jsx";
 // The nav and the route guards read from the same groups, so a link can
 // never appear for a role that RequireAuth will then turn away.
 import {
+  MATERNITY_DESK_ROLES,
   ADMIN_ROLES, BED_BOARD_ROLES, BILLING_ROLES, CANCEL_ROLES, CLINICAL_ROLES, FINANCE_REPORT_ROLES,
   POS_HISTORY_ROLES, POS_ROLES, REFUND_ROLES, PATIENT_LOOKUP_ROLES, QUEUE_ROLES,
   hasRole,
@@ -34,6 +35,7 @@ const NAV_ITEMS = [
   ["/vitals", "Triage", "activity", VITALS_ROLES, "Clinical"],
   ["/send-to-doctor", "Send to Doctor", "handoff", VITALS_ROLES, "Clinical"],
   ["/refer", "Refer Patient", "share", CLINICAL_ROLES, "Clinical"],
+  ["/maternity", "Maternity", "maternity", MATERNITY_DESK_ROLES, "Clinical"],
   ["/appointments", "Appointments", "calendar", APPOINTMENT_ROLES, "Clinical"],
 
   // Each referral unit gets a station of its own, the way nursing has

@@ -5,20 +5,29 @@ import { Badge, Page, PageHeader, SearchInput } from "../components/ui.jsx";
 
 const ROLES = [
   ["admin", "Super Admin"], ["hospital_admin", "Hospital Admin"], ["doctor", "Doctor"], ["nurse", "Nurse"],
-  ["reception", "Reception"], ["pharmacist", "Pharmacist"], ["laboratory", "Laboratory Scientist"],
+  ["maternity_nurse", "Maternity"], ["reception", "Reception"], ["pharmacist", "Pharmacist"], ["laboratory", "Laboratory Scientist"],
   ["radiology", "Radiology Staff"], ["optometrist", "Optometrist"], ["ophthalmologist", "Ophthalmologist / Eye Doctor"],
   ["surgeon", "Surgeon"], ["anesthetist", "Anesthetist"], ["cashier", "Billing Officer / Cashier"],
   ["ward_manager", "Ward Manager"], ["records_officer", "Records Officer"], ["inventory_manager", "Inventory Manager"],
   ["accountant", "Accountant"], ["executive", "Management / Executive"], ["custom", "Custom role"],
 ];
 
-const emptyForm = { id: null, username: "", first_name: "", last_name: "", email: "", role: "reception", department: "", password: "", must_change_password: true };
+const emptyForm = { id: null, username: "", first_name: "", last_name: "", email: "", role: "reception", department: "", authorized_departments: [], password: "", must_change_password: true };
 
 export default function UsersAdmin() {
   const queryClient = useQueryClient();
   const [form, setForm] = useState(emptyForm);
   const [resetTarget, setResetTarget] = useState(null);
   const [search, setSearch] = useState("");
+
+  // The departments somebody can be posted to. Active ones only — the same
+  // list the server will accept, so the form never offers a choice that comes
+  // back 400.
+  const { data: departments } = useQuery({
+    queryKey: ["departments", "active"],
+    queryFn: () => api.get("/departments/", { params: { is_active: true } })
+      .then((r) => r.data.results ?? r.data),
+  });
 
   const { data: users, isLoading } = useQuery({
     // Searched on the server, over the same fields the API declares: staff
@@ -102,8 +111,11 @@ export default function UsersAdmin() {
             </select>
           </div>
           <div>
-            <label className="block text-sm font-medium mb-1">Department</label>
+            <label className="block text-sm font-medium mb-1">Primary department</label>
             <input value={form.department} onChange={(e) => setForm({ ...form, department: e.target.value })} className="w-full border rounded-md px-3 py-2" placeholder="e.g. Front Desk" />
+            <p className="mt-1 text-xs text-slate-600">
+              The label shown beside their name. It is not an authorisation.
+            </p>
           </div>
           {!form.id && (
             <div>
@@ -112,6 +124,50 @@ export default function UsersAdmin() {
             </div>
           )}
         </div>
+
+        {/* **Where this person may work.** Tick boxes rather than a
+            multi-select: a hospital has ten departments, and holding Ctrl to
+            add a second one is the interaction nobody discovers. Same
+            relation Django admin edits, so an administrator never has to
+            leave the application to post a doctor to a second ward. */}
+        <fieldset className="rounded-lg border border-slate-200 p-4">
+          <legend className="px-1 text-sm font-medium text-slate-800">
+            Authorized departments
+          </legend>
+          <p className="mb-3 text-xs text-slate-600">
+            Where this member of staff may work. Their role still decides what they may
+            do there — a doctor authorised for Maternity is a doctor in Maternity, not a
+            midwife.
+          </p>
+          <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+            {(departments ?? []).map((d) => {
+              const chosen = form.authorized_departments.includes(d.id);
+              return (
+                <label key={d.id} className="flex min-h-[44px] items-center gap-2 rounded-md border border-slate-200 px-3 py-2 text-sm text-slate-800 sm:min-h-[38px]">
+                  <input
+                    type="checkbox"
+                    // Named explicitly: the visible label truncates, and a
+                    // tick box whose name depends on how wide the column is
+                    // is one a screen reader cannot announce reliably.
+                    aria-label={d.name}
+                    checked={chosen}
+                    onChange={() => setForm({
+                      ...form,
+                      authorized_departments: chosen
+                        ? form.authorized_departments.filter((id) => id !== d.id)
+                        : [...form.authorized_departments, d.id],
+                    })}
+                    className="h-4 w-4 shrink-0 rounded border-slate-300 text-brand-600"
+                  />
+                  <span className="min-w-0 truncate">{d.name}</span>
+                </label>
+              );
+            })}
+            {(departments ?? []).length === 0 && (
+              <p className="text-sm text-slate-700">No departments configured yet.</p>
+            )}
+          </div>
+        </fieldset>
 
         {save.isError && <p className="text-sm text-red-600">{save.error?.message || "Could not save this user."}</p>}
 
@@ -144,12 +200,15 @@ export default function UsersAdmin() {
                 <span aria-hidden="true" className="text-slate-400">·</span>
                 <span className="capitalize">{u.role.replaceAll("_", " ")}</span>
                 {u.department && <><span aria-hidden="true" className="text-slate-400">·</span><span>{u.department}</span></>}
+                {(u.authorized_department_names ?? []).map((name) => (
+                  <Badge key={name} tone="brand">{name}</Badge>
+                ))}
                 {!u.is_active && <Badge tone="danger">Disabled</Badge>}
               </p>
             </div>
             <div className="flex shrink-0 flex-wrap gap-1">
               <button
-                onClick={() => setForm({ id: u.id, username: u.username, first_name: u.first_name, last_name: u.last_name, email: u.email, role: u.role, department: u.department, password: "", must_change_password: u.must_change_password })}
+                onClick={() => setForm({ id: u.id, username: u.username, first_name: u.first_name, last_name: u.last_name, email: u.email, role: u.role, department: u.department, authorized_departments: u.authorized_departments ?? [], password: "", must_change_password: u.must_change_password })}
                 className="min-h-[36px] rounded-lg px-3 py-1.5 text-sm font-medium text-brand-700 transition hover:bg-brand-50"
               >
                 Edit

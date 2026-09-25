@@ -27,7 +27,9 @@ from . import services as workflow_services
 from .models import Visit, PatientRoute
 from .serializers import VisitSerializer, PatientRouteSerializer
 from apps.accounts.models import User
-from apps.accounts.permissions import CLINICIAN_ROLES, IsReception, RoleRequired
+from apps.accounts.departments import authorized_departments, staff_of, works_in
+from apps.accounts.permissions import (CLINICIAN_ROLES, IsReception, NURSING_ROLES,
+                                       RoleRequired)
 
 
 # What a route is for decides who it is waiting on. Department membership is
@@ -42,6 +44,14 @@ PURPOSE_ROLE = {
     # An eye referral is worked by whichever of the two is on — sending it to
     # one role only strands the patient when that person is off.
     "eye": ["optometrist", "ophthalmologist"],
+    # The labour ward is the midwife's. Deliberately *only* hers, although
+    # MATERNITY_ROLES is wider: this map decides whose **queue** unclaimed
+    # work lands in and who may be named on a route, and putting every nurse
+    # and doctor in the hospital on it would fill the triage queue with
+    # maternity routes and offer the front desk a cashier-shaped list of
+    # assignees. A maternity doctor still works maternity through the
+    # maternity API, which MATERNITY_ROLES gates; rule 56 is unchanged.
+    "maternity": ["maternity_nurse"],
     "investigation": ["laboratory"],
 }
 ROLE_PURPOSES = {}
@@ -67,6 +77,21 @@ ROLE_STATION_PURPOSE = {
     "ophthalmologist": "eye",
 }
 STATION_ROLES = set(ROLE_STATION_PURPOSE)
+
+# Roles that work a **shared board** rather than a personal queue (rule 54):
+# everything sent to the unit, claimed or not, because those units share a
+# room and a list and a request that vanished the moment somebody pressed
+# Accept left the rest of them guessing.
+#
+# The stations, plus the labour ward. A maternity route claimed by one midwife
+# must still be visible to the others — a ward cannot depend on who happened
+# to press the button first. It is kept apart from STATION_ROLES on purpose:
+# that set also carries a station page, the self-referral rule and the ability
+# to order priced services on a referral, and none of those is the midwife's.
+#
+# **Seeing is not doing**: `access.may_work` is unchanged, so start, complete
+# and record-result still belong to whoever holds the route.
+BOARD_ROLES = STATION_ROLES | {"maternity_nurse"}
 
 
 def _display_name(user):
@@ -132,7 +157,7 @@ def route_targets(route):
         if roles is None:
             # A purpose with no role of its own ("other"). Department
             # membership is the only signal left.
-            targets = list(route.department.staff.filter(is_active=True))
+            targets = list(staff_of(route.department).filter(is_active=True))
         elif set(roles) & POOLED_ROLES:
             # Unassigned work goes to everyone who can pick it up, not only
             # the staff someone remembered to add to the department.
@@ -344,6 +369,8 @@ def _notify_result(route, author):
 # that can act on it, not the generic queue — same reason a nurse is sent to
 # /vitals. Keep in step with the <Route path=…> guards in main.jsx.
 PURPOSE_STATION = {
+    # Her station is the maternity workspace, not the shared queue.
+    "maternity": "/maternity",
     "laboratory": "/laboratory",
     "ultrasound": "/ultrasound",
     "eye": "/eye",
@@ -450,15 +477,13 @@ def work_routes_for(user, statuses=("queued", "in_progress"), include_unit=False
     # that map to no particular role.
     my_purposes = ROLE_PURPOSES.get(user.role, [])
     unclaimed_for_me = models.Q(assigned_to__isnull=True, purpose__in=my_purposes)
-    if include_unit and user.role in STATION_ROLES:
+    if include_unit and user.role in BOARD_ROLES:
         # The unit's board: everything sent to this unit, claimed or not.
         unclaimed_for_me = models.Q(purpose__in=my_purposes)
     unmapped = models.Q(assigned_to__isnull=True) & ~models.Q(purpose__in=list(PURPOSE_ROLE))
-    by_department = unmapped & (
-        models.Q(department__staff=user)
-        | models.Q(department__name__iexact=user.department)
-        | models.Q(department__code__iexact=user.department)
-    )
+    # The departments this person is authorised in — one helper, so the queue
+    # and `access.may_work` cannot disagree about where somebody works.
+    by_department = unmapped & models.Q(department__in=authorized_departments(user))
     return routes.filter(
         models.Q(assigned_to=user) | unclaimed_for_me | by_department
     ).distinct()
@@ -556,7 +581,11 @@ class PatientRouteViewSet(viewsets.ModelViewSet):
             # nobody can clear.
             return [RoleRequired(WORKING_ROLES)]
         if self.action in {"forward", "send_to_doctor"}:
-            return [RoleRequired(["nurse"])]
+            # The midwife hands a mother to the doctor exactly the way the
+            # triage nurse hands over a patient — same action, same
+            # `_queue_consultation`, same notification. There is no maternity
+            # hand-off, and there must not be one.
+            return [RoleRequired(NURSING_ROLES)]
         if self.action == "refer":
             # The eye doctor sends a patient to the lab or for a scan the same
             # way a general doctor does.
@@ -600,7 +629,7 @@ class PatientRouteViewSet(viewsets.ModelViewSet):
             user.is_admin
             or route.assigned_to_id == user.id
             or route.purpose in ROLE_PURPOSES.get(user.role, [])
-            or route.department.staff.filter(pk=user.pk).exists()
+            or works_in(user, route.department)
         )
         if not eligible:
             return Response({"detail": "This patient was not sent to you."}, status=drf_status.HTTP_403_FORBIDDEN)
@@ -1145,6 +1174,8 @@ class DashboardView(APIView):
     def _cards_for(self, user, routes, today):
         # The inbox only — the same number the bell shows.
         unread = Notification.objects.for_user(user).filter(is_read=False).active().count()
+        if user.role == "maternity_nurse":
+            return self._maternity_cards(user, today, unread)
         if user.role == "nurse":
             return self._nurse_cards(user, routes, today, unread)
         if user.role in {"cashier", "accountant"}:
@@ -1252,6 +1283,65 @@ class DashboardView(APIView):
             {"key": "refunded_today", "label": "Refunded today",
              "value": total(adjusted_today.filter(kind="refund")),
              "format": "currency", "href": "/transactions", "tone": "slate"},
+            {"key": "unread", "label": "Unread notifications", "value": unread,
+             "href": "/notifications", "tone": "slate"},
+        ]
+
+    def _maternity_cards(self, user, today, unread):
+        """
+        The labour ward's day, not the triage queue.
+
+        A maternity nurse is never routed a patient, so the generic "My queue"
+        card would read zero forever — the same reason the cash desk got its
+        own set. Every card opens `/maternity`, which is the one page she
+        works from.
+
+        The counts are the Phase 2 records themselves: a delivery's babies are
+        counted as `Newborn` rows, so a set of twins counts two rather than the
+        one a "deliveries × 1" assumption would give.
+        """
+        from apps.maternity.models import (Delivery, LabourEpisode, Newborn,
+                                           PostpartumVisit, Pregnancy)
+
+        week_ago = today - timedelta(days=7)
+        in_labour = LabourEpisode.objects.filter(status="in_progress")
+        # **The ward's patients, and mine.** Both, because they are different
+        # questions and only one of them is a workload: the department list is
+        # everybody she may work with — assigned or not, hers or a
+        # colleague's — and "Assigned to me" is who she is answerable for.
+        # Individual assignment is never a prerequisite for the first number,
+        # which is the whole point of the ward being able to see its own
+        # patients at 3 a.m.
+        return [
+            {"key": "maternity_department_patients", "label": "Maternity department",
+             "value": patient_queryset_for(user).count(),
+             "href": "/maternity", "tone": "blue"},
+            {"key": "maternity_assigned_to_me", "label": "Assigned to me",
+             "value": Patient.objects.filter(
+                 visits__routes__assigned_to=user,
+                 visits__routes__purpose="maternity",
+                 visits__routes__status__in=["queued", "in_progress"],
+             ).distinct().count(),
+             "href": "/maternity", "tone": "violet"},
+            {"key": "maternity_active_pregnancies", "label": "Active pregnancies",
+             "value": Pregnancy.objects.filter(status="active").count(),
+             "href": "/maternity", "tone": "violet"},
+            {"key": "maternity_in_labour", "label": "In labour now",
+             "value": in_labour.count(), "href": "/maternity", "tone": "amber"},
+            # Where she is lying is read through the admission (rule 56), so
+            # "admitted" is a labour that has one rather than a second bed board.
+            {"key": "maternity_admitted", "label": "Admitted in labour",
+             "value": in_labour.filter(admission__status="admitted").count(),
+             "href": "/maternity", "tone": "blue"},
+            {"key": "maternity_deliveries_today", "label": "Deliveries today",
+             "value": Delivery.objects.filter(delivered_at__date=today).count(),
+             "href": "/maternity", "tone": "green"},
+            {"key": "maternity_newborns_week", "label": "Babies born this week",
+             "value": Newborn.objects.filter(delivery__delivered_at__date__gte=week_ago).count(),
+             "href": "/maternity", "tone": "green"},
+            {"key": "maternity_postpartum", "label": "Postpartum checks today",
+             "value": PostpartumVisit.objects.filter(seen_at__date=today).count(),
+             "href": "/maternity", "tone": "slate"},
             {"key": "unread", "label": "Unread notifications", "value": unread,
              "href": "/notifications", "tone": "slate"},
         ]

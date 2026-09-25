@@ -10,8 +10,10 @@ from django.utils import timezone
 from .models import Vitals, ConsultationNote, ConsultationNoteAmendment, NursingNote
 from . import serializers
 from .serializers import may_amend
-from apps.accounts.permissions import CLINICIAN_ROLES, ClinicalRecordAccess, ClinicianOrNurse, IsNurse
-from apps.patients.access import doctor_patient_q, doctors_for_patient, may_act_for
+from apps.accounts.permissions import (CLINICIAN_ROLES, ClinicalRecordAccess,
+                                       ClinicianOrNurse, IsNurse, NursingStaff)
+from apps.patients.access import (doctor_patient_q, doctors_for_patient, may_act_for,
+                                  patient_queryset_for)
 from . import eye_exam
 from . import services as note_services
 from apps.core.services import audit_event, notify
@@ -93,16 +95,23 @@ class VitalsViewSet(viewsets.ModelViewSet):
         if user.role in {"admin", "hospital_admin"}:
             return Vitals.objects.all()
         if user.role == "nurse":
-            # A nurse can review their own readings, not the whole chart.
+            # A nurse can review their own readings, not the whole chart
+            # (rule 11). Unchanged.
             return Vitals.objects.filter(recorded_by=user)
-        # A doctor reads the vitals of every patient assigned to them —
-        # whoever took them — so the reading a nurse just recorded is on the
-        # chart by the time the patient walks in.
-        return Vitals.objects.filter(doctor_patient_q(user, "patient")).distinct()
+        # Everyone else reads the vitals of the patients on their own list,
+        # whoever took them — so the reading a nurse recorded this morning is
+        # on the chart by the time the patient walks in.
+        #
+        # `patient_queryset_for` rather than `doctor_patient_q`: it is the same
+        # set for a doctor **plus** the maternity team's, which is what lets a
+        # midwife read back the history of a mother she is holding and a
+        # maternity doctor read one taken by a colleague. One rule, the one the
+        # chart and the patient list already use.
+        return Vitals.objects.filter(patient__in=patient_queryset_for(user)).distinct()
 
     def get_permissions(self):
         if self.action == "create":
-            return [IsNurse()]
+            return [NursingStaff()]
         return [ClinicianOrNurse()]
 
     def perform_create(self, serializer):
@@ -228,11 +237,11 @@ class NursingNoteViewSet(viewsets.ModelViewSet):
             return base
         if user.role == "nurse":
             return base.filter(nurse=user)
-        return base.filter(doctor_patient_q(user, "patient")).distinct()
+        return base.filter(patient__in=patient_queryset_for(user)).distinct()
 
     def get_permissions(self):
         if self.action == "create":
-            return [IsNurse()]
+            return [NursingStaff()]
         return [ClinicianOrNurse()]
 
     def perform_create(self, serializer):

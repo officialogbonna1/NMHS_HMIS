@@ -24,20 +24,34 @@ from apps.departments.models import Department
 from apps.patients.models import Patient
 
 EXPECTED_CODES = ["reception", "consultation", "laboratory", "pharmacy",
-                  "radiology", "eye", "theatre"]
+                  "radiology", "eye", "theatre",
+                  # Maternity joined when the hospital configured its price
+                  # list — see the note in `billing/departments.py`.
+                  "maternity"]
 
 # A migration module's name starts with a digit, so it is reached through
 # importlib rather than a plain import.
 SEED_MIGRATION = "apps.departments.migrations.0002_seed_revenue_departments"
+# Maternity is seeded by its own migration, written when it was a department
+# that raised no charges. It stays there rather than being back-dated into
+# `0002`, which is applied history on every deployment — so the drift test
+# below reads both, which is what the seeded literals actually are.
+MATERNITY_SEED_MIGRATION = "apps.departments.migrations.0006_seed_maternity_department"
 
 
 def seed_module():
     return importlib.import_module(SEED_MIGRATION)
 
 
+def seeded_literals():
+    """Every (code, name) the migrations actually seed, wherever they seed it."""
+    maternity = importlib.import_module(MATERNITY_SEED_MIGRATION)
+    return seed_module().REVENUE_DEPARTMENTS + [(maternity.CODE, maternity.NAME)]
+
+
 class SeededRegistryTests(TestCase):
     """
-    The seven revenue units exist on any database the migrations have run —
+    Every revenue unit exists on any database the migrations have run —
     which, in a test, is every one of them. That is the point: a fresh install
     now arrives with somewhere to attribute money to.
     """
@@ -53,7 +67,7 @@ class SeededRegistryTests(TestCase):
         self.assertEqual(seeded.count(), len(EXPECTED_CODES))
         self.assertEqual(seeded.filter(is_active=True).count(), len(EXPECTED_CODES))
 
-    def test_the_registry_codes_are_the_seven_expected(self):
+    def test_the_registry_codes_are_the_ones_expected(self):
         self.assertEqual([code for code, _, _ in REVENUE_DEPARTMENTS], EXPECTED_CODES)
 
 
@@ -78,9 +92,10 @@ class ClinicalDepartmentTests(TestCase):
 
     def test_it_is_not_a_revenue_department(self):
         self.assertNotIn("clinicals", [code for code, _, _ in REVENUE_DEPARTMENTS])
-        # And the seven stay seven, which is what stops it being added here
+        # And the registry stays the subset that takes money, which is what
+        # stops a unit being added here just for having a queue.
         # the next time somebody wants a department in a dropdown.
-        self.assertEqual(len(REVENUE_DEPARTMENTS), 7)
+        self.assertEqual(len(REVENUE_DEPARTMENTS), len(EXPECTED_CODES))
 
     def test_a_vitals_route_can_name_it(self):
         """The reason it exists: the front desk can file nursing work truthfully."""
@@ -136,9 +151,9 @@ class MigrationLiteralTests(TestCase):
 
     def test_codes_and_names_match_the_application_registry(self):
         self.assertEqual(
-            seed_module().REVENUE_DEPARTMENTS,
-            [(code, name) for code, name, _ in REVENUE_DEPARTMENTS],
-            "the seed migration and billing.departments have drifted apart",
+            sorted(seeded_literals()),
+            sorted((code, name) for code, name, _ in REVENUE_DEPARTMENTS),
+            "the seed migrations and billing.departments have drifted apart",
         )
 
 

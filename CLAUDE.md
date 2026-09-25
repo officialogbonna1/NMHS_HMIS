@@ -2027,6 +2027,336 @@ person explicitly asks for something different.
    `frontend/src/components/appointmentBooking.test.js` and
    `frontend/src/pages/Appointments.booking.test.jsx`.
 
+56. **Patient ≠ Pregnancy ≠ Encounter.** A woman is registered once, for
+   life; a pregnancy is an episode she has one of at a time and several of
+   over the years; an encounter is one attendance inside one of those
+   episodes. Returning to the clinic creates an **encounter** — never a
+   patient, never a pregnancy — and that is the whole of what `apps/maternity`
+   exists to make impossible to get wrong.
+
+   **Three models, and nothing else.** `Pregnancy`, `MaternityEncounter` and
+   the configurable `MaternityVisitType`. Everything clinical underneath is
+   the hospital she is already in: `Vitals` for triage, `Visit` and
+   `PatientRoute` for the attendance and the queue, `LabOrder` and the imaging
+   referral for investigations, `Charge` for the money, `Admission`/`Ward`/
+   `Bed` for labour, `Appointment` for the booking, plus the existing
+   notifications, audit, printing and RBAC. `test_maternity.py` asserts the
+   app's model list is exactly those three, so a `MaternityVitals`,
+   `MaternityLabTest` or `MaternityBilling` fails the suite by name.
+
+   **One active pregnancy per woman**, as a partial `UniqueConstraint` on
+   `OPEN_STATUSES` — rule 55's constraint applied to the episode.
+   `start_pregnancy` refuses a second one readably
+   (`pregnancy_already_active`) and the database refuses it under a race.
+   `number` is issued per patient and never reused; `reference` is
+   `PRG-000123`, derived off the primary key the way `DCH-`, `ADM-` and `TRF-`
+   already are rather than stored twice.
+
+   **A visit is a row, not an edit.** `MaternityEncounter` has no PUT and no
+   DELETE, `pregnancy`/`visit_type`/`visit` are read-only after it is opened,
+   and nothing copies an earlier visit's findings into today's — so ANC 1
+   still says what was found at ANC 1 after ANC 4 has happened, and a visit
+   can never be moved between two pregnancies. Gestation is **derived** from
+   the pregnancy's LMP on the day of the visit rather than stored per row, so
+   a dating scan that corrects the LMP corrects every gestation with it; with
+   neither LMP nor EDD it answers nothing rather than guessing (rule 20's
+   direction to fail in).
+
+   **What kind of attendance it is, is configuration.** `MaternityVisitType`
+   is seeded by `maternity/0002` with the set a maternity hospital starts with
+   — booking, ANC follow-up, consultation, labour assessment, emergency,
+   postnatal, follow-up — adopting by code and never overwriting an edited
+   row, and retired rather than deleted because encounters `PROTECT` it. This
+   is what keeps labour and an emergency from being filed as ANC follow-ups.
+
+   **`GET /api/maternity/lookup/` is the returning-patient answer**, and the
+   *server* gives it: is she known, is she pregnant right now, what has she
+   been through, and therefore which of Continue / Start exists. Reception is
+   never left to work that out from memory, and because the server decides it,
+   the screen cannot offer "start a new pregnancy" to a woman already in one.
+   `components/maternityPatient.js` is the one frontend reading of that shape.
+
+   **Maternity is a department and not a revenue one** — seeded by
+   `departments/0006` on `departments/0003`'s reasoning (rule 44). Its money
+   is raised by services that already have departments of their own: an ANC
+   consultation is a Consultation charge, a scan is Radiology, a test is
+   Laboratory. `REVENUE_DEPARTMENTS` stays at seven.
+
+   **Who works it**: `MATERNITY_ROLES` (doctor, nurse, maternity_nurse) write;
+   `MATERNITY_DESK_ROLES` adds reception, which looks a returning mother up
+   and reads no chart; `MATERNITY_ASSIGN_ROLES` (administration + reception)
+   is who may put her in the department and name her midwife. A midwife is a
+   `nurse` in this hospital's role list, so
+   **no role was added** and no Django group exists. That means *every* nurse
+   and doctor may work maternity — deliberate, and the same breadth every
+   other unit already has (any nurse records vitals for any patient). The
+   group buys nothing else: a maternity nurse still cannot open a chart, read
+   the finance report, touch stock or adjust money, which
+   `MaternityGrantsNothingElse` holds. Narrowing it to the Maternity
+   department's own `staff` list was considered and **not** done — an empty
+   staff list would strand the unit, which is rule 16's warning.
+
+   **The desk sees the decision; only the control is gated.** Reception meets
+   her at the door, so it reads which of Continue / Start applies and is told
+   who performs it, rather than being shown nothing — the front desk deciding
+   that from memory is exactly what the lookup exists to remove. The API
+   refuses its writes either way. Held by
+   `apps/maternity/tests/test_maternity.py`,
+   `frontend/src/components/maternityPatient.test.js` and
+   `frontend/src/pages/Maternity.test.jsx`.
+
+   **Phase 2 — labour → delivery → newborn(s) → postpartum.** Six more models,
+   the same spine, and nothing that duplicates a hospital system.
+
+   - **`LabourEpisode` is an episode, not an observation**, and
+     `LabourObservation` is the partogram — a row per check, with its own time
+     and author, so the 4 a.m. reading still says what it said after the 6 a.m.
+     one. A single `cervical_dilation_cm` column on the episode would be
+     overwritten at every check and the partogram would be gone by morning.
+     The stage follows the dilation **forwards only**: a lower reading is
+     measurement noise, not labour reversing. One open labour per pregnancy,
+     held by a partial `UniqueConstraint`.
+   - **The ward and the bed are not stored.** She is admitted through the
+     hospital's own `inpatient.Admission`, which names the bed, and the bed
+     names the ward — so `admission` is the one link and `ward` / `bed` are
+     read through it. A bed transfer moves the labour record with it without
+     maternity being told, and `test_there_are_no_ward_or_bed_columns_on_the_labour`
+     keeps it that way.
+   - **`Delivery` is `OneToOne` with the labour, and twins are two `Newborn`
+     rows against it** — never two deliveries, never two pregnancies. That is
+     the single most important thing these models say, and the database says
+     it rather than a convention. `birth_order` is unique per delivery, so a
+     set of twins cannot become one row saved twice. A baby is **not** a
+     `Patient`: `Newborn.patient` is the nullable link for once the front desk
+     has registered them, so a birth record never invents a second patient row.
+   - **`PostpartumVisit` is a course of care**, several rows per delivery, and
+     her blood pressure is not a column on it — `vitals` points at the
+     `clinical.Vitals` row taken at the existing triage station.
+   - **`MaternityOption` is one lookup table, not five.** Delivery types,
+     outcomes, complications, newborn states, maternal conditions and family
+     planning all have the same four columns, and `kind` is what separates
+     them. Seeded by `maternity/0004`, adopt-by-code and never overwriting;
+     retired rather than deleted, because deliveries `PROTECT` the words they
+     used. It holds no clinical record and no link to a patient — a vocabulary,
+     not the catch-all the encounter must never become.
+   - **The bell reaches whoever is holding her** — `clinicians_holding()` is
+     the maternity reading of rule 14: the clinicians who have seen her *in
+     this pregnancy*, plus the doctor attending her admission, never the
+     person who just acted and never every nurse in the hospital.
+   - **Eight printed documents, all on the existing `PrintSheet`** —
+     `MaternityDocuments.jsx` (ANC summary, labour sheet, delivery note, birth
+     record, postpartum summary, and the mother's and newborn's discharge
+     letters), registered in the one `printing.jsx` registry with
+     `roles: MATERNITY` and a `needs` that keeps a sheet from ever opening
+     empty. The birth record and the newborn letter print **from the baby's
+     own row**, because a delivery of twins would otherwise have to guess
+     which you meant.
+   - **Discharge stays the hospital's.** `inpatient.services.discharge_patient`
+     is untouched and is what ends the stay; maternity adds the two letters and
+     no second discharge path.
+
+   **Phase 3 — the midwife, her dashboard and the workspace.**
+
+   - **`maternity_nurse` is a role of its own**, added to `accounts.Role` with
+     the existing conventions — so the labour ward is hers without every nurse
+     in the hospital inheriting it, which is the breadth this rule previously
+     recorded as known. She joins `MATERNITY_ROLES` and `PATIENT_LOOKUP_ROLES`
+     and **nothing else**: no chart, no money, no other department, no Django
+     admin, and triage stays the general nurse's. `test_maternity_nurse.py`'s
+     `WhatSheMayNotDo` holds all of it, and `test_api_permissions` fails in
+     both directions on any drift. No capability framework was invented — the
+     role is a row in the same enum every other role is.
+   - **Her dashboard is the labour ward** (`_maternity_cards`): active
+     pregnancies, in labour now, admitted in labour, deliveries today, babies
+     this week, postpartum today. A midwife is never routed a patient, so the
+     vitals cards would read zero forever — the reason the cash desk has its
+     own set too (rule 29's "a card opens the page it counts": every one of
+     hers opens `/maternity`). **Counts are the rows themselves**, so a set of
+     twins counts two babies rather than one delivery.
+   - **The workspace is six tabs over one pregnancy** — Overview · ANC ·
+     Labour · Deliveries · Postpartum · Newborns — on the application's own
+     `TabBar`. It was a stack, and by the time a woman had delivered the
+     midwife had to scroll past the ANC course and the partogram to reach
+     today. Every tab reads the Phase 2 records; there is no second store.
+   - **A multiple birth is shown as what it is.** The Deliveries tab states
+     "N newborns" and the Newborns tab renders **one card per baby**, each with
+     its own birth order, weight, Apgar and status — never merged, never only
+     the first — and each carries its own birth-record and discharge-letter
+     print action, because a delivery of twins would otherwise have to guess
+     which baby you meant. Nothing caps it at two: quadruplets are four rows.
+   - **Eight printed documents**, `roles: MATERNITY`, each needing the record
+     it describes. Phase 2's six plus the **maternity summary** (the whole
+     pregnancy on one sheet) and the **partogram** on its own, because that is
+     the sheet filled in at the bedside. The delivery note carries every baby.
+
+   **Phase 3.1 — who sees a maternity patient, and who is responsible for
+   her.** Two questions, and confusing them is how a ward goes blind at 3 a.m.
+
+   - **The department confers visibility; the nurse is only responsibility.**
+     A patient is Maternity's because the front desk filed a `PatientRoute`
+     against the Maternity department — the existing mechanism, reached from
+     the existing `PatientQueue` form, with `purpose="maternity"` seeded into
+     `PURPOSE_ROLE` (the midwife alone, so the triage queue is not filled with
+     maternity routes and the desk is not offered an assignee the server then
+     refuses). `assigned_to` is who is **answerable** for her, it is optional,
+     and it narrows nothing: `patients.access.maternity_patient_q` takes **no
+     user**, so every authorised midwife sees every Maternity patient whether
+     she is assigned, unassigned, or a colleague's. There is no maternity
+     assignment table, no `Patient.department` column and no second RBAC.
+   - **`maternity_nurse` had no entry in `patient_queryset_for` at all**, so
+     it fell through to `none()` and her patient picker was permanently empty
+     — which is what made the desk look as though it needed a hospital number
+     typed in full and Enter pressed. The fix is the scoping rule, not the
+     control. She now reaches Maternity's patients and **no others**.
+   - **`GET /api/maternity/patients/`** is what the picker opens onto:
+     `patient_queryset_for` first (the security rule, unchanged), the
+     maternity filter second, `?search=` through the same request, and rows
+     carrying the pregnancy number, gestation and responsible midwife so two
+     mothers on a ward list can be told apart. `?scope=all` drops the
+     maternity filter for the desk that has to find a woman not on the ward
+     *yet* — for a midwife it returns the identical set, which is the proof
+     that scoping is the server's. Nothing is filtered in the browser.
+   - **Reception finds her and reads no chart.** The desk keeps the lookup,
+     the episode behind it, the ward's patient and staff lists, and its own
+     registration and routing — and is now refused the encounter, the labour,
+     the partogram, the delivery, the newborns, the postpartum course and the
+     timeline, all of which answered **200** to it before. `PregnancySerializer`
+     drops `notes`, `gravida` and `para` for anyone outside `MATERNITY_ROLES`,
+     so the one payload the desk legitimately reads carries no clinical
+     commentary either. The page does not merely hide the workspace, it never
+     requests it.
+   - **Assignment is restricted, and a midwife is not an assigner.**
+     `MATERNITY_ASSIGN_ROLES` is administration plus reception. Claiming
+     unassigned work is already hers through the queue's `accept`; handing a
+     patient to a *named* colleague is the desk's. `POST
+     /api/maternity/assignment/` puts her in the department (idempotent),
+     `PATCH` changes only the midwife and **never** the department —
+     transferring her out is the existing routing workflow and a decision of
+     its own. Both write `audit_event` (`maternity.department_assigned`,
+     `maternity.nurse_assigned`, the latter naming previous and new), and
+     naming somebody tells her alone.
+   - **`GET /api/maternity/staff/`** is who may be named: the role, plus the
+     Maternity department's own `staff` who work maternity — additive, because
+     rule 16's warning is that an unfilled staff list strands the unit. Never
+     every user with a nurse-shaped role.
+   - **The ward shares a board** (rule 54): `BOARD_ROLES` is `STATION_ROLES`
+     plus the midwife, so a maternity route a colleague has claimed is still
+     *visible* to the rest of the ward. Kept apart from `STATION_ROLES`
+     deliberately — that set also carries a station page, the self-referral
+     rule and the ability to order priced services, and none of those is
+     hers. Seeing is still not doing: `access.may_work` is unchanged.
+   - **The dashboard keeps both numbers** — "Maternity department" (everybody
+     she may work with) beside "Assigned to me" — because one figure would
+     make individual assignment look like a prerequisite for the other.
+
+   **Phase 3.2 — the assigned doctor, and what an assignment is *not*.**
+   Maternity is a team workspace. Getting that wrong turns two label fields
+   into an access-control list and hides a mother from the ward.
+
+   - **The department is the team; the two assignments are responsibility.**
+     `Department = Maternity` decides who may see and work her;
+     `PatientRoute.assigned_to` is the responsible **midwife** and
+     `Visit.attending_doctor` is the responsible **doctor** — the column that
+     has always meant exactly that, so no table, no model and no migration
+     were added for it. Both are optional and neither narrows anything: the
+     patient must not vanish from the ward because a colleague's name is on
+     her, which is precisely what `doctor_patient_q` alone did.
+   - **`access.in_maternity_team` is how somebody becomes authorised**, and it
+     is the hospital's existing mechanism rather than a new one: the
+     `maternity_nurse` role, or membership of the Maternity `Department` (its
+     `staff` list, or the `user.department` text beside it) — the same clause
+     `nurse_patient_q` and `work_routes_for` have always used. A doctor becomes
+     a maternity doctor by being put on Maternity's staff, the way a doctor
+     becomes a theatre doctor. **Deliberately not "every doctor"**: an
+     unrelated doctor gains no patient from a mother being in Maternity.
+     `patient_queryset_for` reads it for `doctor` and for `nurse`; the eye
+     doctor is untouched.
+   - **The assigned person is reached by the rule that already existed.**
+     Naming a doctor writes `Visit.attending_doctor`, which `doctor_patient_q`
+     already reads — so there is no `if assigned_doctor == user` anywhere, and
+     an assignment is never the gate.
+   - **Three decisions, three calls.** `POST /api/maternity/assignment/` puts
+     her in the department; `PATCH` changes **exactly one** of `nurse` /
+     `doctor` and is refused outright when a body names both
+     (`one_assignment_at_a_time`), because a call that moved both would make
+     "change the midwife" capable of silently reassigning the doctor. Neither
+     touches the department. Each writes its own `AuditLog` row naming the
+     person before and after, and tells the person named.
+   - **One roster per column.** `maternity_nurses()` and `maternity_doctors()`
+     (`/api/maternity/staff/?for=`), so a doctor cannot be filed as the
+     responsible midwife or the reverse. The doctor roster falls back to every
+     active doctor where nobody is on Maternity's staff — rule 16's "an empty
+     staff list strands the unit" — and that fallback widens *who may be
+     named*, never *who sees the ward*.
+   - **What was deliberately not done**: row-level scoping of the maternity
+     viewsets. It was written and reverted. `MATERNITY_ROLES` is doctor +
+     nurse + maternity_nurse with no per-row filter, which rule 56 records as a
+     deliberate breadth ("a hospital this size covers maternity with whoever is
+     on"); scoping it is a *restriction* rather than the additive change this
+     was, and it rewrote 54 existing Phase-2 tests. So the team boundary is
+     drawn on the **patient list** — the picker, the chart, the dashboard, the
+     thing a screen actually reads — and narrowing the endpoints is a decision
+     left to the hospital. `TheEndpointsKeepTheBreadthRule56Chose` states it
+     out loud so it reads as a choice rather than an oversight, and is what
+     fails first if it is ever revisited.
+
+   **Phase 3.3 — triage, and the one thing that was actually missing.**
+   Maternity uses the hospital's vitals workflow. There is no maternity vitals
+   system and `test_maternity_triage.py` fails by name if one appears.
+
+   - **`NURSING_ROLES = ["nurse", "maternity_nurse"]`** is who does nursing
+     work: records `clinical.Vitals`, writes a `NursingNote`, and hands a
+     patient to a doctor through the existing `send-to-doctor`. That group is
+     the whole change. `IsNurse` still names the general nurse alone — the
+     vitals **station**, reception's "send for vitals" routing and the nursing
+     dashboard are the triage queue's and did not move — which is rule 43's
+     pattern applied to nursing: widen a capability one at a time, never by
+     rewriting every `"nurse"`. A midwife could not take a blood pressure on
+     her own ward before this.
+   - **What each role reads back is the queryset, not the permission.** The
+     general nurse still sees only her own readings (rule 11, unchanged and
+     tested). Everyone else reads the vitals of the patients on their own
+     list — `patient_queryset_for`, the same rule the chart and the patient
+     list use, which is what lets a midwife read a colleague's reading for a
+     mother she holds and a maternity doctor read one he did not order. It
+     replaced `doctor_patient_q` there and is a superset of it, so no doctor
+     lost anything.
+   - **A returning mother is a new reading, never an overwritten one.**
+     `Vitals` locks on save and has no edit path (rule 2), so this needed
+     nothing: ANC 1, ANC 4 and the labour assessment are three rows, and the
+     chart shows all three with who took each and when.
+   - **The doctor is told through the bell that already existed.**
+     `_tell_the_doctors` fires on every reading and reaches whoever is holding
+     her — for a maternity patient that is `Visit.attending_doctor`, the
+     assigned doctor (rule: Phase 3.2). `send-to-doctor` is the hand-off, the
+     same action and the same `_queue_consultation` the triage nurse uses.
+   - **Where she is lying is derived, never stored.** `access.admission_state`
+     reads the hospital's own `inpatient.Admission` — the bed names the ward —
+     and is on `/maternity/assignment/` and the lookup. A bed transfer on the
+     ward board moves it with no maternity write at all, which is the test
+     that keeps it honest.
+   - **The frontend renders the chart's own `VitalsTab`** as the workspace's
+     Triage tab. Not a maternity vitals form: the same component, the same
+     `/vitals/` POST, the same nursing note beside the reading. `VitalsTab`'s
+     `canRecord` reads `NURSING_ROLES` instead of a retyped list, and the
+     `vitals_record` print entry gained the midwife — one registry row, not a
+     maternity observation sheet.
+
+   Held by `apps/maternity/tests/test_maternity_triage.py` and
+   `frontend/src/pages/Maternity.triage.test.jsx`.
+
+   Held by `apps/maternity/tests/test_maternity_team.py`.
+
+   Held by `apps/maternity/tests/test_maternity_access.py`,
+   `frontend/src/components/maternityAssignment.test.js`,
+   `frontend/src/pages/Maternity.assignment.test.jsx` and
+   `PatientQueue.reception.test.jsx`.
+
+   Held by `apps/maternity/tests/test_labour_delivery.py`,
+   `apps/maternity/tests/test_maternity_nurse.py`,
+   `frontend/src/components/maternityEpisode.test.js`,
+   `frontend/src/pages/Maternity.multiple.test.jsx` and `Maternity.test.jsx`.
+
 ## Django admin
 
 Every app has an `admin.py` and every model is registered — `Patients` is
@@ -2550,7 +2880,7 @@ Done:
   hospital number, never a pk), department, service, due, discount, waiver,
   paid, balance, method and settlement status. The dashboards' money cards
   open it on the period they count.
-- Tests: ~1,497 passing (backend; frontend `npm test`: 528) — the PostgreSQL-only two-thread race in
+- Tests: ~1,497 passing (backend; frontend `npm test`: 615) — the PostgreSQL-only two-thread race in
   `test_cancel_and_refund_hardening.py` (`./venv/bin/python manage.py test` — the venv is at
   `backend/hmis/venv`; a bare `python` has no Django and fails misleadingly) — pharmacy dispensing +
   payment flow, charge settlement (full / half / later, oldest-first

@@ -11,6 +11,7 @@ that only 403s at the person who presses it. This module is the one answer,
 the way `clinical.serializers.may_amend` is the one answer to "may I amend
 this note?" (rule 3).
 """
+from apps.accounts.departments import works_in
 
 
 def may_work(user, route, *, role_purposes, purpose_role):
@@ -30,8 +31,11 @@ def may_work(user, route, *, role_purposes, purpose_role):
         return True
     if route.purpose in purpose_role:
         return False
-    return (route.department.staff.filter(pk=user.pk).exists()
-            or route.department.name.lower() == (user.department or "").lower())
+    # Where this person is authorised to work — `accounts.departments.works_in`,
+    # the one definition, which reads the `Department.staff` relation *and* the
+    # legacy text. This used to compare the name only, so an account whose text
+    # held the department's code was authorised on the queue and refused here.
+    return works_in(user, route.department)
 
 
 def claimed_by_somebody_else(user, route):
