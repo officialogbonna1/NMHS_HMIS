@@ -20,6 +20,7 @@ from decimal import Decimal
 from django.test import TestCase
 from rest_framework.test import APIClient
 
+from apps.pharmacy.testing import pay_for
 from apps.accounts.models import User
 from apps.billing.models import Charge, PatientLedger, Payment, PaymentAllocation
 from apps.inventory import count_csv
@@ -131,7 +132,7 @@ class CategoryEndToEndTests(TestCase):
                                    batch_no="I1", sale_price="80")
         script = create_prescription(patient=self.patient, item=item, quantity=10,
                                      doctor=self.doctor)
-        dispense_prescription(prescription=script, pharmacist=self.pharmacist)
+        dispense_prescription(prescription=pay_for(script, by=self.pharmacist), pharmacist=self.pharmacist)
         charge = Charge.objects.filter(patient=self.patient).latest("id")
         before = (charge.amount, charge.status, item.quantity_at(self.pharmacy))
 

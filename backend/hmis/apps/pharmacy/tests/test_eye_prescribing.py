@@ -70,15 +70,23 @@ class EyePrescribingTests(TestCase):
 
         self.assertEqual((self.held(self.early), self.held(self.late)), (3, 10))
         self.assertEqual(StockMovement.objects.count(), movements)
-        self.assertFalse(Charge.objects.filter(patient=self.patient).exists())
+        # Billed as it is written (rule 58): 3 at ₦1,500 then 1 at ₦1,600.
+        charge = Charge.objects.get(patient=self.patient)
+        self.assertEqual((charge.amount, charge.status, prescription.charge_id),
+                         (3 * 1500 + 1 * 1600, "unpaid", charge.pk))
 
         note = Notification.objects.get(recipient=self.pharmacist, category="pharmacy")
         self.assertEqual(note.action_url, "/pharmacy")
         queue = rows(self.as_(self.pharmacist).get("/api/prescriptions/", {"status": "pending"}))
         self.assertEqual([row["id"] for row in queue], [prescription.id])
 
-    def test_the_pharmacist_dispenses_it_first_expiry_first_and_the_charge_is_raised(self):
-        prescription_id = self.prescribe(quantity=4).data[0]["id"]
+    def test_once_paid_the_pharmacist_dispenses_it_first_expiry_first(self):
+        written = self.prescribe(quantity=4).data[0]
+        prescription_id = written["id"]
+        paid = self.as_(self.pharmacist).post("/api/payments/", {
+            "patient": self.patient.id, "amount": written["billing"]["outstanding"],
+            "method": "cash", "charge": written["charge"]}, format="json")
+        self.assertEqual(paid.status_code, 201, paid.data)
         response = self.as_(self.pharmacist).post(f"/api/prescriptions/{prescription_id}/dispense/")
         self.assertEqual(response.status_code, 200, response.data)
         self.assertEqual(response.data["status"], "dispensed")
@@ -92,7 +100,7 @@ class EyePrescribingTests(TestCase):
 
         charge = Charge.objects.get(source_type="prescription", source_id=prescription_id)
         self.assertEqual((charge.patient, charge.amount, charge.department.code, charge.status),
-                         (self.patient, 3 * 1500 + 1 * 1600, "pharmacy", "unpaid"))
+                         (self.patient, 3 * 1500 + 1 * 1600, "pharmacy", "paid"))
         self.assertTrue(Notification.objects.filter(recipient=self.eye_doctor, category="pharmacy").exists())
 
     def test_prescribing_is_never_permission_to_dispense(self):

@@ -64,6 +64,9 @@ class StockRecordSerializer(serializers.ModelSerializer):
     batch_no = serializers.CharField(source="batch.batch_no", read_only=True)
     expiry_date = serializers.DateField(source="batch.expiry_date", read_only=True)
     is_expired = serializers.ReadOnlyField()
+    # "expired" (past its printed date) or "marked_expired" (taken out of use
+    # by an inventory administrator), else null — `Batch.expiry_status`.
+    expiry_status = serializers.CharField(source="batch.expiry_status", read_only=True)
     location_code = serializers.CharField(source="location.code", read_only=True)
     location_name = serializers.CharField(source="location.name", read_only=True)
     sale_price = serializers.DecimalField(source="batch.sale_price", max_digits=10,
@@ -76,8 +79,14 @@ class StockRecordSerializer(serializers.ModelSerializer):
         fields = ["id", "batch", "batch_no", "item", "item_name", "item_unit",
                   "item_sku", "item_category", "item_category_name",
                   "location", "location_code", "location_name", "quantity",
-                  "expiry_date", "is_expired", "sale_price", "cost_price"]
+                  "expiry_date", "is_expired", "expiry_status", "sale_price", "cost_price"]
         read_only_fields = fields
+
+
+#: Everything that makes a product part of the record — every relation that
+#: points at `Item`. Read by the viewset's refusal, Django admin's hidden
+#: Delete button and the screen's `is_deletable`, so the three cannot disagree.
+ITEM_PROTECTED_RELATIONS = ("batches", "prescription_set", "pos_sale_lines")
 
 
 class ItemSerializer(serializers.ModelSerializer):
@@ -89,6 +98,11 @@ class ItemSerializer(serializers.ModelSerializer):
     unit_name = serializers.CharField(source="unit.name", read_only=True, default="")
     unit_label = serializers.ReadOnlyField()
     batch_count = serializers.SerializerMethodField()
+    # What would make DELETE answer 409, counted by the same `references_to`
+    # the viewset refuses with — so the screen offers Delete exactly where the
+    # server would allow it, rather than guessing from a stock figure.
+    references = serializers.SerializerMethodField()
+    is_deletable = serializers.SerializerMethodField()
     # Where this item's stock is standing, so a stock screen can show
     # "Main Store 400 · Pharmacy 100" without a request per location.
     by_location = serializers.SerializerMethodField()
@@ -98,7 +112,8 @@ class ItemSerializer(serializers.ModelSerializer):
         fields = ["id", "name", "sku", "barcode", "strength", "dosage_form", "category",
                   "category_name",
                   "reorder_threshold", "unit", "unit_name", "unit_label", "is_active",
-                  "batch_count", "total_quantity", "is_low_stock", "by_location"]
+                  "batch_count", "total_quantity", "is_low_stock", "by_location",
+                  "references", "is_deletable"]
         # Optional and unique. A blank from a form is "none" (the model stores
         # NULL), so it never collides with another product that has none.
         extra_kwargs = {"sku": {"allow_null": True, "required": False},
@@ -114,6 +129,13 @@ class ItemSerializer(serializers.ModelSerializer):
         # What makes a product undeletable — shown so the administration
         # screen can say why before the API refuses.
         return obj.batches.count()
+
+    def get_references(self, obj):
+        from apps.core.config import references_to
+        return references_to(obj, ITEM_PROTECTED_RELATIONS)
+
+    def get_is_deletable(self, obj):
+        return not self.get_references(obj)
 
     def get_by_location(self, obj):
         totals = {}
@@ -164,6 +186,8 @@ class BatchSerializer(serializers.ModelSerializer):
     PATCHed later to invent stock.
     """
     is_expired = serializers.ReadOnlyField()
+    expiry_status = serializers.ReadOnlyField()
+    marked_expired_by_name = serializers.SerializerMethodField()
     item_name = serializers.CharField(source="item.name", read_only=True)
     item_unit = serializers.CharField(source="item.unit_label", read_only=True)
     item_category_name = serializers.CharField(source="item.category_name",
@@ -189,9 +213,28 @@ class BatchSerializer(serializers.ModelSerializer):
         fields = ["id", "item", "item_name", "item_unit", "item_category_name",
                   "batch_no", "cost_price",
                   "sale_price", "expiry_date", "supplier", "received_date",
-                  "is_expired", "total_quantity", "stock",
+                  "is_expired", "expiry_status", "marked_expired_at", "marked_expired_by",
+                  "marked_expired_by_name", "marked_expired_reason",
+                  "total_quantity", "stock",
                   "opening_quantity", "quantity", "location"]
-        read_only_fields = ["received_date"]
+        # The manual mark is written by `mark_batch_expired` /
+        # `return_batch_to_use` only, never by a PATCH.
+        read_only_fields = ["received_date", "marked_expired_at", "marked_expired_by",
+                            "marked_expired_reason"]
+
+    def get_marked_expired_by_name(self, obj):
+        user = obj.marked_expired_by
+        return (user.get_full_name() or user.username) if user else None
+
+    def validate_item(self, item):
+        # A new lot is a delivery, and an archived product is not received.
+        # Refused here as well as in `receive_stock` so the batch row is never
+        # written before the refusal.
+        if self.instance is None and item is not None and not item.is_active:
+            raise serializers.ValidationError(
+                f"{item.name} is archived, so it cannot be received. Restore it under "
+                f"Administration → Products first.", code="item_archived")
+        return item
 
 
 class StockMovementSerializer(serializers.ModelSerializer):

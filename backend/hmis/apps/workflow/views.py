@@ -1388,6 +1388,7 @@ class DashboardView(APIView):
                 quantity__gt=0,
                 batch__expiry_date__gte=timezone.localdate(),
                 batch__expiry_date__lte=timezone.localdate() + timedelta(days=expiry_days),
+                batch__marked_expired_at__isnull=True,
             ).count()
             if low_stock:
                 alerts.append({"label": f"{low_stock} item(s) are below their reorder threshold",

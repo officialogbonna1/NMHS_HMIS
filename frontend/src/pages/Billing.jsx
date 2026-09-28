@@ -1,4 +1,5 @@
 import { useState } from "react";
+import PayChargePanel from "../components/PayChargePanel.jsx";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import api from "../api/client";
@@ -573,7 +574,7 @@ function ChargeAmount({ charge }) {
   );
 }
 
-function ChargeRow({ charge, canWaive, onDone }) {
+export function ChargeRow({ charge, canWaive, onDone }) {
   const [panel, setPanel] = useState(null);
   const { showToast } = useToast();
   const [error, setError] = useState(null);
@@ -619,6 +620,19 @@ function ChargeRow({ charge, canWaive, onDone }) {
             )}
           </div>
           <p className="mt-0.5 text-xs text-slate-600">{new Date(charge.created_at).toLocaleString()}</p>
+          {/* A pharmacy bill says which script line it is for — the drug, how
+              many and who prescribed it — because the pharmacy hands it over
+              only once *this* bill is settled (not the patient's balance). */}
+          {charge.prescription && (
+            <p className="mt-1 text-sm text-slate-800">
+              <span className="font-medium">Pharmacy prescription:</span>{" "}
+              {charge.prescription.drug}
+              {charge.prescription.strength ? ` ${charge.prescription.strength}` : ""}
+              {" "}×{charge.prescription.quantity} {charge.prescription.unit}
+              {charge.prescription.prescriber && ` · prescribed by ${charge.prescription.prescriber}`}
+              {" · "}{charge.prescription.status_label}
+            </p>
+          )}
           {/* Pay later is an authorisation, not a payment — so it says who
               gave it, and the balance stays exactly where it was. */}
           {charge.deferral && (
@@ -633,6 +647,11 @@ function ChargeRow({ charge, canWaive, onDone }) {
           <ChargeAmount charge={charge} />
           {open && (
             <div className="flex shrink-0 flex-col items-end gap-0.5">
+              {charge.prescription && charge.status !== "cancelled" && (
+                <Button variant="link" size="xs" onClick={() => setPanel(panel === "pay" ? null : "pay")}>
+                  {panel === "pay" ? "Close" : "Pay this prescription"}
+                </Button>
+              )}
               {canWaive && (
                 <>
                   <Button variant="link" size="xs" onClick={() => setPanel(panel === "discount" ? null : "discount")}>
@@ -656,6 +675,17 @@ function ChargeRow({ charge, canWaive, onDone }) {
           )}
         </div>
       </div>
+
+      {panel === "pay" && (
+        <PayChargePanel
+          charge={charge.id}
+          patient={charge.patient}
+          outstanding={Number(charge.outstanding ?? charge.balance)}
+          description={charge.description}
+          onDone={() => { setPanel(null); onDone(); }}
+          onCancel={() => setPanel(null)}
+        />
+      )}
 
       {panel === "discount" && (
         <DiscountPanel

@@ -26,6 +26,7 @@ from decimal import Decimal
 from django.test import TestCase
 from rest_framework.test import APIClient
 
+from apps.pharmacy.testing import pay_for
 from apps.accounts.models import User
 from apps.billing.models import Charge, PatientLedger, Payment, PaymentAllocation
 from apps.inventory import count_csv
@@ -152,7 +153,7 @@ class CategoryConfigurationTests(CategoryTestCase):
         # closed list for new filing, never a block on medicine.
         script = create_prescription(patient=self.patient, item=self.para, quantity=5,
                                      doctor=self.doctor)
-        dispense_prescription(prescription=script, pharmacist=self.pharmacist)
+        dispense_prescription(prescription=pay_for(script, by=self.pharmacist), pharmacist=self.pharmacist)
         script.refresh_from_db()
         self.assertEqual(script.status, "dispensed")
 
@@ -391,7 +392,7 @@ class CategoryInTheClinicalWorkflowTests(CategoryTestCase):
 
         script = create_prescription(patient=self.patient, item=self.para, quantity=40,
                                      doctor=self.doctor)
-        dispense_prescription(prescription=script, pharmacist=self.pharmacist)
+        dispense_prescription(prescription=pay_for(script, by=self.pharmacist), pharmacist=self.pharmacist)
 
         # FEFO within the dispensing location: all 30 off the short-dated lot,
         # then 10 off the next — and nothing off the Main Store.
@@ -417,7 +418,7 @@ class CategoryInTheClinicalWorkflowTests(CategoryTestCase):
         # expired one for the write-off it needs.
         script = create_prescription(patient=self.patient, item=self.amox, quantity=50,
                                      doctor=self.doctor)
-        dispense_prescription(prescription=script, pharmacist=self.pharmacist)
+        dispense_prescription(prescription=pay_for(script, by=self.pharmacist), pharmacist=self.pharmacist)
         self.assertEqual(expired.quantity_at(self.pharmacy), 999)
         self.assertEqual(self.amox_shelf.quantity_at(self.pharmacy), 0)
 
@@ -451,7 +452,7 @@ class CategoryChangesNoMoneyTests(CategoryTestCase):
     def test_dispensing_bills_the_same_money_before_and_after_a_category_change(self):
         script = create_prescription(patient=self.patient, item=self.para, quantity=10,
                                      doctor=self.doctor)
-        dispense_prescription(prescription=script, pharmacist=self.pharmacist)
+        dispense_prescription(prescription=pay_for(script, by=self.pharmacist), pharmacist=self.pharmacist)
 
         before = self.figures()
         # 10 units × ₦20 from `testing._place`, charged to the Pharmacy.

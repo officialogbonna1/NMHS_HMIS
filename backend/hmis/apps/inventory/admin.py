@@ -2,6 +2,8 @@ from django.contrib import admin, messages
 
 from apps.core.config import ProtectedConfigAdmin
 
+from .serializers import ITEM_PROTECTED_RELATIONS
+from .services import audit_item, item_snapshot
 from .models import (
     Batch, Item, ItemCategory, StockCount, StockCountImport, StockCountLine, StockLocation,
     StockMovement,
@@ -138,7 +140,8 @@ class ItemAdmin(ProtectedConfigAdmin, admin.ModelAdmin):
     actions = ["activate", "deactivate"]
     # A product with stock, prescriptions or POS sales behind it is deactivated,
     # never deleted, or every movement and bill naming it loses its subject.
-    protected_relations = ("batches", "prescription_set", "pos_sale_lines")
+    # The same tuple the API refuses with (`ITEM_PROTECTED_RELATIONS`).
+    protected_relations = ITEM_PROTECTED_RELATIONS
     fieldsets = [
         (None, {"fields": ["name", "strength", "dosage_form", "category", "unit", "is_active"]}),
         ("Counter identifiers", {
@@ -153,14 +156,41 @@ class ItemAdmin(ProtectedConfigAdmin, admin.ModelAdmin):
         }),
     ]
 
+    # Every change here writes the same `AuditLog` row the HMIS Products screen
+    # does (`services.audit_item`, `details.source = "django-admin"`), so the
+    # catalogue has one history whichever door it was edited through.
+
+    def save_model(self, request, obj, form, change):
+        # The form has already written over `obj`; re-read what it was.
+        before = item_snapshot(Item.objects.filter(pk=obj.pk).first()) if change else None
+        super().save_model(request, obj, form, change)
+        audit_item(actor=request.user, item=obj, before=before, request=request,
+                   source="django-admin")
+
+    def delete_model(self, request, obj):
+        audit_item(actor=request.user, item=obj, deleted=True, request=request,
+                   source="django-admin")
+        super().delete_model(request, obj)
+
+    def _set_active(self, request, queryset, active):
+        changed = 0
+        for item in queryset.filter(is_active=not active):
+            before = item_snapshot(item)
+            item.is_active = active
+            item.save(update_fields=["is_active", "updated_at"])
+            audit_item(actor=request.user, item=item, before=before, request=request,
+                       source="django-admin")
+            changed += 1
+        return changed
+
     @admin.action(description="Activate selected")
     def activate(self, request, queryset):
-        self.message_user(request, f"{queryset.update(is_active=True)} product(s) activated.")
+        self.message_user(request, f"{self._set_active(request, queryset, True)} product(s) activated.")
 
     @admin.action(description="Deactivate selected (keeps history)")
     def deactivate(self, request, queryset):
         self.message_user(request,
-                          f"{queryset.update(is_active=False)} product(s) deactivated.",
+                          f"{self._set_active(request, queryset, False)} product(s) deactivated.",
                           messages.WARNING)
 
     @admin.display(description="On hand (all locations)")
@@ -179,8 +209,8 @@ class BatchAdmin(admin.ModelAdmin):
     is — that is per location, on the Stock records below, and it moves only
     through the inventory services.
     """
-    list_display = ["item", "batch_no", "on_hand", "expiry_date", "cost_price",
-                    "sale_price", "supplier"]
+    list_display = ["item", "batch_no", "on_hand", "expiry_date", "expired",
+                    "cost_price", "sale_price", "supplier"]
     list_filter = ["expiry_date", "item__category", "supplier"]
     search_fields = ["item__name", "batch_no", "supplier"]
     list_select_related = ["item"]
@@ -188,16 +218,27 @@ class BatchAdmin(admin.ModelAdmin):
     date_hierarchy = "expiry_date"
     list_per_page = 50
     inlines = [StockRecordInline]
-    readonly_fields = ["received_date"]
+    # The manual expiry is written by the service and audited there (the HMIS
+    # Expired Items screen) — shown here, never typed here.
+    readonly_fields = ["received_date", "marked_expired_at", "marked_expired_by",
+                       "marked_expired_reason"]
     fieldsets = [
         (None, {"fields": ["item", "batch_no", "supplier", "received_date"]}),
         ("Dates", {"fields": ["expiry_date"]}),
+        ("Marked expired", {
+            "fields": ["marked_expired_at", "marked_expired_by", "marked_expired_reason"],
+            "description": "Set from Administration → Expired Items, which records who and why.",
+        }),
         ("Money", {"fields": ["cost_price", "sale_price"]}),
     ]
 
     @admin.display(description="On hand (all locations)")
     def on_hand(self, obj):
         return obj.total_quantity
+
+    @admin.display(description="Expired", boolean=True)
+    def expired(self, obj):
+        return obj.is_expired
 
 
 @admin.register(StockRecord)

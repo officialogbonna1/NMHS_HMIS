@@ -48,8 +48,36 @@ class Prescription(TimeStampedModel):
     dispensed_value = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
     cancelled_reason = models.CharField(max_length=255, blank=True)
 
+    # **The bill for this script line**, raised when the doctor prescribes
+    # (`services.bill_prescription`) — the laboratory's arrangement
+    # (`LabOrderTest.charge`) applied to the pharmacy. This link, and never the
+    # patient's total balance, is what the dispensing gate reads: a patient
+    # owing ₦30,000 for a consultation may still collect a script they have
+    # paid for, and paying for one script unlocks no other.
+    charge = models.ForeignKey("billing.Charge", null=True, blank=True,
+                               on_delete=models.SET_NULL, related_name="prescriptions")
+    # What the line was priced at when it was billed: the FEFO lots on the
+    # pharmacy shelf at that moment, each at its own sale price — the rule
+    # dispensing always priced by, applied when the debt is created. An
+    # order-time snapshot (rule 21): re-pricing a batch tomorrow does not
+    # rewrite this bill. NULL means the line was never priced — a script
+    # written before prescriptions were billed — and is not a zero.
+    quoted_amount = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    # The prescribing screen's one token per submission, so a retried or
+    # double-clicked request returns the script it already wrote instead of
+    # writing — and billing — it twice. The POS's `Sale.client_token` pattern.
+    client_token = models.UUIDField(null=True, blank=True, editable=False)
+
     class Meta:
         ordering = ["-created_at"]
+        constraints = [
+            # One line per drug per submission — what a retry racing its
+            # original meets, in the one place that cannot be interleaved.
+            models.UniqueConstraint(
+                fields=["client_token", "item"],
+                condition=models.Q(client_token__isnull=False),
+                name="one_line_per_drug_per_submission"),
+        ]
 
     def __str__(self):
         return f"{self.item.name} ×{self.quantity} for {self.patient}"

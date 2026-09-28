@@ -17,37 +17,61 @@
 export const CONFIG_RESOURCES = {
   products: {
     title: "Products",
+    singular: "product",
     group: "Inventory",
     icon: "box",
     endpoint: "items",
-    blurb: "The drug and consumable catalogue. Quantities are not set here — "
-      + "stock arrives by receipt and moves by transfer.",
+    blurb: "The drug and consumable catalogue — the same rows Django admin's Add item "
+      + "form writes. Quantities are not set here: stock arrives by receipt and moves "
+      + "by transfer.",
     adminOnly: true,
-    searchPlaceholder: "Search products…",
+    searchPlaceholder: "Search name, SKU, barcode or category…",
     columns: [
-      { key: "name", label: "Product", strong: true },
+      { key: "name", label: "Product", strong: true,
+        render: (row) => [row.name, row.strength, row.dosage_form].filter(Boolean).join(" · ") },
       { key: "sku", label: "SKU" },
+      { key: "barcode", label: "Barcode" },
       { key: "category_name", label: "Category" },
       { key: "unit_label", label: "Unit" },
       { key: "total_quantity", label: "On hand", align: "right" },
+      { key: "by_location", label: "Where",
+        render: (row) => (row.by_location ?? []).filter((l) => l.quantity > 0)
+          .map((l) => `${l.name} ${l.quantity}`).join(" · ") },
       { key: "reorder_threshold", label: "Reorder at", align: "right" },
     ],
+    // The Django admin fieldsets, in the same order and under the same names.
     fields: [
-      { name: "name", label: "Name", type: "text", required: true },
-      { name: "sku", label: "SKU", type: "text",
-        hint: "Optional stock-keeping code, e.g. PH-PARA-500. Unique when set." },
-      { name: "barcode", label: "Barcode", type: "text",
-        hint: "Optional. What the POS scanner reads. Unique when set." },
+      { name: "name", label: "Name", type: "text", required: true,
+        section: "Basic information" },
+      { name: "strength", label: "Strength", type: "text", placeholder: "500 mg",
+        hint: "Optional. e.g. 500 mg, 125 mg/5 ml.", section: "Basic information" },
+      { name: "dosage_form", label: "Dosage form", type: "text", placeholder: "Tablet",
+        hint: "Optional. e.g. Tablet, Syrup, Injection.", section: "Basic information" },
       { name: "category", label: "Category", type: "reference", endpoint: "item-categories",
-        hint: "Manage the list under Categories." },
-      { name: "unit", label: "Unit of measure", type: "reference", endpoint: "units" },
+        hint: "Manage the list under Product categories.", section: "Basic information" },
+      { name: "unit", label: "Unit", type: "reference", endpoint: "units",
+        section: "Basic information" },
+      { name: "is_active", label: "Is active", type: "toggle", default: true,
+        section: "Basic information" },
+      { name: "sku", label: "SKU", type: "text", section: "Counter identifiers",
+        hint: "Optional stock-keeping code, e.g. PH-PARA-500. Unique when set." },
+      { name: "barcode", label: "Barcode", type: "text", section: "Counter identifiers",
+        hint: "Optional. What the POS scanner reads. Unique when set." },
       { name: "reorder_threshold", label: "Reorder threshold", type: "number", default: 10,
+        section: "Reordering",
         hint: "The hospital-wide total below which this product is flagged as low." },
-      { name: "is_active", label: "Active", type: "toggle", default: true },
     ],
-    // What makes a row undeletable, so the page can say so before the API does.
-    usedWhen: (row) => row.batch_count > 0 || row.total_quantity > 0,
-    usedNote: "This product has stock or history behind it — deactivate it instead.",
+    // Archive / Restore are named server actions (`POST /items/<id>/archive/`),
+    // audited as such — not a PATCH that happens to flip a flag.
+    archive: { action: "archive", restore: "restore", label: "Archived" },
+    // The server says whether DELETE would succeed (`is_deletable`, counted by
+    // the same relations the 409 is built from), so the page does not guess.
+    usedWhen: (row) => row.is_deletable === false,
+    usedNote: "Has stock or history — archive it instead.",
+    // Expired lots are batch-level and live on their own register.
+    notes: "Archiving keeps a product on every batch, prescription and sale that names it "
+      + "and stops it being received, transferred, prescribed or sold. Expired stock is "
+      + "per batch — see Expired Items; one expired batch never archives the product.",
   },
 
   "item-categories": {
@@ -282,6 +306,9 @@ export const ADMIN_SECTIONS = [
         roles: ["inventory_manager"] },
       { to: "/inventory?tab=movements", title: "Movement log", icon: "receipt",
         blurb: "Every unit that moved, where it moved and who moved it.",
+        roles: ["inventory_manager"] },
+      { to: "/expired-items", title: "Expired Items", icon: "alert",
+        blurb: "Batches past their date or taken out of use, per shelf — and writing them off.",
         roles: ["inventory_manager"] },
     ],
   },

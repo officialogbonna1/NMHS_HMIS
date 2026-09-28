@@ -29,9 +29,9 @@ const PHARMACY_LINKS = [
   [/^Returns & Refunds$/, "/pharmacy/sales?tab=returns"],
   [/^Products$/, "/pharmacy?tab=products"],
   [/^Stock$/, "/pharmacy?tab=stock"],
-  [/^Stock Operations$/, "/pharmacy?tab=transfer"],
-  [/^Stock Count$/, "/pharmacy?tab=count"],
-  [/^Inventory Import\/Export$/, "/pharmacy?tab=import"],
+  // Counting the shelf is the counter's; the sheet is applied by inventory
+  // administration.
+  [/^Stock Count$/, "/pharmacy?tab=import"],
 ];
 
 describe("the Pharmacy navigation", () => {
@@ -42,10 +42,25 @@ describe("the Pharmacy navigation", () => {
     }
   });
 
+  it("gives a pharmacist no inventory administration: no transfers, no expired register", () => {
+    shellFor("pharmacist");
+    for (const name of [/^Stock Operations$/, /^Inventory$/, /^Expired Items$/, /^Administration$/]) {
+      expect(link(name)).not.toBeInTheDocument();
+    }
+  });
+
+  it("gives the hospital admin and the inventory manager the Expired Items register", () => {
+    for (const role of ["hospital_admin", "inventory_manager"]) {
+      const { unmount } = shellFor(role);
+      expect(link(/^Expired Items$/)).toHaveAttribute("href", "/expired-items");
+      unmount();
+    }
+  });
+
   it("gives a cashier the till, its sales and returns — and no dispensing or stock", () => {
     shellFor("cashier");
     for (const name of [/^Pharmacy POS$/, /^Sales$/, /^Returns & Refunds$/]) expect(link(name)).toBeInTheDocument();
-    for (const name of [/^Prescriptions$/, /^Dispensing$/, /^Stock Count$/, /^Inventory Import\/Export$/]) {
+    for (const name of [/^Prescriptions$/, /^Dispensing$/, /^Stock Count$/]) {
       expect(link(name)).not.toBeInTheDocument();
     }
   });

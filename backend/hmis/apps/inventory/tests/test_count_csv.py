@@ -314,9 +314,20 @@ class ImportTests(CountCsvTestCase):
         self.assertEqual(self.quantity(self.amox_store, self.store), 100)
         self.assertEqual(StockCountImport.objects.get(pk=preview["id"]).status, "previewed")
 
-    def test_a_pharmacist_counts_their_own_shelf(self):
+    def test_a_pharmacist_counts_their_own_shelf_and_an_administrator_applies_it(self):
+        """
+        Counting is looking; applying moves stock. The pharmacist exports and
+        previews their shelf — nothing moves — and the adjustment is posted by
+        inventory administration (STOCK_CONTROL_ROLES), the preview/apply split
+        this import always had.
+        """
         preview = self.preview(self.counted(self.exported(self.pharmacist), P1=97), user=self.pharmacist)
-        self.assertEqual(self.apply(preview, user=self.pharmacist).status_code, 200)
+        self.assertEqual(preview["status"], "previewed")
+        self.assertEqual(self.apply(preview, user=self.pharmacist).status_code, 403)
+        self.assertEqual(self.quantity(self.para_shelf, self.pharmacy), 100)
+        self.assertFalse(StockMovement.objects.filter(reason="stock_count").exists())
+
+        self.assertEqual(self.apply(preview, user=self.manager).status_code, 200)
         self.assertEqual(self.quantity(self.para_shelf, self.pharmacy), 97)
 
     def test_roles_that_do_not_count_cannot_import(self):

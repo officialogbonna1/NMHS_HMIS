@@ -61,6 +61,11 @@ class ChargeSerializer(serializers.ModelSerializer):
     # refund refuses it rather than guessing a payment, so the screen says so
     # before anybody presses the button.
     untraceable_amount = serializers.SerializerMethodField()
+    # What a pharmacy charge is *for*: the script line that raised it — the
+    # drug, how many, who prescribed it and whether it has been handed over —
+    # read through `Prescription.charge`, so the cash desk sees "Paracetamol
+    # 500mg ×10, Dr Okafor" rather than a bare amount. None for every other bill.
+    prescription = serializers.SerializerMethodField()
     # amount_paid, amount_discounted and amount_waived only ever move through
     # a payment or a discount/waiver — never a direct write.
     class Meta:
@@ -79,6 +84,25 @@ class ChargeSerializer(serializers.ModelSerializer):
         # come through that queryset asks once.
         annotated = getattr(obj, "service_withdrawn", None)
         return bool(annotated) if annotated is not None else is_withdrawn(obj)
+
+    def get_prescription(self, obj):
+        if obj.source_type != "prescription":
+            return None
+        script = next(iter(obj.prescriptions.all()), None)
+        if script is None:
+            return None
+        doctor = script.doctor
+        return {
+            "id": script.pk,
+            "drug": script.item.name,
+            "strength": script.item.strength,
+            "quantity": script.quantity,
+            "unit": script.item.unit_label,
+            "prescriber": (doctor.get_full_name() or doctor.username) if doctor else None,
+            "status": script.status,
+            "status_label": script.get_status_display(),
+            "prescribed_at": script.created_at,
+        }
 
     def get_untraceable_amount(self, obj):
         allocated = getattr(obj, "allocated_total", None)
@@ -117,6 +141,11 @@ class PaymentSerializer(serializers.ModelSerializer):
     amount_refunded = serializers.SerializerMethodField()
     refundable_balance = serializers.SerializerMethodField()
     is_fully_refunded = serializers.SerializerMethodField()
+    # Optional: the one bill this money is for (`record_payment(charge=…)`).
+    # Absent, the payment goes on the account oldest-first as it always did.
+    # Not a column on `Payment` — where the money went is its allocation rows.
+    charge = serializers.PrimaryKeyRelatedField(queryset=Charge.objects.all(), write_only=True,
+                                                required=False, allow_null=True)
     class Meta: model = Payment; fields = "__all__"; read_only_fields = ["received_by", "channel"]
     def get_received_by_name(self, obj): return obj.received_by.get_full_name() or obj.received_by.username
 

@@ -12,7 +12,7 @@ import {
   ADMIN_ROLES,
   BED_BOARD_ROLES, BILLING_ROLES, CANCEL_ROLES, CHART_ROLES, CLINICAL_ROLES, FINANCE_REPORT_ROLES,
   MATERNITY_DESK_ROLES, REFUND_ROLES, PATIENT_LOOKUP_ROLES, POS_HISTORY_ROLES, POS_ROLES,
-  QUEUE_ROLES,
+  QUEUE_ROLES, STOCK_CONTROL_ROLES,
 } from "./auth/roles.js";
 import PharmacyPOS from "./pages/PharmacyPOS.jsx";
 import PosSales from "./pages/PosSales.jsx";
@@ -23,6 +23,7 @@ import PatientsNew from "./pages/PatientsNew.jsx";
 import PatientDetail from "./pages/PatientDetail.jsx";
 import PrescribeDrug from "./pages/PrescribeDrug.jsx";
 import InventoryDashboard from "./pages/InventoryDashboard.jsx";
+import ExpiredItems from "./pages/ExpiredItems.jsx";
 import Pharmacy from "./pages/Pharmacy.jsx";
 import Dashboard from "./pages/Dashboard.jsx";
 import Notifications from "./pages/Notifications.jsx";
@@ -200,6 +201,16 @@ ReactDOM.createRoot(document.getElementById("root")).render(
               element={
                 <RequireAuth roles={["inventory_manager"]}>
                   <InventoryDashboard />
+                </RequireAuth>
+              }
+            />
+            <Route
+              path="/expired-items"
+              // Inventory administration's register (STOCK_CONTROL_ROLES,
+              // mirroring `/stock-records/expired/`). Admins pass.
+              element={
+                <RequireAuth roles={STOCK_CONTROL_ROLES}>
+                  <ExpiredItems />
                 </RequireAuth>
               }
             />

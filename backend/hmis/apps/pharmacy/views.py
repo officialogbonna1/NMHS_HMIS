@@ -8,9 +8,9 @@ from .models import Prescription
 from .serializers import PrescriptionSerializer
 # OutOfStockError and AlreadyDispensedError both subclass ValidationError,
 # which is what the actions below turn into a 400 with the service's message.
-from .services import (create_prescription, create_prescriptions, dispense_prescription,
-                       cancel_prescription)
-from apps.accounts.permissions import CLINICIAN_ROLES, IsPharmacist, RoleRequired
+from .services import (bill_prescription, create_prescription, create_prescriptions,
+                       dispense_prescription, cancel_prescription)
+from apps.accounts.permissions import BILLING_ROLES, CLINICIAN_ROLES, IsPharmacist, RoleRequired
 from apps.core.services import audit_event, notify
 from apps.patients.access import may_act_for
 
@@ -24,9 +24,10 @@ class PrescriptionViewSet(viewsets.ModelViewSet):
     Doctors write prescriptions; pharmacists fill them.
 
     Creating one does not move stock — it puts the request in the pharmacy
-    queue. The stock deduction, the audit rows and the patient charge all
-    happen when a pharmacist posts to /dispense/, so the person handing over
-    the drugs is the one recorded as having released them.
+    queue **and raises its bill**, one charge per line, so the patient pays at
+    the cash desk before the counter. The stock deduction and the audit rows
+    happen when a pharmacist posts to /dispense/, which refuses a line whose
+    own bill is still owed (`services.dispensing_clearance`).
     """
     queryset = Prescription.objects.all()
     serializer_class = PrescriptionSerializer
@@ -44,14 +45,22 @@ class PrescriptionViewSet(viewsets.ModelViewSet):
             return [IsPharmacist()]
         if self.action == "cancel":
             return [RoleRequired([*CLINICIAN_ROLES, "pharmacist"])]
+        if self.action == "bill":
+            # Raising a script's missing bill is money work: the desks that
+            # bill, and the pharmacy counter that already takes its own money
+            # (rule 18). Never a clinician's.
+            return [RoleRequired([*BILLING_ROLES, "pharmacist"])]
         return [RoleRequired([*CLINICIAN_ROLES, "pharmacist"])]
 
     def get_queryset(self):
         user = self.request.user
         base = Prescription.objects.select_related(
             "patient", "item__category", "item__unit", "doctor", "dispensed_by")
+        base = base.select_related("charge__department").prefetch_related("charge__deferrals")
         if user.role in {"admin", "hospital_admin", "pharmacist"}:
             return base
+        if self.action == "bill" and user.role in BILLING_ROLES:
+            return base.filter(status="pending")
         if user.role in CLINICIAN_ROLES:
             return base.filter(doctor=user)
         return Prescription.objects.none()
@@ -61,8 +70,17 @@ class PrescriptionViewSet(viewsets.ModelViewSet):
         serializer.is_valid(raise_exception=True)
         if not may_act_for(request.user, serializer.validated_data["patient"]):
             return _not_your_patient()
+        token = serializer.validated_data.get("client_token")
+        if token:
+            already = Prescription.objects.filter(
+                client_token=token, patient=serializer.validated_data["patient"],
+                doctor=request.user, item=serializer.validated_data["item"]).first()
+            if already is not None:
+                # A retry: the line — and its bill — already exist.
+                return Response(self.get_serializer(already).data, status=status.HTTP_200_OK)
         try:
             prescription = create_prescription(
+                client_token=token,
                 patient=serializer.validated_data["patient"],
                 doctor=request.user,
                 item=serializer.validated_data["item"],
@@ -119,8 +137,17 @@ class PrescriptionViewSet(viewsets.ModelViewSet):
                 **{field: entry.get(field, "") or "" for field in DIRECTION_FIELDS},
             })
 
+        token = _as_uuid(request.data.get("client_token"))
+        if token and Prescription.objects.filter(client_token=token, patient=patient,
+                                                 doctor=request.user).exists():
+            # A retry of a script already written: the same lines, the same
+            # bills, and no second notification or audit row.
+            already = Prescription.objects.filter(client_token=token, patient=patient,
+                                                  doctor=request.user).order_by("pk")
+            return Response(self.get_serializer(already, many=True).data, status=status.HTTP_200_OK)
         try:
-            prescriptions = create_prescriptions(patient=patient, doctor=request.user, lines=lines)
+            prescriptions = create_prescriptions(patient=patient, doctor=request.user, lines=lines,
+                                                 client_token=token)
         except ValidationError as exc:
             return Response({"detail": _message(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -153,6 +180,29 @@ class PrescriptionViewSet(viewsets.ModelViewSet):
         return Response(self.get_serializer(prescription).data)
 
     @action(detail=True, methods=["post"])
+    def bill(self, request, pk=None):
+        """
+        Raise the bill for a pending line that has none — a script written
+        before prescriptions were billed. Priced by the same rule as a new one
+        (`quote_prescription`) at the moment somebody asks, never by a
+        migration guessing it, and idempotent: a line already billed answers
+        with the bill it has.
+        """
+        prescription = self.get_object()
+        had_charge = prescription.charge_id is not None
+        try:
+            charge = bill_prescription(prescription=prescription, actor=request.user)
+        except ValidationError as exc:
+            return Response(_refusal(exc), status=status.HTTP_400_BAD_REQUEST)
+        if not had_charge:
+            audit_event(actor=request.user, action="prescription.billed", instance=prescription,
+                        details={"charge": charge.pk if charge else None,
+                                 "amount": str(charge.amount) if charge else "0.00"},
+                        request=request)
+        prescription.refresh_from_db()
+        return Response(self.get_serializer(prescription).data)
+
+    @action(detail=True, methods=["post"])
     def cancel(self, request, pk=None):
         prescription = self.get_object()
         if request.user.role in CLINICIAN_ROLES and prescription.doctor_id != request.user.id:
@@ -166,6 +216,14 @@ class PrescriptionViewSet(viewsets.ModelViewSet):
             return Response({"detail": _message(exc)}, status=status.HTTP_400_BAD_REQUEST)
         audit_event(actor=request.user, action="prescription.cancelled", instance=prescription, request=request)
         return Response(self.get_serializer(prescription).data)
+
+
+def _as_uuid(value):
+    import uuid
+    try:
+        return uuid.UUID(str(value)) if value else None
+    except (TypeError, ValueError):
+        return None
 
 
 def _as_id(value):
@@ -231,7 +289,7 @@ def _refusal(exc):
     code = getattr(exc, "code", None)
     if code:
         body["code"] = code
-    for field in ("available", "requested"):
-        if hasattr(exc, field):
+    for field in ("available", "requested", "billing"):
+        if getattr(exc, field, None) is not None:
             body[field] = getattr(exc, field)
     return body

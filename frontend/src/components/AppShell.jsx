@@ -9,7 +9,7 @@ import { useAuth } from "../auth/AuthContext.jsx";
 import {
   MATERNITY_DESK_ROLES,
   ADMIN_ROLES, BED_BOARD_ROLES, BILLING_ROLES, CANCEL_ROLES, CLINICAL_ROLES, FINANCE_REPORT_ROLES,
-  POS_HISTORY_ROLES, POS_ROLES, REFUND_ROLES, PATIENT_LOOKUP_ROLES, QUEUE_ROLES,
+  POS_HISTORY_ROLES, POS_ROLES, REFUND_ROLES, STOCK_CONTROL_ROLES, PATIENT_LOOKUP_ROLES, QUEUE_ROLES,
   hasRole,
 } from "../auth/roles.js";
 import { Icon } from "./icons.jsx";
@@ -92,9 +92,9 @@ const NAV_ITEMS = [
   ["/pharmacy/sales?tab=returns", "Returns & Refunds", "refund", POS_HISTORY_ROLES, "Pharmacy"],
   ["/pharmacy?tab=products", "Products", "tag", PHARMACY_ROLES, "Pharmacy"],
   ["/pharmacy?tab=stock", "Stock", "box", PHARMACY_ROLES, "Pharmacy"],
-  ["/pharmacy?tab=transfer", "Stock Operations", "handoff", PHARMACY_ROLES, "Pharmacy"],
-  ["/pharmacy?tab=count", "Stock Count", "list", PHARMACY_ROLES, "Pharmacy"],
-  ["/pharmacy?tab=import", "Inventory Import/Export", "archive", PHARMACY_ROLES, "Pharmacy"],
+  // Counting the shelf is the counter's; transferring and applying a count
+  // change stock and are inventory administration's (STOCK_CONTROL_ROLES).
+  ["/pharmacy?tab=import", "Stock Count", "list", PHARMACY_ROLES, "Pharmacy"],
 
   // **Administration configures inventory.** /inventory is the hospital-wide
   // stock desk — receipts into the store, transfers between locations, counts
@@ -103,6 +103,8 @@ const NAV_ITEMS = [
   ["/admin", "Administration", "shield", ADMIN_ROLES, "Administration"],
   ["/inventory", "Inventory", "box", ["inventory_manager"], "Administration"],
   ["/inventory?tab=import", "Stock Import / Export", "archive", ["inventory_manager"], "Administration"],
+  // Lots past their date or taken out of use — batch-level, never product.
+  ["/expired-items", "Expired Items", "alert", STOCK_CONTROL_ROLES, "Administration"],
   ["/departments", "Departments", "building", ADMIN_ROLES, "Administration"],
   ["/users", "Users", "shield", ADMIN_ROLES, "Administration"],
 ];

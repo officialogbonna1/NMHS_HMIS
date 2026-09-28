@@ -4,6 +4,8 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import api from "../api/client";
 import { readError } from "../api/errors";
 import { useToast } from "./Toaster.jsx";
+import { useAuth } from "../auth/AuthContext.jsx";
+import { STOCK_CONTROL_ROLES, hasRole } from "../auth/roles.js";
 import {
   Alert, Badge, Button, EmptyState, ErrorState, Field, Input, Modal, PageHeader, MetaStat, SearchInput,
   Select, Skeleton, Table, TableWrap, TabBar, Tab, Td, Th, THead, Tr, naira,
@@ -23,6 +25,18 @@ import {
 // count against the Main Store, and a pharmacy transfer can only be *into*
 // the pharmacy. Nothing about the API changes: the same endpoints, the same
 // services, the same movements.
+//
+// **Reading is not changing.** A pharmacist reads the shelf and counts it (the
+// CSV export and its preview); posting a count, applying one, writing off and
+// transferring are inventory administration (`STOCK_CONTROL_ROLES`). The
+// controls below are offered by `useCanControlStock()` — a courtesy, because
+// the API is what refuses.
+
+/** May this person change stock (count, write off, transfer, apply)? */
+export function useCanControlStock() {
+  const { user } = useAuth();
+  return hasRole(user, STOCK_CONTROL_ROLES);
+}
 
 const currency = (n) =>
   new Intl.NumberFormat("en-NG", { style: "currency", currency: "NGN", maximumFractionDigits: 0 })
@@ -274,6 +288,7 @@ export function StockOnHand({ locations, lockedLocation }) {
  */
 function StockStatus({ record }) {
   const days = daysUntil(record.expiry_date);
+  if (record.expiry_status === "marked_expired") return <Badge tone="danger">Marked expired</Badge>;
   if (record.is_expired) return <Badge tone="danger">Expired</Badge>;
   if (record.quantity === 0) return <Badge tone="neutral">Out of stock</Badge>;
   if (days <= 30) return <Badge tone="warning">Expires in {days}d</Badge>;
@@ -281,6 +296,7 @@ function StockStatus({ record }) {
 }
 
 function StockRow({ record }) {
+  const canControl = useCanControlStock();
   const { ask } = useConfirm();
   const { showToast } = useToast();
   const refresh = useRefresh();
@@ -329,8 +345,12 @@ function StockRow({ record }) {
         <Td><StockStatus record={record} /></Td>
         <Td className="text-right">
           <div className="flex justify-end gap-1">
-            <Button variant="link" size="xs" onClick={() => setCounting((c) => !c)}>Count</Button>
-            {record.is_expired && record.quantity > 0 && (
+            {/* Posting a count and writing off both move stock, so they are
+                inventory administration's; a pharmacist reads this row. */}
+            {canControl && (
+              <Button variant="link" size="xs" onClick={() => setCounting((c) => !c)}>Count</Button>
+            )}
+            {canControl && record.is_expired && record.quantity > 0 && (
               <Button
                 variant="linkDanger" size="xs"
                 onClick={async () => {
@@ -1157,6 +1177,7 @@ export function CountImportExport({ locations, lockedLocation }) {
 }
 
 function ImportPreview({ preview, busy, onApply, onDiscard }) {
+  const canApply = useCanControlStock();
   const [onlyChanges, setOnlyChanges] = useState(false);
   const summary = preview.summary ?? {};
   const errors = preview.errors ?? [];
@@ -1280,7 +1301,15 @@ function ImportPreview({ preview, busy, onApply, onDiscard }) {
       {preview.status === "previewed" && (
         <div className="flex flex-wrap justify-end gap-2 border-t border-slate-200 p-4 sm:px-5">
           <Button variant="secondary" onClick={onDiscard} disabled={busy}>Discard</Button>
-          <Button onClick={onApply} disabled={busy || !preview.is_applicable}>Apply count…</Button>
+          {canApply ? (
+            <Button onClick={onApply} disabled={busy || !preview.is_applicable}>Apply count…</Button>
+          ) : (
+            // Counting is theirs; applying moves stock. Said, rather than a
+            // button that would only 403.
+            <p className="self-center text-sm text-slate-700">
+              Nothing has moved. An inventory administrator applies this count.
+            </p>
+          )}
         </div>
       )}
     </section>

@@ -31,6 +31,9 @@ def check_expiring_batches():
     cutoff = today + timedelta(days=HospitalSettings.load().expiry_warning_days)
     expiring = StockRecord.objects.filter(
         batch__expiry_date__lte=cutoff, batch__expiry_date__gte=today, quantity__gt=0,
+        # A lot already marked expired is not "about to" — it is on the
+        # Expired Items register, and warning about it twice is noise.
+        batch__marked_expired_at__isnull=True,
     ).select_related("batch__item", "location").order_by("batch__expiry_date")
     return [
         {"item": r.batch.item.name, "batch_no": r.batch.batch_no,

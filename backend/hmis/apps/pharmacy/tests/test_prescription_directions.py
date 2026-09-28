@@ -7,6 +7,7 @@ product's strength and form — never a count (rule 7).
 from django.test import TestCase
 from rest_framework.test import APIClient
 
+from apps.pharmacy.testing import pay_for
 from apps.accounts.models import User
 from apps.inventory.models import StockRecord
 from apps.inventory.testing import product, stock_the_pharmacy
@@ -47,6 +48,7 @@ class PrescriptionDirectionsTests(TestCase):
         row = self.rows(self.api.get("/api/prescriptions/", {"status": "pending"}))[0]
         self.assertEqual((row["route_label"], row["item_strength"], row["item_form"], row["frequency"]),
                          ("Oral", "500 mg", "Capsule", "Three times daily"))
+        pay_for(prescription, by=self.pharmacist)   # the line's own bill first (rule 58)
         self.assertEqual(self.api.post(f"/api/prescriptions/{prescription.pk}/dispense/").status_code, 200)
         self.assertEqual(StockRecord.objects.get(batch=self.batch).quantity, 9)
 

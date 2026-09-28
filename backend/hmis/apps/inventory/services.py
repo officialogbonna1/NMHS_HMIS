@@ -37,7 +37,7 @@ from django.utils import timezone
 
 from .models import (
     Batch, StockCount, StockCountLine, StockLocation, StockMovement, StockRecord,
-    StockTransfer, StockTransferLine, dispensing_location, receiving_location,
+    StockTransfer, StockTransferLine, dispensing_location, expired_q, receiving_location,
 )
 
 
@@ -45,17 +45,18 @@ class InsufficientStockError(ValidationError):
     """Asked to move more units out of a location than are standing there."""
 
 
-def _today():
+def refuse_archived(item, *, doing):
     """
-    Today, in the hospital's own timezone.
-
-    `timezone.now().date()` is the **UTC** date. With `TIME_ZONE` set to
-    Africa/Lagos (UTC+1) the two disagree between local midnight and 01:00 —
-    UTC is still on yesterday — so a lot that expired yesterday read as
-    unexpired and `write_off_expired` refused to clear it. `localdate()` is
-    the clock the batch's `expiry_date` was entered against.
+    An archived product (`is_active=False`) stays on every record that already
+    names it and is refused for anything new — what `Item.is_active`'s own help
+    text has always promised and nothing enforced. Here, at the service, so the
+    API, Django admin and a shell all meet the same refusal.
     """
-    return timezone.localdate()
+    if item is not None and not item.is_active:
+        raise ValidationError(
+            f"{item.name} is archived, so it cannot be {doing}. "
+            f"Restore it under Administration → Products first.",
+            code="item_archived")
 
 
 def location_by_code(code):
@@ -158,6 +159,7 @@ def receive_stock(*, batch, quantity, actor, location=None, reference=""):
     """
     if quantity < 1:
         raise ValidationError("A delivery has to be at least one unit.")
+    refuse_archived(batch.item, doing="received")
     destination = location or receiving_location()
     if destination is None:
         raise ValidationError("No receiving location is configured.")
@@ -215,6 +217,7 @@ def transfer_stock(*, source, destination, lines, actor, note=""):
             raise ValidationError(f"How many units of {batch} are being transferred?")
         if quantity < 1:
             raise ValidationError(f"The quantity for {batch} must be at least 1.")
+        refuse_archived(batch.item, doing="transferred")
         prepared.append((batch, quantity))
 
     if not prepared:
@@ -286,7 +289,7 @@ def _available_records(*, item, location, include_expired=False):
                .select_related("batch", "batch__item")
                .filter(batch__item=item, location=location, quantity__gt=0))
     if not include_expired:
-        records = records.exclude(batch__expiry_date__lt=_today())
+        records = records.exclude(expired_q())
     return records.order_by("batch__expiry_date", "batch_id")
 
 
@@ -302,7 +305,7 @@ def quantity_on_hand(*, item, location=None, include_expired=False):
     if location is not None:
         records = records.filter(location=location)
     if not include_expired:
-        records = records.exclude(batch__expiry_date__lt=_today())
+        records = records.exclude(expired_q())
     return records.aggregate(total=Sum("quantity"))["total"] or 0
 
 
@@ -498,9 +501,111 @@ def write_off_expired(*, batch, actor, location=None, note=""):
     return batch
 
 
+# --------------------------------------------------------- catalogue audit
+
+#: The fields an administrator edits on a product — the Django admin form's
+#: fields, and the HMIS form's. What an audit row compares.
+ITEM_FIELDS = ("name", "strength", "dosage_form", "category_id", "unit_id", "is_active",
+               "sku", "barcode", "reorder_threshold")
+
+
+def item_snapshot(item):
+    return {field: getattr(item, field) for field in ITEM_FIELDS} if item and item.pk else {}
+
+
+def audit_item(*, actor, item, before=None, deleted=False, request=None, source="hmis"):
+    """
+    One audit row for one change to the catalogue, whichever door it came
+    through — `source` is `"hmis"` or `"django-admin"`, the convention the
+    consultation note's two doors already use.
+
+    The action says what happened in the words a reviewer searches for:
+    created, archived, restored, deleted, or edited — archiving is read off
+    `is_active` moving, so a PATCH from the old Deactivate toggle and the
+    explicit Archive action land as the same event. `changes` holds only what
+    moved, `{field: [before, after]}`.
+    """
+    from apps.core.services import audit_event
+
+    after = {} if deleted else item_snapshot(item)
+    if deleted:
+        action = "inventory.item_deleted"
+    elif not before:
+        action = "inventory.item_created"
+    elif before.get("is_active") and not after.get("is_active"):
+        action = "inventory.item_archived"
+    elif not before.get("is_active") and after.get("is_active"):
+        action = "inventory.item_restored"
+    else:
+        action = "inventory.item_updated"
+    changes = {field: [before.get(field), after.get(field)] for field in ITEM_FIELDS
+               if before and not deleted and before.get(field) != after.get(field)}
+    if before and not deleted and not changes:
+        return None   # a save that changed nothing is not an event
+    details = {"source": source, "name": item.name, "sku": item.sku,
+               "barcode": item.barcode, "changes": changes}
+    if deleted:
+        # Written before the row goes, and carrying what it was, because
+        # `object_id` will point at nothing afterwards (rule 37's precedent).
+        details["record"] = item_snapshot(item)
+    return audit_event(actor=actor, action=action, instance=item, request=request,
+                       details=details)
+
+
+# ------------------------------------------------------------ manual expiry
+
+
+@transaction.atomic
+def mark_batch_expired(*, batch, actor, reason):
+    """
+    Take a lot out of use before its printed date.
+
+    A state on the batch, not a copy and not a movement: the stock stays where
+    it stands, in the quantities it had, so the Expired Items register shows
+    exactly what is on which shelf and a write-off (`write_off_expired`, which
+    accepts a marked lot) clears it with its movements the ordinary way. From
+    this moment `expired_q()` excludes it from dispensing, the till and FEFO.
+    """
+    reason = (reason or "").strip()
+    if not reason:
+        raise ValidationError("Say why this batch is being marked expired.",
+                              code="reason_required")
+    batch = Batch.objects.select_for_update().get(pk=batch.pk)
+    if batch.marked_expired_at is not None:
+        raise ValidationError("This batch is already marked expired.", code="already_marked")
+    Batch.objects.filter(pk=batch.pk).update(
+        marked_expired_at=timezone.now(), marked_expired_by=actor,
+        marked_expired_reason=reason[:255])
+    batch.refresh_from_db()
+    return batch
+
+
+@transaction.atomic
+def return_batch_to_use(*, batch, actor, reason):
+    """
+    Undo a manual mark — a mistake, or a recall that was lifted.
+
+    Marking is a state, so it has to be reversible (the rule the laboratory
+    catalogue's retire/restore follows). It clears the *mark* only: a lot past
+    its printed date stays expired, because that is arithmetic, not a decision.
+    """
+    reason = (reason or "").strip()
+    if not reason:
+        raise ValidationError("Say why this batch is going back into use.",
+                              code="reason_required")
+    batch = Batch.objects.select_for_update().get(pk=batch.pk)
+    if batch.marked_expired_at is None:
+        raise ValidationError("This batch was not marked expired.", code="not_marked")
+    Batch.objects.filter(pk=batch.pk).update(
+        marked_expired_at=None, marked_expired_by=None, marked_expired_reason="")
+    batch.refresh_from_db()
+    return batch
+
+
 __all__ = [
     "InsufficientStockError", "apply_stock_change", "count_sheet", "fefo_lines_for",
-    "location_by_code",
+    "audit_item", "item_snapshot",
+    "location_by_code", "mark_batch_expired", "refuse_archived", "return_batch_to_use",
     "post_stock_count", "quantity_on_hand", "receive_batch", "receive_stock",
     "record_stock_count", "transfer_stock", "write_off_expired",
     "dispensing_location", "receiving_location",

@@ -29,6 +29,7 @@ from django.core.exceptions import ValidationError
 from django.test import TestCase
 from rest_framework.test import APIClient
 
+from apps.pharmacy.testing import pay_for
 from apps.accounts.models import User
 from apps.billing.models import (Adjustment, Charge, PatientLedger, Payment, PaymentAllocation,
                                  Refund)
@@ -657,7 +658,7 @@ class ThePrescriptionWorkflowIsUntouchedTests(PosDiscountTestCase):
         # Then the ordinary clinical path, unchanged.
         script = create_prescription(patient=self.patient, item=self.para, quantity=10,
                                      doctor=self.doctor)
-        dispense_prescription(prescription=script, pharmacist=self.pharmacist)
+        dispense_prescription(prescription=pay_for(script, by=self.pharmacist), pharmacist=self.pharmacist)
         script.refresh_from_db()
 
         charge = Charge.objects.filter(patient=self.patient, source_type="prescription").latest("id")
@@ -673,7 +674,7 @@ class ThePrescriptionWorkflowIsUntouchedTests(PosDiscountTestCase):
                   discount_reason="Loyal customer")
         script = create_prescription(patient=self.patient, item=self.para, quantity=6,
                                      doctor=self.doctor)
-        dispense_prescription(prescription=script, pharmacist=self.pharmacist)
+        dispense_prescription(prescription=pay_for(script, by=self.pharmacist), pharmacist=self.pharmacist)
 
         # 100 − 4 sold − 6 dispensed = 90, and both movements are in the log.
         self.assertEqual(self.held(self.para_batch), opening - 10)
@@ -686,7 +687,7 @@ class ThePrescriptionWorkflowIsUntouchedTests(PosDiscountTestCase):
         self.policy(pos_discounts_enabled=False, pos_max_discount_percent=D("0"))
         script = create_prescription(patient=self.patient, item=self.para, quantity=5,
                                      doctor=self.doctor)
-        dispense_prescription(prescription=script, pharmacist=self.pharmacist)
+        dispense_prescription(prescription=pay_for(script, by=self.pharmacist), pharmacist=self.pharmacist)
         script.refresh_from_db()
         self.assertEqual(script.status, "dispensed")
         self.assertEqual(self.held(self.para_batch), 95)

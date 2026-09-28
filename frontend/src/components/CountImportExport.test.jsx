@@ -52,7 +52,7 @@ describe("the CSV stock count", () => {
                         errors: [{ row: 2, column: "Counted Qty", message: 'Counted Qty "abc" must be a whole number, 0 or more.' }] }),
     });
     const user = userEvent.setup();
-    renderWithApp(<CountImportExport locations={[PHARMACY]} lockedLocation={PHARMACY} />, { user: { role: "pharmacist" } });
+    renderWithApp(<CountImportExport locations={[PHARMACY]} lockedLocation={PHARMACY} />, { user: { role: "inventory_manager" } });
 
     await uploadFile(user);
     expect(await screen.findByText(/1 problem — nothing can be applied from this file/)).toBeInTheDocument();
@@ -70,7 +70,8 @@ describe("the CSV stock count", () => {
         : previewOf(),
     }));
     const user = userEvent.setup();
-    renderWithApp(<CountImportExport locations={[PHARMACY]} lockedLocation={PHARMACY} />, { user: { role: "pharmacist" } });
+    // Applying a count moves stock: inventory administration's, not the counter's.
+    renderWithApp(<CountImportExport locations={[PHARMACY]} lockedLocation={PHARMACY} />, { user: { role: "inventory_manager" } });
 
     await uploadFile(user);
     expect(await screen.findByText("Paracetamol 500mg")).toBeInTheDocument();
@@ -85,5 +86,19 @@ describe("the CSV stock count", () => {
 
     await waitFor(() => expect(post).toHaveBeenLastCalledWith("/stock-count-imports/9/apply/"));
     expect(await screen.findByText(/Posted as CNT-000004/)).toBeInTheDocument();
+  });
+
+  it("lets a pharmacist count and preview their shelf, and leaves applying it to an administrator", async () => {
+    const post = vi.spyOn(api, "post").mockResolvedValue({ data: previewOf() });
+    const user = userEvent.setup();
+    renderWithApp(<CountImportExport locations={[PHARMACY]} lockedLocation={PHARMACY} />, { user: { role: "pharmacist" } });
+
+    await uploadFile(user);
+    expect(await screen.findByText("Paracetamol 500mg")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Apply count…" })).not.toBeInTheDocument();
+    expect(screen.getByText(/An inventory administrator applies this count/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Discard" })).toBeInTheDocument();
+    expect(post).toHaveBeenCalledTimes(1);
+    expect(post.mock.calls[0][0]).toBe("/stock-count-imports/");
   });
 });

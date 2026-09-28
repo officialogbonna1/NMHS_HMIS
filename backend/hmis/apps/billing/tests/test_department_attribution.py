@@ -24,6 +24,7 @@ from decimal import Decimal
 
 from django.test import TestCase
 
+from apps.pharmacy.testing import pay_for
 from apps.accounts.models import User
 from apps.billing.departments import REVENUE_DEPARTMENTS, department_for_source
 from apps.billing.services import add_charge, resolve_department
@@ -194,7 +195,7 @@ class ServiceAttributionTests(TestCase):
             patient=self.patient, doctor=self.doctor, item=item, quantity=5,
             dosage_instructions="1 tds",
         )
-        dispense_prescription(prescription=prescription, pharmacist=self.pharmacist)
+        dispense_prescription(prescription=pay_for(prescription, by=self.pharmacist), pharmacist=self.pharmacist)
 
         charge = Charge.objects.get(source_type="prescription", source_id=prescription.pk)
         self.assertIsNotNone(charge.department)

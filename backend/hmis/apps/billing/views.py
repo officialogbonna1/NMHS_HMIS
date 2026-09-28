@@ -44,6 +44,14 @@ COLLECTING_ROLES = BILLING_ROLES + ["pharmacist"]
 # role rather than trusted from the request body.
 PAYMENT_CHANNEL_BY_ROLE = {"pharmacist": "pharmacy", "cashier": "cashier", "accountant": "cashier"}
 
+# The bills the pharmacy counter may name when it takes money for one bill
+# (`POST /payments/` with `charge`). Its own: a script line and a till sale.
+# The counter may still take money on a patient's account generally, which
+# settles oldest first as it always has — what it may not do is *choose* to
+# put the money on a laboratory or consultation bill (rule 18: the pharmacy
+# takes its own money). The desks in BILLING_ROLES name any bill.
+PHARMACY_CHARGE_SOURCES = frozenset({"prescription", "pos_sale"})
+
 # Who prices the catalogue. Cashiers keep it because they are the ones who
 # find out a service has no price when a patient is standing at the counter.
 CATALOG_ROLES = ["cashier", "accountant"]
@@ -250,7 +258,10 @@ class ChargeViewSet(viewsets.ModelViewSet):
                 queryset=PaymentDeferral.objects.filter(released_at__isnull=True)
                                                 .select_related("approved_by"),
                 to_attr="open_deferrals",
-            )
+            ),
+            # A pharmacy bill names its script line (`prescription` on the
+            # serializer) — prefetched, so a statement is not a query per row.
+            "prescriptions__item__unit", "prescriptions__doctor",
         ).order_by("-created_at")
 
     def filter_queryset(self, queryset):
@@ -672,9 +683,19 @@ class PaymentViewSet(viewsets.ModelViewSet):
         }, status=status.HTTP_201_CREATED)
     def create(self, request, *args, **kwargs):
         s=self.get_serializer(data=request.data); s.is_valid(raise_exception=True)
-        try: payment=record_payment(patient=s.validated_data["patient"], amount=s.validated_data["amount"], received_by=request.user, method=s.validated_data.get("method", "cash"), reference=s.validated_data.get("reference", ""), channel=PAYMENT_CHANNEL_BY_ROLE.get(request.user.role, "front_desk"))
+        charge = s.validated_data.get("charge")
+        if (charge is not None and request.user.role == "pharmacist"
+                and charge.source_type not in PHARMACY_CHARGE_SOURCES):
+            return Response({"detail": "The pharmacy counter takes payment for pharmacy bills only. "
+                                       "This bill is settled at the cash desk.",
+                             "code": "not_a_pharmacy_charge"},
+                            status=status.HTTP_403_FORBIDDEN)
+        try: payment=record_payment(patient=s.validated_data["patient"], amount=s.validated_data["amount"], received_by=request.user, method=s.validated_data.get("method", "cash"), reference=s.validated_data.get("reference", ""), channel=PAYMENT_CHANNEL_BY_ROLE.get(request.user.role, "front_desk"), charge=charge)
         except ValueError as exc: return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
-        audit_event(actor=request.user, action="billing.payment_recorded", instance=payment, request=request); return Response(self.get_serializer(payment).data, status=201)
+        audit_event(actor=request.user, action="billing.payment_recorded", instance=payment,
+                    details={"charge": getattr(s.validated_data.get("charge"), "pk", None)},
+                    request=request)
+        return Response(self.get_serializer(payment).data, status=201)
 class AdjustmentViewSet(viewsets.ModelViewSet):
     queryset = Adjustment.objects.select_related("patient", "charge", "approved_by"); serializer_class = AdjustmentSerializer
     filter_backends = [DjangoFilterBackend, filters.SearchFilter]

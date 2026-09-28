@@ -121,8 +121,16 @@ export const REFUND_ROLES = ["cashier", "accountant"];
 // to take money out of the drawer, and Cancel & refund needs both groups.
 export const CANCEL_ROLES = ["cashier", "accountant"];
 
-// Who moves stock. Mirrors STOCK_ROLES.
+// Who reads stock — and counts a shelf (the CSV export and its preview).
+// Mirrors STOCK_ROLES.
 export const STOCK_ROLES = ["pharmacist", "inventory_manager"];
+
+// Who **changes** stock outside dispensing and the till: receiving,
+// transferring, posting or applying a count, writing off, marking a batch
+// expired, and the Expired Items register. Mirrors STOCK_CONTROL_ROLES —
+// inventory administration, deliberately not the pharmacist (admins pass
+// every group, as everywhere).
+export const STOCK_CONTROL_ROLES = ["inventory_manager"];
 
 // The pharmacy POS till. Mirrors POS_ROLES: pharmacists and cashiers open a
 // register, ring up sales and take payment.

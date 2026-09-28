@@ -27,7 +27,7 @@ from rest_framework.response import Response
 from apps.accounts.permissions import POS_HISTORY_ROLES, POS_RETURN_ROLES, POS_ROLES, RoleRequired
 from apps.billing import reporting
 from apps.billing.models import Payment, Refund
-from apps.inventory.models import Item, StockRecord, dispensing_location
+from apps.inventory.models import Item, StockRecord, dispensing_location, expired_q
 from apps.patients.access import patient_queryset_for
 
 from . import services
@@ -262,7 +262,7 @@ class SaleViewSet(viewsets.ReadOnlyModelViewSet):
         if location is not None and items:
             records = (StockRecord.objects
                        .filter(location=location, quantity__gt=0, batch__item__in=items)
-                       .exclude(batch__expiry_date__lt=timezone.localdate())
+                       .exclude(expired_q())
                        .select_related("batch").order_by("batch__expiry_date", "batch_id"))
             for record in records:
                 entry = stock.setdefault(record.batch.item_id,

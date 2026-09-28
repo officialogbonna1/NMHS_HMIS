@@ -66,11 +66,17 @@ function ResourceScreen({ config }) {
     }),
   });
 
+  // A resource with `archive` retires and restores through its own named
+  // actions (audited as such); every other resource toggles `is_active`.
+  const archive = config.archive;
   const toggleActive = useMutation({
-    mutationFn: (row) => api.patch(`/${config.endpoint}/${row.id}/`, { is_active: !row.is_active }),
+    mutationFn: (row) => (archive
+      ? api.post(`/${config.endpoint}/${row.id}/${row.is_active ? archive.action : archive.restore}/`)
+      : api.patch(`/${config.endpoint}/${row.id}/`, { is_active: !row.is_active })),
     onSuccess: (_r, row) => {
       refresh();
-      showToast({ title: row.is_active ? "Deactivated" : "Activated" });
+      showToast({ title: row.is_active ? (archive ? "Archived" : "Deactivated")
+                                       : (archive ? "Restored" : "Activated") });
     },
     onError: (error) => showToast({
       title: "Could not change this", message: readError(error, "Please try again."), tone: "error",
@@ -94,7 +100,7 @@ function ResourceScreen({ config }) {
         subtitle={config.blurb}
         actions={
           <Button onClick={() => setEditing("new")}>
-            + New {config.title.replace(/s$/, "").toLowerCase()}
+            + New {singular(config)}
           </Button>
         }
         toolbar={
@@ -108,7 +114,8 @@ function ResourceScreen({ config }) {
               size="sm"
               onClick={() => setShowInactive((v) => !v)}
             >
-              {showInactive ? "Hide inactive" : `Show inactive${inactiveCount ? ` (${inactiveCount})` : ""}`}
+              {showInactive ? `Hide ${inactiveWord(config)}`
+                : `Show ${inactiveWord(config)}${inactiveCount ? ` (${inactiveCount})` : ""}`}
             </Button>
           </div>
         }
@@ -166,12 +173,12 @@ function ResourceScreen({ config }) {
                         <Td key={column.key}
                             className={`${column.align === "right" ? "text-right tabular-nums" : ""} ${
                               column.strong ? "font-medium text-slate-900" : ""}`}>
-                          {format(row[column.key], column)}
+                          {format(column.render ? column.render(row) : row[column.key], column)}
                         </Td>
                       ))}
                       <Td>
                         {row.is_active === false
-                          ? <Badge tone="neutral">Inactive</Badge>
+                          ? <Badge tone="neutral">{archive?.label ?? "Inactive"}</Badge>
                           : <Badge tone="success">Active</Badge>}
                       </Td>
                       <Td className="text-right">
@@ -180,9 +187,21 @@ function ResourceScreen({ config }) {
                             Edit
                           </Button>
                           {"is_active" in row && (
-                            <Button variant="linkMuted" size="xs"
-                                    onClick={() => toggleActive.mutate(row)}>
-                              {row.is_active ? "Deactivate" : "Activate"}
+                            <Button
+                              variant="linkMuted" size="xs"
+                              onClick={async () => {
+                                if (archive && row.is_active && !(await ask({
+                                  title: `Archive ${rowLabel(row, config)}?`,
+                                  message: "It stays on every record that already names it, "
+                                    + "and stops being offered for anything new. You can "
+                                    + "restore it later.",
+                                  confirmLabel: "Archive",
+                                }))) return;
+                                toggleActive.mutate(row);
+                              }}
+                            >
+                              {archive ? (row.is_active ? "Archive" : "Restore")
+                                : (row.is_active ? "Deactivate" : "Activate")}
                             </Button>
                           )}
                           {/* Offered only where nothing points at the row.
@@ -247,15 +266,22 @@ function ResourceForm({ config, row, onDone, onCancel }) {
       className="mb-5 space-y-4 rounded-xl border border-slate-200 bg-white p-5"
     >
       <h2 className="font-semibold text-slate-900">
-        {row ? `Edit ${rowLabel(row, config)}` : `New ${config.title.replace(/s$/, "").toLowerCase()}`}
+        {row ? `Edit ${rowLabel(row, config)}` : `New ${singular(config)}`}
       </h2>
 
-      <div className="grid gap-4 sm:grid-cols-2">
-        {config.fields.map((field) => (
-          <FormField key={field.name} field={field} value={form[field.name]}
-                     onChange={(value) => set(field.name, value)} form={form} />
-        ))}
-      </div>
+      {sections(config.fields).map(({ title, fields }) => (
+        <fieldset key={title ?? "fields"} className="min-w-0 space-y-3">
+          {title && (
+            <legend className="text-sm font-semibold text-slate-800">{title}</legend>
+          )}
+          <div className="grid gap-4 sm:grid-cols-2">
+            {fields.map((field) => (
+              <FormField key={field.name} field={field} value={form[field.name]}
+                         onChange={(value) => set(field.name, value)} form={form} />
+            ))}
+          </div>
+        </fieldset>
+      ))}
 
       {error && <p className="text-sm text-red-700">{error}</p>}
 
@@ -370,6 +396,26 @@ function format(value, column) {
 function rowLabel(row, config) {
   const first = config.columns[0]?.key;
   return row.name ?? row[first] ?? `#${row.id}`;
+}
+
+function singular(config) {
+  return config.singular ?? config.title.replace(/s$/, "").toLowerCase();
+}
+
+function inactiveWord(config) {
+  return config.archive ? config.archive.label.toLowerCase() : "inactive";
+}
+
+/** Fields grouped by their `section`, in first-seen order. Unsectioned → one group. */
+function sections(fields) {
+  const groups = [];
+  for (const field of fields) {
+    const title = field.section ?? null;
+    let group = groups.find((g) => g.title === title);
+    if (!group) groups.push(group = { title, fields: [] });
+    group.fields.push(field);
+  }
+  return groups;
 }
 
 function slugify(text) {

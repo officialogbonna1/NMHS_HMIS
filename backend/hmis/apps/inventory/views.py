@@ -9,12 +9,18 @@ service. That is three layers saying the same thing on purpose — the
 serializer so the field does not exist, the viewset so no route reaches it,
 and the model so a future view cannot get it wrong.
 
-Who may do it is unchanged: STOCK_ROLES (pharmacist, inventory manager, and
-admin, which passes everything). Both locations are worked by the same
-people in this hospital — the pharmacist runs the counter and the store
-between them — so authority is per *operation*, not per location.
+**Reading is not changing.** STOCK_ROLES (pharmacist, inventory manager)
+read every shelf, batch, count and movement, and the pharmacist *counts* its
+shelf — the CSV export and the preview of an import. Changing stock outside
+dispensing and the till — receiving, transferring, posting or applying a
+count, writing off, marking a batch expired — is inventory administration:
+STOCK_CONTROL_ROLES (the inventory manager, plus both administrators, who pass
+every group). A pharmacy posting does not make somebody an inventory
+administrator. `apps/inventory/tests/test_workspace_boundary.py` holds both
+sides.
 """
 from django.core.exceptions import PermissionDenied, ValidationError
+from django.db import transaction
 from django.http import HttpResponse
 from django.utils import timezone
 from django_filters.rest_framework import DjangoFilterBackend
@@ -23,19 +29,36 @@ from rest_framework.decorators import action
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.response import Response
 
-from apps.accounts.permissions import CLINICIAN_ROLES, IsAdmin, RoleRequired, STOCK_ROLES
+from apps.accounts.permissions import (
+    CLINICIAN_ROLES, STOCK_CONTROL_ROLES, STOCK_ROLES, IsAdmin, RoleRequired,
+)
 from apps.core.config import ProtectedConfigMixin
 from apps.core.services import audit_event
 
 from . import count_csv, serializers
 from .models import (
     Batch, Item, ItemCategory, StockCount, StockCountImport, StockLocation, StockMovement,
-    StockRecord, StockTransfer, UnitOfMeasure, receiving_location,
+    StockRecord, StockTransfer, UnitOfMeasure, expired_q, receiving_location,
 )
 from .services import (
-    count_sheet, fefo_lines_for, post_stock_count, receive_stock, record_stock_count,
-    transfer_stock, write_off_expired,
+    audit_item, count_sheet, fefo_lines_for, item_snapshot, mark_batch_expired,
+    post_stock_count, receive_stock, record_stock_count, return_batch_to_use, transfer_stock,
+    write_off_expired,
 )
+
+
+def _read_or_control(view):
+    """
+    STOCK_ROLES for a read, STOCK_CONTROL_ROLES for anything that changes
+    stock. The shape every stock viewset below shares.
+    """
+    if view.request.method in permissions.SAFE_METHODS:
+        return [RoleRequired(STOCK_ROLES)]
+    return [RoleRequired(STOCK_CONTROL_ROLES)]
+
+
+def _flag(value):
+    return value in ("1", "true", "True")
 
 
 def _error(exc):
@@ -151,12 +174,18 @@ class ItemViewSet(ProtectedConfigMixin, viewsets.ModelViewSet):
     queue, the stock screens and the doctor's availability flag all resolve
     products here.
 
-    A product with batches or prescriptions behind it is never deleted; it is
-    deactivated, so every movement, prescription and bill that names it still
-    reads correctly.
+    **Archive, not delete, once it is part of the record.** Archiving is
+    `is_active=False` — the product stays on every batch, movement,
+    prescription and sale that names it, and is refused for anything new
+    (`services.refuse_archived`). `POST …/archive/` and `…/restore/` are the
+    two decisions by name; a PATCH of `is_active` from the generic
+    configuration toggle is the same event and is audited the same way.
+    DELETE removes only a product nothing points at, and answers 409 with the
+    counts otherwise (`ProtectedConfigMixin`). Every change writes an
+    `AuditLog` row through `services.audit_item`, which Django admin calls too.
     """
     queryset = Item.objects.select_related("category", "unit")
-    protected_relations = ("batches", "prescription_set", "pos_sale_lines")
+    protected_relations = serializers.ITEM_PROTECTED_RELATIONS
     # The doctor's drug picker searches this list rather than filtering the
     # first page client-side, which quietly hid every drug past number 25.
     filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
@@ -178,11 +207,66 @@ class ItemViewSet(ProtectedConfigMixin, viewsets.ModelViewSet):
         # Maintaining the catalogue is configuration, not counter work.
         return [IsAdmin()]
 
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        # The browsing default is what is in use — the receiving form, the
+        # transfer picker, the pharmacy's catalogue and the doctor's picker
+        # all offer only products that may be newly used. `?all=1` (the
+        # administration screen) or an explicit `?is_active=` sees archived
+        # ones. Applied to `list` only, never `get_object()`, so an archived
+        # product can still be opened, edited and restored (rule 21).
+        if self.action == "list":
+            params = self.request.query_params
+            prescriber = getattr(self.request.user, "role", None) in CLINICIAN_ROLES
+            if prescriber or not (_flag(params.get("all")) or "is_active" in params):
+                queryset = queryset.filter(is_active=True)
+        return queryset
+
     def get_serializer_class(self):
         # Doctors get the availability-only view; everyone else sees real numbers.
         if getattr(self.request.user, "role", None) in CLINICIAN_ROLES and self.action == "list":
             return serializers.ItemForPrescribingSerializer
         return serializers.ItemSerializer
+
+    def perform_create(self, serializer):
+        item = serializer.save()
+        audit_item(actor=self.request.user, item=item, request=self.request)
+
+    def perform_update(self, serializer):
+        before = item_snapshot(serializer.instance)
+        item = serializer.save()
+        audit_item(actor=self.request.user, item=item, before=before, request=self.request)
+
+    def perform_destroy(self, instance):
+        # Reached only once `ProtectedConfigMixin.destroy` has found nothing
+        # pointing at the row. The audit row is written first, in the same
+        # transaction, so a delete that fails leaves no record of a deletion.
+        with transaction.atomic():
+            audit_item(actor=self.request.user, item=instance, deleted=True,
+                       request=self.request)
+            instance.delete()
+
+    @action(detail=True, methods=["post"])
+    def archive(self, request, pk=None):
+        """Take a product out of new use. History keeps it; nothing is deleted."""
+        return self._set_active(request, False)
+
+    @action(detail=True, methods=["post"])
+    def restore(self, request, pk=None):
+        """Bring an archived product back into use."""
+        return self._set_active(request, True)
+
+    def _set_active(self, request, active):
+        item = self.get_object()
+        if item.is_active == active:
+            state = "in use" if active else "archived"
+            return Response({"detail": f"{item.name} is already {state}.",
+                             "code": "no_change"}, status=status.HTTP_400_BAD_REQUEST)
+        before = item_snapshot(item)
+        item.is_active = active
+        item.save(update_fields=["is_active", "updated_at"])
+        audit_item(actor=request.user, item=item, before=before, request=request)
+        return Response(serializers.ItemSerializer(item, context={"request": request}).data)
 
 
 class BatchViewSet(viewsets.ModelViewSet):
@@ -201,7 +285,9 @@ class BatchViewSet(viewsets.ModelViewSet):
     filterset_fields = ["item", "item__category"]
 
     def get_permissions(self):
-        return [RoleRequired(STOCK_ROLES)]
+        # Reading a lot is stock work; receiving, counting, writing off,
+        # marking expired and editing one are inventory administration.
+        return _read_or_control(self)
 
     def get_queryset(self):
         queryset = super().get_queryset()
@@ -211,6 +297,12 @@ class BatchViewSet(viewsets.ModelViewSet):
         if location:
             queryset = queryset.filter(stock__location_id=location,
                                        stock__quantity__gt=0).distinct()
+        # `?usable=1` / `?usable=0` — the lots `expired_q()` lets through, or
+        # the ones it stops. List only; a detail route names its row.
+        usable = self.request.query_params.get("usable")
+        if self.action == "list" and usable is not None:
+            queryset = (queryset.exclude(expired_q(prefix="")) if _flag(usable)
+                        else queryset.filter(expired_q(prefix="")))
         return queryset
 
     def perform_create(self, serializer):
@@ -301,9 +393,54 @@ class BatchViewSet(viewsets.ModelViewSet):
                     request=request)
         return Response(self.get_serializer(batch).data)
 
+    @action(detail=True, methods=["post"], url_path="mark-expired")
+    def mark_expired(self, request, pk=None):
+        """
+        Move a lot to Expired Items by hand, with a reason. The batch keeps its
+        identity, dates, prices and stock; it stops being usable.
+        """
+        batch = self.get_object()
+        try:
+            batch = mark_batch_expired(batch=batch, actor=request.user,
+                                       reason=request.data.get("reason", ""))
+        except ValidationError as exc:
+            return Response({**_error(exc), "code": _code(exc)},
+                            status=status.HTTP_400_BAD_REQUEST)
+        audit_event(actor=request.user, action="stock.batch_marked_expired", instance=batch,
+                    details={"item": batch.item.name, "batch_no": batch.batch_no,
+                             "expiry_date": str(batch.expiry_date),
+                             "reason": batch.marked_expired_reason,
+                             "stock": {r.location.code: r.quantity
+                                       for r in batch.stock.select_related("location")}},
+                    request=request)
+        return Response(self.get_serializer(batch).data)
+
+    @action(detail=True, methods=["post"], url_path="return-to-use")
+    def return_to_use(self, request, pk=None):
+        """Undo a manual mark. A lot past its printed date stays expired."""
+        batch = self.get_object()
+        previous = batch.marked_expired_reason
+        try:
+            batch = return_batch_to_use(batch=batch, actor=request.user,
+                                        reason=request.data.get("reason", ""))
+        except ValidationError as exc:
+            return Response({**_error(exc), "code": _code(exc)},
+                            status=status.HTTP_400_BAD_REQUEST)
+        audit_event(actor=request.user, action="stock.batch_returned_to_use", instance=batch,
+                    details={"item": batch.item.name, "batch_no": batch.batch_no,
+                             "reason": (request.data.get("reason") or "").strip(),
+                             "marked_reason": previous,
+                             "still_expired": batch.is_expired},
+                    request=request)
+        return Response(self.get_serializer(batch).data)
+
     def _location(self, request):
         location_id = _as_int(request.data.get("location"))
         return StockLocation.objects.filter(pk=location_id).first() if location_id else None
+
+
+def _code(exc):
+    return getattr(exc, "code", None) or "invalid"
 
 
 class StockRecordViewSet(viewsets.ReadOnlyModelViewSet):
@@ -322,7 +459,53 @@ class StockRecordViewSet(viewsets.ReadOnlyModelViewSet):
                      "batch__item__category__name"]
 
     def get_permissions(self):
+        if self.action == "expired":
+            return [RoleRequired(STOCK_CONTROL_ROLES)]
         return [RoleRequired(STOCK_ROLES)]
+
+    @action(detail=False, methods=["get"])
+    def expired(self, request):
+        """
+        **Expired Items**: every stock line whose lot is expired — past its
+        printed date on the hospital's calendar, or marked expired by hand —
+        read through the same `expired_q()` dispensing excludes, so the
+        register and the shelf cannot disagree about what is usable.
+
+        Batch-level, never product-level: one product with one expired lot and
+        one good one shows the expired lot here and keeps the good one on sale.
+        Nothing is written; an expired lot stays on file with its movements.
+        `?include_empty=1` keeps lines already written off (quantity 0);
+        `?location=`, `?search=` and `?status=expired|marked_expired` narrow it.
+        """
+        params = request.query_params
+        records = (self.filter_queryset(self.get_queryset())
+                   .select_related("batch__marked_expired_by", "batch__item__unit")
+                   .filter(expired_q()))
+        if not _flag(params.get("include_empty")):
+            records = records.filter(quantity__gt=0)
+        wanted = params.get("status")
+        today = timezone.localdate()
+        if wanted == "expired":
+            records = records.filter(batch__expiry_date__lt=today)
+        elif wanted == "marked_expired":
+            records = records.filter(batch__expiry_date__gte=today,
+                                     batch__marked_expired_at__isnull=False)
+        records = records.order_by("batch__expiry_date", "batch__item__name",
+                                   "location__display_order")
+        rows = []
+        for record in records:
+            batch = record.batch
+            by = batch.marked_expired_by
+            rows.append({
+                **serializers.StockRecordSerializer(record).data,
+                "supplier": batch.supplier,
+                "received_date": batch.received_date,
+                "marked_expired_at": batch.marked_expired_at,
+                "marked_expired_by_name": (by.get_full_name() or by.username) if by else None,
+                "marked_expired_reason": batch.marked_expired_reason,
+            })
+        return Response({"count": len(rows), "results": rows,
+                         "units": sum(row["quantity"] for row in rows)})
 
 
 class StockTransferViewSet(viewsets.ModelViewSet):
@@ -343,7 +526,7 @@ class StockTransferViewSet(viewsets.ModelViewSet):
     filterset_fields = ["source", "destination"]
 
     def get_permissions(self):
-        return [RoleRequired(STOCK_ROLES)]
+        return _read_or_control(self)
 
     def create(self, request, *args, **kwargs):
         source = StockLocation.objects.filter(pk=_as_int(request.data.get("source"))).first()
@@ -438,7 +621,9 @@ class StockCountViewSet(viewsets.ModelViewSet):
     filterset_fields = ["location"]
 
     def get_permissions(self):
-        return [RoleRequired(STOCK_ROLES)]
+        # The sheet and its CSV are for whoever counts; posting a count moves
+        # stock, so it is inventory administration.
+        return _read_or_control(self)
 
     @action(detail=False, methods=["get"])
     def sheet(self, request):
@@ -581,6 +766,11 @@ class StockCountImportViewSet(viewsets.ReadOnlyModelViewSet):
     MAX_BYTES = 5 * 1024 * 1024
 
     def get_permissions(self):
+        # Uploading a count is counting, and nothing moves on a preview — so
+        # whoever counts may upload and discard. Applying it posts the
+        # adjustments, which is inventory administration.
+        if self.action == "apply":
+            return [RoleRequired(STOCK_CONTROL_ROLES)]
         return [RoleRequired(STOCK_ROLES)]
 
     def create(self, request, *args, **kwargs):

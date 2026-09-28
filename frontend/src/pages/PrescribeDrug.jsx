@@ -57,9 +57,19 @@ export default function PrescribeDrug() {
     enabled: Boolean(patientId),
   });
 
+  // One token per script as written. A double-click, a retried request or a
+  // response that never arrived resends the same token, and the server answers
+  // with the script — and the bills — it already wrote rather than writing
+  // them twice (`Prescription.client_token`). Editing the lines is a different
+  // script, so it gets a new one.
+  const linesKey = JSON.stringify(lines.map((l) => [l.item.id, l.quantity, l.instructions,
+                                                   l.frequency, l.duration, l.route, l.notes]));
+  const clientToken = useMemo(() => newToken(), [linesKey]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const send = useMutation({
     mutationFn: () => api.post("/prescriptions/bulk/", {
       patient: patientId,
+      client_token: clientToken,
       lines: lines.map((l) => ({
         item: l.item.id,
         quantity: l.quantity,
@@ -76,7 +86,7 @@ export default function PrescribeDrug() {
       const count = response.data.length;
       showToast({
         title: "Sent to pharmacy",
-        message: `${count} drug${count === 1 ? "" : "s"} queued. The pharmacy dispenses and takes payment.`,
+        message: `${count} drug${count === 1 ? "" : "s"} queued and billed. The patient pays at the cash desk, then the pharmacy dispenses.`,
       });
       navigate(`/patients/${patientUuid}`);
     },
@@ -443,4 +453,14 @@ function DrugPicker({ onPick, chosenIds }) {
       )}
     </div>
   );
+}
+
+function newToken() {
+  if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
+  // Older browsers: RFC 4122 v4 from getRandomValues.
+  const bytes = globalThis.crypto.getRandomValues(new Uint8Array(16));
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = [...bytes].map((b) => b.toString(16).padStart(2, "0")).join("");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }

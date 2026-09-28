@@ -89,19 +89,21 @@ person explicitly asks for something different.
 6. **Prescribing and dispensing are two steps, and both live in
    `pharmacy/services.py`** — never create a `Prescription` or write to
    `Batch.quantity` from a view. A doctor's `create_prescription()` only
-   queues the request (status `pending`, no stock touched); a pharmacist's
-   `dispense_prescription()` is what deducts FEFO, writes the
-   `StockMovement` audit rows and raises the patient charge, all inside one
-   `transaction.atomic` with `select_for_update`.
+   queues the request (status `pending`, no stock touched) **and raises that
+   line's bill** (`bill_prescription`, rule 58); a pharmacist's
+   `dispense_prescription()` is what deducts FEFO and writes the
+   `StockMovement` audit rows, inside one `transaction.atomic` with
+   `select_for_update` — and only once that line's own bill allows it.
    `create_prescriptions()` writes a whole script — several drugs for one
    patient — inside one transaction, so a stock refusal on the third drug
    cannot leave the first two queued and the rest lost.
-   `create_prescription_and_dispense()` remains as the both-at-once wrapper.
+   (`create_prescription_and_dispense()`, the both-at-once wrapper, was
+   removed with rule 58: a script written a moment ago is always unpaid, so it
+   could only ever be refused, and nothing called it.)
    If you need a new way to move stock, add a function to
    `pharmacy/services.py` or `inventory/services.py` — don't route around
-   them. (Dispensing raises its charge the same way ordering a lab test does
-   — see rule 24. Referring to ultrasound or the eye clinic still does not:
-   those have no priced order behind them yet.)
+   them. (Prescribing raises its charge the way ordering a lab test does —
+   see rules 24 and 58. Dispensing raises none.)
 7. **Doctors never see raw stock counts** — the `/items/` endpoint returns
    `available: true/false` for doctors (see `ItemForPrescribingSerializer`),
    not quantities. Keep this distinction if you touch the drug picker.
@@ -273,8 +275,8 @@ person explicitly asks for something different.
    (`flag_is_manual`) is never overwritten by a recalculation, and no code
    here may name a condition.
 24. **Ordering a laboratory test raises its charge; the lab never touches the
-   money afterwards.** This is a deliberate exception to rule 6's "referring
-   raises no charge", and it applies to the laboratory only: `services
+   money afterwards.** This is a deliberate exception to "referring raises no
+   charge", shared since with imaging (rule 51) and prescribing (rule 58): `services
    .add_tests` calls `billing.services.add_charge` for each test, one charge
    per `LabOrderTest` (`source_type="lab_test"`), priced from the order-time
    snapshot. The doctor's order *is* the debt — nobody retypes it at the
@@ -337,20 +339,32 @@ person explicitly asks for something different.
      pharmacy reads the catalogue constantly (every dispense resolves a
      product, a unit and a price) and must never be shut out of it; what it
      cannot do is rename a category or retire a drug.
-   - **Operations** — receiving, transferring, counting, writing off,
-     dispensing — stay with `STOCK_ROLES`. That is the pharmacy's actual job.
+   - **Operations that change stock** — receiving, transferring, posting or
+     applying a count, writing off, marking a batch expired, editing a lot —
+     are inventory administration: `STOCK_CONTROL_ROLES` (the inventory
+     manager, plus both administrators, who pass every group). **Narrowed
+     deliberately (rule 57)**: the pharmacist used to hold all of them.
+   - **The counter** — dispensing, the POS, the pharmacy's payments, reading
+     every shelf, batch and movement, and *counting* its shelf (the sheet, the
+     CSV export and an import's preview) — stays with the pharmacist
+     (`STOCK_ROLES` for reads). A pharmacist counts; an inventory
+     administrator applies what was counted.
+   - A Pharmacy department posting grants none of it: authorisation is role
+     *and* department, and the department grants nothing on its own.
    - Removing the navigation link is housekeeping, never the control:
      `apps/inventory/tests/test_workspace_boundary.py` calls each
-     configuration endpoint as a pharmacist and expects 403, and calls each
-     operation and expects it to work.
+     configuration endpoint and each stock-changing operation as a pharmacist
+     and expects 403 with nothing moved, and runs each operation as the
+     inventory manager and the Hospital Admin and expects it to work.
 
    `/inventory` is Administration's stock desk (admin + inventory manager);
-   the pharmacy works its own shelf from `/pharmacy`. Both render the **same
+   the pharmacy reads its own shelf from `/pharmacy`. Both render the **same
    components** — `components/StockPanels.jsx` — with the pharmacy passing
-   `lockedLocation`, so a pharmacist counting "the shelf" cannot post the
-   count against the Main Store and a pharmacy transfer can only bring stock
-   *in*. Two workspaces, one implementation; there is no second stock screen
-   to drift.
+   `lockedLocation`, and every stock-changing control gated on
+   `useCanControlStock()` (the `STOCK_CONTROL_ROLES` mirror in `roles.js`). The
+   pharmacy's old `?tab=transfer` / `?tab=count` addresses land on Stock and
+   Stock count. Two workspaces, one implementation; there is no second stock
+   screen to drift.
 
    A card that opens a page the role's own guard bounces is as dead as one
    pointing at nothing — the pharmacist's low-stock alert kept aiming at
@@ -398,6 +412,11 @@ person explicitly asks for something different.
      destroy it in the other.
    - `write_off_expired()` — clears every location holding the lot unless one
      is named. Expired is expired on both shelves.
+   - **"Expired" has one definition: `inventory.models.expired_q()`** — past
+     the printed `expiry_date` on `timezone.localdate()`, *or* marked expired
+     by hand (`Batch.marked_expired_at`, rule 57). Dispensing, `consume_fefo`,
+     `fefo_lines_for`, `quantity_on_hand`, the POS product list and
+     `Batch.is_expired` all read it; never spell `expiry_date__lt` again.
    - `dispense_prescription()` (pharmacy) — draws **only** from
      `dispensing_location()`. Stock in the Main Store is not dispensable, and
      `available_quantity()` and the doctor's `available` flag both mean
@@ -1059,7 +1078,9 @@ person explicitly asks for something different.
    the same bytes are recognised; a failure part-way rolls the whole import
    back. **Who counts where** is `count_csv.countable_locations`: admin and the
    inventory manager anywhere, a pharmacist the dispensing shelf — checked for
-   the uploader and again for whoever confirms. Both workspaces render the one
+   the uploader and again for whoever confirms. **Applying** is
+   `STOCK_CONTROL_ROLES` (rule 57): the pharmacist exports, uploads and
+   previews their shelf, and an inventory administrator applies it. Both workspaces render the one
    `CountImportExport` panel from `StockPanels.jsx` (rule 29). Held by
    `apps/inventory/tests/test_count_csv.py` and
    `frontend/src/components/CountImportExport.test.jsx`.
@@ -1874,6 +1895,10 @@ person explicitly asks for something different.
    `test_an_unpaid_examination_is_shown_and_never_blocks_the_work` and
    `TheUnitIsNeverGatedByTheMoney` hold it from both sides. What changed is
    that the unit *knows*; **do not add a payment gate here**, in any form.
+   The pharmacy is the one deliberate exception (rule 58): medicine leaves the
+   building in the patient's hand, and the hospital asked for the counter to
+   wait on that line's own bill. It reads the same `service_billing`; it does
+   not widen into the laboratory or imaging.
    A first-attempt refusal that a second call waves past was tried and
    removed: it made a one-call workflow a two-call one, which is the
    hospital's workflow changed, whatever it is called.
@@ -2357,6 +2382,111 @@ person explicitly asks for something different.
    `frontend/src/components/maternityEpisode.test.js`,
    `frontend/src/pages/Maternity.multiple.test.jsx` and `Maternity.test.jsx`.
 
+57. **Hospital Admin runs the catalogue and the expired register; the pharmacy
+   counter runs neither.** One catalogue — `inventory.Item`, the row Django
+   admin's Add item form writes — reached from Administration → Products
+   (`configResources.products`, the Django admin fieldsets: Basic information
+   / Counter identifiers / Reordering). No second product model, no second
+   endpoint: `/api/items/` was already `IsAdmin` to write, and a product is
+   receivable the moment it exists.
+
+   - **Every change is audited, from either door.** `inventory.services
+     .audit_item` writes `inventory.item_created / _updated / _archived /
+     _restored / _deleted` with `details.source` = `"hmis"` or
+     `"django-admin"` and only the fields that moved; `ItemAdmin.save_model`,
+     `delete_model` and its activate/deactivate actions call it too.
+   - **Archive is `is_active=False`, and now it means what its help text
+     always said**: kept on every record, refused for anything new.
+     `services.refuse_archived` (code `item_archived`) is called by
+     `receive_stock`, `transfer_stock` and `create_prescription`, and
+     `BatchSerializer.validate_item` refuses a new lot before the row is
+     written; the POS already refused. A script written *before* the archive
+     is still dispensed. `POST /items/<id>/archive/` and `/restore/` are the
+     named actions; a PATCH of `is_active` is the same audited event.
+     `/items/`' **list** is active-only unless `?all=1` or `?is_active=` (a
+     prescriber always gets active only) — never `get_object()`, so an
+     archived product is still opened, edited and restored (rule 21).
+   - **Delete only what nothing points at.** `serializers
+     .ITEM_PROTECTED_RELATIONS` (batches, prescriptions, POS sale lines — every
+     relation to `Item`) is read by the API's 409, Django admin's hidden
+     button and the serializer's `is_deletable` / `references`, so the screen
+     offers Delete exactly where the server allows it. A refused delete is a
+     409, never an archive in disguise, and the audit row is written first.
+   - **Expired Items is batch-level** — `GET /api/stock-records/expired/`
+     (`STOCK_CONTROL_ROLES`), `/expired-items` on the frontend. A lot appears
+     automatically once `expired_q()` says so; one expired lot never archives
+     its product. **Marking by hand** is `POST /batches/<id>/mark-expired/`
+     (reason required) and is reversed by `/return-to-use/` (reason required;
+     it clears the mark only, never the date). It is a state on the batch —
+     `marked_expired_at/_by/_reason`, migration `inventory/0009`, nothing
+     backfilled — never a copy and never a movement: the lot keeps its number,
+     dates, prices, supplier, location and stock until an ordinary write-off
+     clears it. `stock.batch_marked_expired` / `stock.batch_returned_to_use`
+     are audited. The near-expiry alerts skip a marked lot.
+   - Held by `apps/inventory/tests/test_item_management.py`,
+     `test_expired_items.py`, `test_workspace_boundary.py`,
+     `frontend/src/pages/admin/ConfigResource.products.test.jsx`,
+     `frontend/src/pages/ExpiredItems.test.jsx`,
+     `components/CountImportExport.test.jsx` and
+     `components/Navigation.pharmacy.test.jsx`.
+
+58. **A prescription is billed when it is written, and dispensed on its own
+   bill.** It used to be billed at dispensing, so a script sat at the pharmacy
+   with no charge behind it — the cash desk was told about it and had nothing
+   to collect. Now the doctor's order is the debt, the laboratory's pattern
+   (rule 24):
+
+   - **One line, one charge, linked.** There is no `PrescriptionItem`: a
+     `Prescription` is one drug line, and `Prescription.charge` (migration
+     `pharmacy/0004`, `SET_NULL` like `LabOrderTest.charge`) is its bill,
+     beside the `source_type="prescription"` / `source_id` every charge
+     already carries. `pharmacy.services.bill_prescription` raises it through
+     `add_charge`, priced by `quote_prescription` — the FEFO lots on the
+     dispensing shelf at their own `sale_price`, the rule dispensing always
+     priced by — and snapshots it on `quoted_amount` (rule 21). A zero price
+     raises nothing. A script of several drugs is one announcement (rule 35).
+   - **Never twice.** A linked line returns its charge; otherwise the link is
+     a compare-and-set on `charge IS NULL` inside a savepoint, so a caller that
+     loses the race rolls its own charge back (holds on SQLite). A retried
+     submission is recognised by `Prescription.client_token` (the POS's
+     `Sale.client_token` pattern, sent by `PrescribeDrug`) and answers with the
+     script it already wrote. Dispensing raises no charge at all now.
+   - **The gate is the line's own bill, never the patient's balance.**
+     `dispensing_clearance` reads `billing.status.service_billing(charge)`:
+     PAID, NO PAYMENT REQUIRED and PAY LATER (an open deferral, rule 26) let it
+     go; UNPAID, PARTIALLY PAID without a deferral, and CANCELLED do not. It is
+     enforced inside `dispense_prescription` before a unit is read off the
+     shelf, answering 400 `payment_required` / `charge_cancelled` /
+     `not_billed` with the `billing` block — no stock, movement, dispensed
+     state or charge. The screen's `dispensable` is the same function.
+   - **Money for a script lands on that script.** `record_payment(charge=…)`
+     (`POST /payments/` with `charge`) settles that one bill and allocates
+     nothing elsewhere; without it a payment still goes oldest first. The
+     charge must be that patient's and still owing, and the payment is capped
+     at what it owes (returned POS goods included). Who may collect is still
+     `COLLECTING_ROLES`; the **pharmacist** may name only a pharmacy bill
+     (`PHARMACY_CHARGE_SOURCES`: prescription, POS sale — 403
+     `not_a_pharmacy_charge` otherwise), so the counter cannot steer money onto
+     a laboratory or consultation bill (rule 18). Held by
+     `apps/billing/tests/test_charge_scoped_payment.py`. Otherwise
+     the ₦5,000 paid "for the Amoxicillin" would settle last month's
+     consultation and the script would stay locked. `PayChargePanel` is the one
+     control, on the Billing counter's prescription rows and the pharmacy
+     queue. When a script's bill settles the pharmacists are told "Ready to
+     dispense" (`billing/clearance.py`).
+   - **Cancelling a script withdraws its bill** through `cancel_charge` while
+     nothing is paid on it; a paid one stays billed and is pinned on the
+     Service Cancellations desk (`billing/withdrawn.py`) for the cash desk to
+     cancel and refund — the laboratory's removed-test rule.
+   - **History is linked, never priced.** The migration links each historical
+     prescription to the one charge that already names it and creates
+     nothing. A pending script written before this has no bill and no quote;
+     it is refused as `not_billed` until somebody raises it
+     (`POST /prescriptions/<id>/bill/`, billing roles + pharmacist, audited
+     `prescription.billed`).
+   - Held by `apps/pharmacy/tests/test_prescription_billing.py` and
+     `frontend/src/pages/Pharmacy.billing.test.jsx`.
+
 ## Django admin
 
 Every app has an `admin.py` and every model is registered — `Patients` is
@@ -2827,12 +2957,13 @@ Done:
   filterable by kind, plus the four totals. Read-only; billing actions stay
   on the counter. Reception can read adjustments (list/retrieve) so the
   statement reconciles, but still cannot create one.
-- Pharmacy counter (`/pharmacy`, `Pharmacy.jsx`): dispensing queue →
-  Dispense (deducts stock, raises the charge) → take payment at the
-  counter, plus a pharmacy-payments tab filtered on `channel=pharmacy` — and
-  four stock tabs pinned to the dispensing shelf (stock on hand, request from
-  the store, physical count, movement history), rendered from the same
-  `StockPanels.jsx` components Administration uses (rule 29). The tab is in
+- Pharmacy counter (`/pharmacy`, `Pharmacy.jsx`): dispensing queue, each
+  line showing its own bill → take payment for that line (or the cash desk
+  does) → Dispense (deducts stock; rule 58), plus a pharmacy-payments tab filtered on `channel=pharmacy` — and
+  three stock tabs pinned to the dispensing shelf (stock on hand, stock count
+  by CSV preview, movement history), rendered from the same `StockPanels.jsx`
+  components Administration uses (rule 29). Transfers, posting counts and
+  write-offs are inventory administration's (rule 57). The tab is in
   the URL, so the dashboard's stock alert lands on the shelf it warns about.
 - Prescribing (`/patients/<id>/prescribe`, `PrescribeDrug.jsx`): a whole
   script, not one drug at a time — a searchable drug combobox (browse the
@@ -3040,9 +3171,9 @@ Not yet built:
 - A quarantine desk. Returned POS stock is released or destroyed with the
   existing transfer and count screens; there is no inspection workflow of its
   own.
-- The on-screen `/stock-counts/` endpoint still accepts any location from any
-  STOCK_ROLE, as it always has; only the CSV import applies
-  `countable_locations`. Narrowing the older endpoint is a separate decision.
+- The on-screen `/stock-counts/` endpoint now needs `STOCK_CONTROL_ROLES`
+  (rule 57) and still accepts any location from them; only the CSV import
+  applies `countable_locations`.
 - `apps/diagnostics` is still unreachable, and `apps/laboratory` has now
   answered the question it was left open on: the laboratory owns catalogued,
   priced, parameterised tests, and it rides on `PatientRoute` +

@@ -8,12 +8,13 @@ import { AuthContext } from "../auth/AuthContext.jsx";
 /**
  * Render a component inside the providers the application gives it: a router
  * (Button renders a Link when given `to`), TanStack Query, the toaster, and an
- * auth context holding whichever role the test is about.
+ * auth context holding whichever role the test is about. `route` is where the
+ * router starts, for a page that reads its own URL (`useParams`).
  *
  * `retry: false` so a mutation that is meant to fail fails once and the
  * assertion is not waiting on three backoffs.
  */
-export function renderWithApp(ui, { user = null, queryClient } = {}) {
+export function renderWithApp(ui, { user = null, queryClient, route = "/" } = {}) {
   const client = queryClient ?? new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
@@ -21,7 +22,7 @@ export function renderWithApp(ui, { user = null, queryClient } = {}) {
   return {
     client,
     ...render(
-      <MemoryRouter>
+      <MemoryRouter initialEntries={[route]}>
         <QueryClientProvider client={client}>
           <AuthContext.Provider value={value}>
             <ToastProvider><ConfirmProvider>{ui}</ConfirmProvider></ToastProvider>

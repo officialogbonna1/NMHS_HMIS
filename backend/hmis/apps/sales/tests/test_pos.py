@@ -23,6 +23,7 @@ from django.test import TestCase
 from django.utils import timezone
 from rest_framework.test import APIClient
 
+from apps.pharmacy.testing import pay_for
 from apps.accounts.models import User
 from apps.billing import reporting
 from apps.billing.models import (Adjustment, Charge, PatientLedger, Payment, PaymentAllocation,
@@ -480,7 +481,7 @@ class OneShelfTests(PosTestCase):
                                            dosage_instructions="1 tablet", frequency="Three times daily",
                                            duration="5 days", route="oral")
         self.assertEqual(self.held(batch), 100)           # prescribing moves nothing
-        dispense_prescription(prescription=prescription, pharmacist=self.pharmacist)
+        dispense_prescription(prescription=pay_for(prescription, by=self.pharmacist), pharmacist=self.pharmacist)
         self.assertEqual(self.held(batch), 95)            # Paracetamol = 100 → 95
         self.sell([{"item": ibuprofen.pk, "quantity": 3}])
         self.assertEqual(self.held(batch), 92)            # → 92
@@ -511,8 +512,9 @@ class FinancialReportTests(PosTestCase):
         self.sell([{"item": self.paracetamol.pk, "quantity": 2}], customer_type="patient",
                   patient=self.patient)                                                    # 100
         prescription = create_prescription(patient=self.patient, doctor=self.doctor, item=self.amoxil, quantity=1)
-        dispense_prescription(prescription=prescription, pharmacist=self.pharmacist)       # 200 charged
-        record_payment(patient=self.patient, amount="200", received_by=self.cashier)       # 200 paid
+        # 200 charged when it was written, 200 paid for it at the cash desk
+        # (rule 58), then dispensed.
+        dispense_prescription(prescription=pay_for(prescription, by=self.cashier), pharmacist=self.pharmacist)
         services.process_return(sale=walk_in, operator=self.cashier,
                                 lines=[{"sale_item": walk_in.items.get().pk, "quantity": 1}],
                                 reason="Unopened")                                          # 180 back

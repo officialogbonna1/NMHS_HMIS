@@ -251,6 +251,9 @@ REACHABLE = {
     "/api/units/": [PH, INV],
     "/api/stock-locations/": [PH, INV],
     "/api/stock-records/": [PH, INV],   # read-only: quantities move via services
+    # Expired Items — the inventory administrator's register (STOCK_CONTROL_ROLES),
+    # not the counter's. The pharmacist still sees `is_expired` on every line.
+    "/api/stock-records/expired/": [INV],
     "/api/stock-transfers/": [PH, INV],
     "/api/stock-counts/": [PH, INV],
     "/api/stock-counts/sheet/": [PH, INV],

@@ -128,7 +128,7 @@ def allocate_to_charges(*, patient, amount, payment=None):
     cleared = []
     for charge in charges:
         if remaining <= 0: break
-        due = charge.amount - charge.amount_paid - charge.amount_discounted - charge.amount_waived
+        due = _due(charge)
         if due <= 0:
             continue
         take = min(due, remaining)
@@ -151,13 +151,35 @@ def _percent_label(percent):
     """10 not 1E+1, 12.5 not 12.50 — this ends up in the reason a human reads."""
     return f"{percent.normalize():f}"
 
+def _due(charge):
+    """
+    What is still to be paid on this one bill: the face value less what was
+    paid, discounted, waived **and returned**. `Charge.balance` by another
+    name, read off the row being worked on (which may be locked and not yet
+    saved), and the one place every payment path asks it — the oldest-first
+    spread, a payment for one named bill and the POS till alike.
+
+    Goods brought back to the POS (rule 39) end the obligation for them the way
+    a discount ends part of one. Leaving them out is how a returned POS bill
+    that owed ₦0 still took ₦400 of a later consultation payment.
+    """
+    return (charge.amount - charge.amount_paid - charge.amount_discounted - charge.amount_waived
+            - charge.amount_returned)
+
+
 def _settled_status(charge):
     """
-    Discounted and waived money counts as settled — it is money nobody will
-    collect. A charge fully written off reads "waived" rather than "paid",
-    because nobody handed anything over.
+    Discounted, waived and returned money counts as settled — it is money
+    nobody will collect. A charge fully written off reads "waived" rather than
+    "paid", because nobody handed anything over.
+
+    The stored `status` is what `allocate_to_charges` selects open bills by, so
+    it has to agree with `_due` (and with the derived `settlement_status`): a
+    POS bill whose goods came back and whose remainder is paid is settled, not
+    "partial".
     """
-    covered = charge.amount_paid + charge.amount_discounted + charge.amount_waived
+    covered = (charge.amount_paid + charge.amount_discounted + charge.amount_waived
+               + charge.amount_returned)
     if covered >= charge.amount:
         return "waived" if charge.amount_waived > 0 and charge.amount_paid <= 0 else "paid"
     return "partial" if covered > 0 else "unpaid"
@@ -183,7 +205,23 @@ def _tell_the_unit(charge, *, was_owing, actor=None):
     return announce_cleared(charge, actor=actor)
 
 @transaction.atomic
-def record_payment(*, patient, amount, received_by, method="cash", reference="", channel="front_desk"):
+def record_payment(*, patient, amount, received_by, method="cash", reference="", channel="front_desk",
+                   charge=None):
+    """
+    Money taken at a counter.
+
+    With no `charge`, it is spread over the patient's open bills oldest first
+    (`allocate_to_charges`) — "pay towards the account", as it always was.
+
+    **With a `charge`, it settles that one bill and nothing else.** A patient
+    paying for the prescription in their hand is not clearing last month's
+    consultation, and a pharmacy script unlocks at the counter on its own
+    charge (`pharmacy.services.dispensing_clearance`), so money meant for it
+    must land on it. The same `Payment` row and the same `PaymentAllocation`
+    record either way — one payment system, told where the money goes, the
+    way `record_pos_payment` already settles its own charge. Capped at what
+    that charge still owes; part of it is a part payment of that charge.
+    """
     amount = Decimal(amount)
     if amount <= 0: raise ValueError("Payment amount must be greater than zero.")
     ledger, _ = PatientLedger.objects.select_for_update().get_or_create(patient=patient)
@@ -193,8 +231,30 @@ def record_payment(*, patient, amount, received_by, method="cash", reference="",
         # Never let a payment push the ledger negative — cap what reception
         # can record to what is actually owed.
         raise ValueError(f"This patient's outstanding balance is {ledger.outstanding_balance}; a payment of {amount} would exceed it.")
+    locked = None
+    if charge is not None:
+        locked = Charge.objects.select_for_update().get(pk=charge.pk)
+        if locked.patient_id != patient.pk:
+            raise ValueError("That charge belongs to another patient.")
+        if locked.status not in ("unpaid", "partial"):
+            raise ValueError(f"{locked.description} is not owing anything.")
+        due = _due(locked)
+        if due <= 0:
+            raise ValueError(f"{locked.description} is not owing anything.")
+        if amount > due:
+            raise ValueError(f"{locked.description} has {due} left to pay; a payment of {amount} "
+                             f"would exceed it.")
     payment = Payment.objects.create(patient=patient, amount=amount, received_by=received_by, method=method, reference=reference, channel=channel)
-    allocate_to_charges(patient=patient, amount=amount, payment=payment)
+    if locked is None:
+        allocate_to_charges(patient=patient, amount=amount, payment=payment)
+    else:
+        was_owing = True
+        locked.amount_paid += amount
+        locked.status = _settled_status(locked)
+        locked.save(update_fields=["amount_paid", "status"])
+        PaymentAllocation.objects.create(payment=payment, charge=locked, amount=amount)
+        if locked.status in ("paid", "waived"):
+            _tell_the_unit(locked, was_owing=was_owing, actor=received_by)
     ledger = refresh_ledger(patient)
     _close_settled_deferrals(patient)
     # Full or part is what the balance says afterwards, not what was intended:
@@ -809,8 +869,7 @@ def record_pos_payment(*, amount, method, received_by, reference, patient=None, 
     locked = Charge.objects.select_for_update().get(pk=charge.pk)
     if locked.patient_id != patient.pk:
         raise ValueError("That charge belongs to another patient.")
-    due = (locked.amount - locked.amount_paid - locked.amount_discounted - locked.amount_waived
-           - locked.amount_returned)
+    due = _due(locked)
     if amount != due:
         raise ValueError(f"The POS payment of {amount} does not match the {due} due on its charge.")
     locked.amount_paid += amount

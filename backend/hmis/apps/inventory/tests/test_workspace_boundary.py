@@ -7,8 +7,11 @@ boundary is enforced here, and this file is what holds it:
 
 * **configuration** — products, categories, units, locations — is read by
   everyone who works stock and written only by an admin;
-* **operations** — receiving, transferring, counting, writing off, dispensing
-  — stay with the stock roles, because that is the pharmacy's actual job;
+* **operations that change stock** — receiving, transferring, posting or
+  applying a count, writing off, marking a batch expired — are inventory
+  administration (STOCK_CONTROL_ROLES: inventory manager + both admins);
+* **the counter** — dispensing, the POS, reading the shelf and counting it
+  (the sheet, the CSV export and its preview) — stays the pharmacist's;
 * and the catalogue an admin configures is available to the pharmacy
   immediately, without the pharmacy needing the configuration screen at all.
 
@@ -22,9 +25,11 @@ from django.test import TestCase
 from django.utils import timezone
 from rest_framework.test import APIClient
 
+from apps.pharmacy.testing import pay_for
 from apps.accounts.models import User
 from apps.inventory.models import (
-    MAIN_STORE, PHARMACY, Batch, Item, ItemCategory, StockLocation, StockRecord, UnitOfMeasure,
+    MAIN_STORE, PHARMACY, Batch, Item, ItemCategory, StockLocation, StockMovement, StockRecord,
+    UnitOfMeasure,
 )
 from apps.inventory.services import receive_stock
 from apps.inventory.testing import product
@@ -129,11 +134,12 @@ class ConfigurationIsAdministrationsTests(WorkspaceBoundaryTests):
                 self.assertEqual(self.pharmacy_client.get(endpoint).status_code, 200)
 
 
-class OperationsStayWithTheCounterTests(WorkspaceBoundaryTests):
-    """Everything the pharmacy actually does with stock still works."""
-
+class _StockedTests(WorkspaceBoundaryTests):
     def setUp(self):
         super().setUp()
+        self.hospital_admin = User.objects.create_user(username="ha", password="t",
+                                                       role="hospital_admin")
+        self.hospital_admin_client = self._client(self.hospital_admin)
         self.item = product("Paracetamol", unit_name="Tablet")
         self.batch = Batch.objects.create(
             item=self.item, batch_no="PCM001", cost_price=Decimal("10"),
@@ -145,22 +151,105 @@ class OperationsStayWithTheCounterTests(WorkspaceBoundaryTests):
         record = StockRecord.objects.filter(batch=self.batch, location=location).first()
         return record.quantity if record else 0
 
-    def test_a_pharmacist_transfers_stock_from_the_store_to_the_counter(self):
-        response = self.pharmacy_client.post("/api/stock-transfers/", {
+    def _stock_the_counter(self, quantity=100):
+        response = self.store_client.post("/api/stock-transfers/", {
             "source": self.store.pk, "destination": self.pharmacy.pk,
-            "lines": [{"batch": self.batch.pk, "quantity": 100}],
+            "lines": [{"batch": self.batch.pk, "quantity": quantity}],
         }, format="json")
         self.assertEqual(response.status_code, 201, response.data)
-        self.assertEqual(self._held(self.store), 400)
-        self.assertEqual(self._held(self.pharmacy), 100)
 
-    def test_a_pharmacist_counts_their_own_shelf(self):
-        self.pharmacy_client.post("/api/stock-transfers/", {
+
+class InventoryAdministrationIsNotCounterWorkTests(_StockedTests):
+    """
+    A pharmacist works the counter: dispensing, the POS, taking money, and
+    reading and counting the shelf. Changing stock outside those —
+    receiving, transferring, posting or applying a count, writing off, marking
+    a batch expired, editing a lot — is inventory administration
+    (STOCK_CONTROL_ROLES), and a Pharmacy posting does not make anybody that.
+    """
+
+    def test_a_pharmacist_cannot_change_stock_by_calling_the_api(self):
+        self._stock_the_counter()
+        movements = StockMovement.objects.count()
+        expired = Batch.objects.create(
+            item=self.item, batch_no="OLD", cost_price=Decimal("10"), sale_price=Decimal("20"),
+            expiry_date=timezone.localdate() - timedelta(days=3))
+        attempts = [
+            ("post", "/api/stock-transfers/", {
+                "source": self.store.pk, "destination": self.pharmacy.pk,
+                "lines": [{"batch": self.batch.pk, "quantity": 10}]}),
+            ("post", "/api/stock-counts/", {
+                "location": self.pharmacy.pk,
+                "lines": [{"batch": self.batch.pk, "counted_quantity": 97}]}),
+            ("post", "/api/batches/", {
+                "item": self.item.pk, "batch_no": "NEW", "quantity": 10, "cost_price": "1",
+                "sale_price": "2",
+                "expiry_date": (timezone.localdate() + timedelta(days=90)).isoformat()}),
+            ("post", f"/api/batches/{self.batch.pk}/receive/", {"quantity": 10}),
+            ("post", f"/api/batches/{self.batch.pk}/count/",
+             {"location": self.pharmacy.pk, "counted_quantity": 1}),
+            ("post", f"/api/batches/{expired.pk}/write_off/", {}),
+            ("post", f"/api/batches/{self.batch.pk}/mark-expired/", {"reason": "Damaged"}),
+            ("patch", f"/api/batches/{self.batch.pk}/", {"expiry_date": "2030-01-01"}),
+            ("delete", f"/api/batches/{self.batch.pk}/", {}),
+        ]
+        for method, endpoint, payload in attempts:
+            with self.subTest(endpoint=endpoint, method=method):
+                response = getattr(self.pharmacy_client, method)(endpoint, payload,
+                                                                 format="json")
+                self.assertEqual(response.status_code, 403, response.data)
+
+        self.assertEqual(StockMovement.objects.count(), movements)
+        self.assertEqual((self._held(self.store), self._held(self.pharmacy)), (400, 100))
+        self.batch.refresh_from_db()
+        self.assertIsNone(self.batch.marked_expired_at)
+        self.assertFalse(Batch.objects.filter(batch_no="NEW").exists())
+
+    def test_a_pharmacist_still_reads_the_shelf_the_ledger_and_the_count_sheet(self):
+        for endpoint in ["/api/stock-records/", "/api/stock-movements/", "/api/batches/",
+                         "/api/stock-transfers/", "/api/stock-counts/",
+                         f"/api/stock-counts/sheet/?location={self.pharmacy.pk}",
+                         f"/api/stock-counts/export/?location={self.pharmacy.pk}",
+                         "/api/stock-count-imports/"]:
+            with self.subTest(endpoint=endpoint):
+                self.assertEqual(self.pharmacy_client.get(endpoint).status_code, 200)
+
+    def test_the_expired_items_register_is_inventory_administrations(self):
+        self.assertEqual(self.pharmacy_client.get("/api/stock-records/expired/").status_code, 403)
+        self.assertEqual(self.store_client.get("/api/stock-records/expired/").status_code, 200)
+        self.assertEqual(
+            self.hospital_admin_client.get("/api/stock-records/expired/").status_code, 200)
+
+    def test_a_pharmacy_department_posting_grants_no_inventory_authority(self):
+        """Role and department: the department grants nothing on its own."""
+        from apps.departments.models import Department
+        pharmacy_department, _ = Department.objects.get_or_create(
+            code="pharmacy", defaults={"name": "Pharmacy"})
+        pharmacy_department.staff.add(self.pharmacist)
+        response = self.pharmacy_client.post("/api/stock-transfers/", {
             "source": self.store.pk, "destination": self.pharmacy.pk,
-            "lines": [{"batch": self.batch.pk, "quantity": 100}],
-        }, format="json")
+            "lines": [{"batch": self.batch.pk, "quantity": 10}]}, format="json")
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(
+            self.pharmacy_client.post("/api/items/", {"name": "X"}, format="json").status_code,
+            403)
 
-        response = self.pharmacy_client.post("/api/stock-counts/", {
+
+class OperationsStayWithInventoryAdministrationTests(_StockedTests):
+    """The operations still work — for the people who administer stock."""
+
+    def test_the_store_keeper_and_the_hospital_admin_transfer_stock(self):
+        self._stock_the_counter(100)
+        response = self.hospital_admin_client.post("/api/stock-transfers/", {
+            "source": self.store.pk, "destination": self.pharmacy.pk,
+            "lines": [{"batch": self.batch.pk, "quantity": 50}],
+        }, format="json")
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual((self._held(self.store), self._held(self.pharmacy)), (350, 150))
+
+    def test_a_count_of_the_pharmacy_shelf_is_posted_by_inventory_administration(self):
+        self._stock_the_counter()
+        response = self.store_client.post("/api/stock-counts/", {
             "location": self.pharmacy.pk,
             "lines": [{"batch": self.batch.pk, "counted_quantity": 97}],
         }, format="json")
@@ -168,34 +257,25 @@ class OperationsStayWithTheCounterTests(WorkspaceBoundaryTests):
         self.assertEqual(self._held(self.pharmacy), 97)
         self.assertEqual(self._held(self.store), 400)   # untouched
 
-    def test_a_pharmacist_reads_the_shelf_and_the_ledger(self):
-        for endpoint in ["/api/stock-records/", "/api/stock-movements/", "/api/batches/",
-                         "/api/stock-transfers/", "/api/stock-counts/"]:
-            with self.subTest(endpoint=endpoint):
-                self.assertEqual(self.pharmacy_client.get(endpoint).status_code, 200)
-
-    def test_a_pharmacist_receives_a_delivery_and_writes_off_expired_stock(self):
-        """Operations, not configuration: both still theirs."""
-        response = self.pharmacy_client.post(f"/api/batches/{self.batch.pk}/receive/",
-                                             {"quantity": 10}, format="json")
+    def test_the_hospital_admin_receives_a_delivery_and_writes_off_expired_stock(self):
+        response = self.hospital_admin_client.post(f"/api/batches/{self.batch.pk}/receive/",
+                                                   {"quantity": 10}, format="json")
         self.assertEqual(response.status_code, 200, response.data)
 
         Batch.objects.filter(pk=self.batch.pk).update(
             expiry_date=timezone.localdate() - timedelta(days=1))
         self.assertEqual(
-            self.pharmacy_client.post(f"/api/batches/{self.batch.pk}/write_off/").status_code, 200)
+            self.hospital_admin_client.post(f"/api/batches/{self.batch.pk}/write_off/")
+            .status_code, 200)
 
     def test_dispensing_is_untouched(self):
         patient = Patient.objects.create(first_name="Jane", last_name="Doe", sex="F",
                                          created_by=self.admin)
-        self.pharmacy_client.post("/api/stock-transfers/", {
-            "source": self.store.pk, "destination": self.pharmacy.pk,
-            "lines": [{"batch": self.batch.pk, "quantity": 100}],
-        }, format="json")
+        self._stock_the_counter()
 
         prescription = create_prescription(patient=patient, doctor=self.doctor,
                                            item=self.item, quantity=10)
-        dispense_prescription(prescription=prescription, pharmacist=self.pharmacist)
+        dispense_prescription(prescription=pay_for(prescription, by=self.pharmacist), pharmacist=self.pharmacist)
 
         self.assertEqual(self._held(self.pharmacy), 90)
         self.assertEqual(self._held(self.store), 400)
@@ -226,7 +306,7 @@ class AdminConfiguresAndPharmacyConsumesTests(WorkspaceBoundaryTests):
                                      sale_price=Decimal("20"),
                                      expiry_date=timezone.localdate() + timedelta(days=90))
         receive_stock(batch=batch, quantity=50, actor=self.store_keeper)
-        self.pharmacy_client.post("/api/stock-transfers/", {
+        self.store_client.post("/api/stock-transfers/", {
             "source": self.store.pk, "destination": self.pharmacy.pk,
             "lines": [{"batch": batch.pk, "quantity": 20}],
         }, format="json")
@@ -235,7 +315,7 @@ class AdminConfiguresAndPharmacyConsumesTests(WorkspaceBoundaryTests):
                                          created_by=self.admin)
         prescription = create_prescription(patient=patient, doctor=self.doctor,
                                            item=item, quantity=5)
-        dispense_prescription(prescription=prescription, pharmacist=self.pharmacist)
+        dispense_prescription(prescription=pay_for(prescription, by=self.pharmacist), pharmacist=self.pharmacist)
 
         record = StockRecord.objects.get(batch=batch, location=self.pharmacy)
         self.assertEqual(record.quantity, 15)

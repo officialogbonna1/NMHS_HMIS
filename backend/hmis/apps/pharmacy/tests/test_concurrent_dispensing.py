@@ -39,6 +39,7 @@ from apps.inventory.services import InsufficientStockError, transfer_stock
 from apps.inventory.testing import product, stock_the_pharmacy, stock_the_store
 from apps.patients.models import Patient
 from apps.pharmacy.models import Prescription
+from apps.pharmacy.testing import pay_for
 from apps.pharmacy.services import (AlreadyDispensedError, OutOfStockError,
                                     available_quantity, create_prescription,
                                     dispense_prescription)
@@ -66,8 +67,11 @@ class Counter(TestCase):
     # -- helpers ---------------------------------------------------------------
 
     def script(self, doctor, patient, quantity=1):
-        return create_prescription(patient=patient, doctor=doctor, item=self.item,
-                                   quantity=quantity)
+        # Paid at the counter as soon as it is written (rule 58), before any
+        # interleaving below begins: these tests are about the shelf, so the
+        # money is settled and out of the way rather than part of the race.
+        return pay_for(create_prescription(patient=patient, doctor=doctor, item=self.item,
+                                           quantity=quantity), by=self.pharmacist)
 
     def on_shelf(self):
         return available_quantity(self.item, self.pharmacy)
@@ -84,10 +88,13 @@ class BothMayPrescribe(Counter):
         second = self.script(self.doctor_b, self.patient_b)
 
         self.assertEqual([first.status, second.status], ["pending", "pending"])
-        # Neither took the unit off the shelf, and neither raised a charge.
+        # Neither took the unit off the shelf. Each was billed on its own
+        # (rule 58) — two bills, one per script — and neither bill reserved
+        # anything: the unit is still one unit on the shelf.
         self.assertEqual(self.on_shelf(), 1)
         self.assertFalse(self.movements().exists())
-        self.assertFalse(Charge.objects.filter(source_type="prescription").exists())
+        self.assertEqual(Charge.objects.filter(source_type="prescription").count(), 2)
+        self.assertNotEqual(first.charge_id, second.charge_id)
 
     def test_prescribing_more_than_the_shelf_holds_is_still_refused_at_writing(self):
         """The doctor is told straight away — this check is a courtesy and is
@@ -161,7 +168,9 @@ class OnlyOneOfThemGetsIt(Counter):
         self.assertEqual(list(self.movements().values_list("pk", flat=True)), movements_before)
         self.assertEqual(self.movements().count(), 1)
         self.assertEqual(Charge.objects.count(), charges_before)
-        self.assertFalse(Charge.objects.filter(patient=self.patient_b).exists())
+        # Patient B holds only the bill raised when the script was written.
+        self.assertEqual(list(Charge.objects.filter(patient=self.patient_b)
+                              .values_list("pk", flat=True)), [second.charge_id])
 
     def test_no_dispensing_record_is_stamped_on_the_failed_prescription(self):
         first = self.script(self.doctor_a, self.patient_a)
@@ -264,7 +273,9 @@ class TheDeductionIsIndivisible(Counter):
         # Not one unit moved on its reference, and not one naira was charged.
         self.assertFalse(
             StockMovement.objects.filter(reference=f"prescription:{loser.pk}").exists())
-        self.assertFalse(Charge.objects.filter(patient=self.patient_a).exists())
+        # Only the bill raised when it was written; the refusal added none.
+        self.assertEqual(list(Charge.objects.filter(patient=self.patient_a)
+                              .values_list("pk", flat=True)), [loser.charge_id])
         self.assertFalse(StockRecord.objects.filter(quantity__lt=0).exists())
 
     def test_the_guard_is_in_the_update_itself_not_in_a_python_check(self):
@@ -358,7 +369,8 @@ class FefoSurvivesIt(Counter):
         # script's own footprint is asserted here.)
         self.assertFalse(
             StockMovement.objects.filter(reference=f"prescription:{script.pk}").exists())
-        self.assertFalse(Charge.objects.filter(patient=self.patient_a).exists())
+        self.assertEqual(list(Charge.objects.filter(patient=self.patient_a)
+                              .values_list("pk", flat=True)), [script.charge_id])
         self.assertFalse(StockRecord.objects.filter(quantity__lt=0).exists())
 
 

@@ -20,6 +20,7 @@ from django.test import TestCase
 from django.utils import timezone
 from rest_framework.test import APIClient
 
+from apps.pharmacy.testing import pay_for
 from apps.accounts.models import User
 from apps.inventory.models import (
     MAIN_STORE, PHARMACY, Batch, Item, StockLocation, StockMovement, StockRecord,
@@ -38,6 +39,10 @@ class LocationTestCase(TestCase):
     def setUp(self):
         self.pharmacist = User.objects.create_user(username="pharm", password="t",
                                                    role="pharmacist")
+        # Transfers, counts and receipts over the API are inventory
+        # administration (STOCK_CONTROL_ROLES); the pharmacist dispenses.
+        self.store_keeper = User.objects.create_user(username="stores", password="t",
+                                                     role="inventory_manager")
         self.doctor = User.objects.create_user(username="doc", password="t", role="doctor")
         self.store = StockLocation.objects.get(code=MAIN_STORE)
         self.pharmacy = StockLocation.objects.get(code=PHARMACY)
@@ -47,7 +52,7 @@ class LocationTestCase(TestCase):
             sale_price=Decimal("20"),
             expiry_date=timezone.localdate() + timedelta(days=180))
         self.client = APIClient()
-        self.client.force_authenticate(self.pharmacist)
+        self.client.force_authenticate(self.store_keeper)
 
     def _at(self, location, batch=None):
         record = StockRecord.objects.filter(batch=batch or self.batch,
@@ -172,7 +177,7 @@ class TransferTests(LocationTestCase):
         self.assertEqual(response.data["total_units"], 100)
         self.assertEqual(response.data["source_name"], "Main Store")
         self.assertEqual(response.data["destination_name"], "Pharmacy")
-        self.assertEqual(response.data["transferred_by"], self.pharmacist.id)
+        self.assertEqual(response.data["transferred_by"], self.store_keeper.id)
         self.assertEqual(len(response.data["lines"]), 1)
         self.assertEqual(response.data["lines"][0]["batch_no"], "PCM001")
 
@@ -204,7 +209,7 @@ class DispensingIsPharmacyOnlyTests(LocationTestCase):
 
         prescription = create_prescription(patient=self.patient, doctor=self.doctor,
                                            item=self.item, quantity=10)
-        dispense_prescription(prescription=prescription, pharmacist=self.pharmacist)
+        dispense_prescription(prescription=pay_for(prescription, by=self.pharmacist), pharmacist=self.pharmacist)
 
         self.assertEqual(self._at(self.pharmacy), 90)
         self.assertEqual(self._at(self.store), 400)   # untouched
@@ -226,7 +231,7 @@ class DispensingIsPharmacyOnlyTests(LocationTestCase):
                        lines=[{"batch": self.batch, "quantity": 5}], actor=self.pharmacist)
 
         with self.assertRaises(OutOfStockError) as caught:
-            dispense_prescription(prescription=prescription, pharmacist=self.pharmacist)
+            dispense_prescription(prescription=pay_for(prescription, by=self.pharmacist), pharmacist=self.pharmacist)
         self.assertIn("pharmacy shelf", " ".join(caught.exception.messages))
         prescription.refresh_from_db()
         self.assertEqual(prescription.status, "pending")
@@ -242,7 +247,7 @@ class DispensingIsPharmacyOnlyTests(LocationTestCase):
 
         prescription = create_prescription(patient=self.patient, doctor=self.doctor,
                                            item=self.item, quantity=10)
-        dispense_prescription(prescription=prescription, pharmacist=self.pharmacist)
+        dispense_prescription(prescription=pay_for(prescription, by=self.pharmacist), pharmacist=self.pharmacist)
 
         self.assertEqual(self._at(self.pharmacy, short), 0)    # earliest expiry first
         self.assertEqual(self._at(self.pharmacy), 96)
@@ -260,7 +265,7 @@ class DispensingIsPharmacyOnlyTests(LocationTestCase):
 
         prescription = create_prescription(patient=self.patient, doctor=self.doctor,
                                            item=self.item, quantity=10)
-        dispense_prescription(prescription=prescription, pharmacist=self.pharmacist)
+        dispense_prescription(prescription=pay_for(prescription, by=self.pharmacist), pharmacist=self.pharmacist)
 
         self.assertEqual(self._at(self.pharmacy), 100)          # expired, untouched
         self.assertEqual(self._at(self.pharmacy, fresh), 40)

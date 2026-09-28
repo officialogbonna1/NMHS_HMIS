@@ -4,6 +4,7 @@ from decimal import Decimal
 from django.test import TestCase
 from rest_framework.test import APIClient
 
+from apps.pharmacy.testing import pay_for
 from apps.accounts.models import User
 from apps.billing.models import PatientLedger
 from apps.billing.services import add_charge, record_payment
@@ -70,17 +71,16 @@ class PharmacistPatientListTests(TestCase):
     def test_the_patient_stays_after_dispensing(self):
         prescription = Prescription.objects.create(patient=self.patient, doctor=self.doctor,
                                                    item=self.item, quantity=2)
-        dispense_prescription(prescription=prescription, pharmacist=self.pharmacist)
+        dispense_prescription(prescription=pay_for(prescription, by=self.pharmacist), pharmacist=self.pharmacist)
         self.assertIn(self.patient, self._sees())
 
     def test_the_patient_stays_after_they_pay(self):
         """The whole point: paying is not a reason to disappear."""
         prescription = Prescription.objects.create(patient=self.patient, doctor=self.doctor,
                                                    item=self.item, quantity=2)
-        dispense_prescription(prescription=prescription, pharmacist=self.pharmacist)
-        owed = PatientLedger.objects.get(patient=self.patient).outstanding_balance
-        record_payment(patient=self.patient, amount=owed,
-                       received_by=self.pharmacist, channel="pharmacy")
+        # Paid for at the counter (rule 58: before it is handed over), then
+        # dispensed — and nothing is owed afterwards.
+        dispense_prescription(prescription=pay_for(prescription, by=self.pharmacist), pharmacist=self.pharmacist)
         # Re-read: the ledger cached on the instance predates the payment.
         self.assertEqual(
             PatientLedger.objects.get(patient=self.patient).outstanding_balance, Decimal("0.00"))
@@ -107,7 +107,7 @@ class PharmacistPatientListTests(TestCase):
     def test_the_pharmacist_can_open_the_patient_and_read_what_was_dispensed(self):
         prescription = Prescription.objects.create(patient=self.patient, doctor=self.doctor,
                                                    item=self.item, quantity=2)
-        dispense_prescription(prescription=prescription, pharmacist=self.pharmacist)
+        dispense_prescription(prescription=pay_for(prescription, by=self.pharmacist), pharmacist=self.pharmacist)
         client = APIClient()
         client.force_authenticate(self.pharmacist)
         self.assertEqual(client.get(f"/api/patients/{self.patient.pk}/").status_code, 200)

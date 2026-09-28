@@ -7,17 +7,21 @@ import {
   TabBar, Tab, Table, TableWrap, Td, Th, THead, Tr,
 } from "../components/ui.jsx";
 import {
-  CountImportExport, MovementLog, PhysicalCount, StockOnHand, TransferStock, useLocations,
+  CountImportExport, MovementLog, StockOnHand, useLocations,
 } from "../components/StockPanels.jsx";
 import { directionsOf, productLabel } from "../components/prescriptionDirections.js";
 import { useToast } from "../components/Toaster.jsx";
 import { useAuth } from "../auth/AuthContext.jsx";
 import { PrintButton } from "../components/printing.jsx";
 import { ReceiptSheet } from "../components/PrintDocuments.jsx";
+import PayChargePanel from "../components/PayChargePanel.jsx";
+import { paymentState } from "../components/billingStatus.js";
 
-// The pharmacy counter. Prescriptions arrive here from doctors as requests;
-// dispensing is what actually deducts stock (FEFO, server-side) and raises
-// the charge, and the counter then takes payment against that charge.
+// The pharmacy counter. Prescriptions arrive here from doctors already billed
+// — one charge per line, raised when the doctor prescribes — and a line is
+// dispensed once *its own* bill is paid, written off or set to Pay later.
+// Dispensing is what deducts stock (FEFO, server-side); the money is the cash
+// desk's, and the counter may take it too (rule 18).
 const currency = (n) => new Intl.NumberFormat("en-NG", { style: "currency", currency: "NGN", maximumFractionDigits: 0 }).format(n ?? 0);
 
 const STATUS_TONE = {
@@ -35,17 +39,22 @@ const TABS = [
   ["payments", "Pharmacy payments"],
   ["products", "Products"],
   ["stock", "Pharmacy stock"],
-  ["transfer", "Request from store"],
-  ["count", "Physical count"],
-  ["import", "Import / export"],
+  ["import", "Stock count"],
   ["movements", "Movement history"],
 ];
+
+// Tabs the pharmacy no longer has. Transferring stock and posting a count
+// change stock, which is inventory administration's (`STOCK_CONTROL_ROLES`);
+// the counter reads its shelf and counts it through the CSV sheet, which an
+// administrator applies. An old address still lands on the nearest thing
+// that remains rather than on the dispensing queue.
+const RETIRED_TABS = { transfer: "stock", count: "import" };
 
 export default function Pharmacy() {
   // The tab is in the URL so the dashboard's stock alert can land on the
   // shelf it is warning about rather than on the dispensing queue.
   const [params, setParams] = useSearchParams();
-  const requested = params.get("tab");
+  const requested = RETIRED_TABS[params.get("tab")] ?? params.get("tab");
   const tab = TABS.some(([key]) => key === requested) ? requested : "queue";
   const setTab = (key) => setParams(key === "queue" ? {} : { tab: key }, { replace: true });
   const { data: locations } = useLocations();
@@ -53,7 +62,6 @@ export default function Pharmacy() {
   // it: this workspace operates pharmacy stock, and configuring the catalogue
   // or running the Main Store is Administration's (see StockPanels.jsx).
   const counter = locations?.find((l) => l.is_dispensing_point);
-  const store = locations?.find((l) => l.is_default_receiving);
 
   return (
     <Page width="wide">
@@ -86,22 +94,15 @@ export default function Pharmacy() {
       {tab === "stock" && (
         <StockOnHand locations={locations} lockedLocation={counter} />
       )}
-      {tab === "transfer" && (
+      {tab === "import" && (
         <>
           <Alert tone="info" className="mb-4">
-            Stock reaches the counter from the {store?.name ?? "Main Store"} by transfer — that is
-            what makes it dispensable. The store's own stock and supplier deliveries are
-            Administration's.
+            Count the shelf by downloading the sheet, filling in what you find and uploading
+            it. Nothing moves until an inventory administrator applies the count. Stock
+            reaches this shelf by transfer from the store, which Administration makes.
           </Alert>
-          <TransferStock locations={locations} store={store} counter={counter}
-                         lockedLocation={counter} />
+          <CountImportExport locations={locations} lockedLocation={counter} />
         </>
-      )}
-      {tab === "count" && (
-        <PhysicalCount locations={locations} store={store} lockedLocation={counter} />
-      )}
-      {tab === "import" && (
-        <CountImportExport locations={locations} lockedLocation={counter} />
       )}
       {tab === "movements" && (
         <MovementLog locations={locations} lockedLocation={counter} />
@@ -134,7 +135,7 @@ function DispensingQueue() {
       refresh();
       showToast({
         title: "Dispensed",
-        message: `${response.data.item_name} — ${currency(response.data.dispensed_value)} charged to ${response.data.patient_name}`,
+        message: `${response.data.item_name} ×${response.data.quantity} handed to ${response.data.patient_name}`,
       });
     },
     onError: (error) => {
@@ -143,7 +144,10 @@ function DispensingQueue() {
       // than leave a toast arguing with the page behind it. The server is
       // what decided (it re-checks under lock); this only catches the screen
       // up. Any other refusal leaves the page alone.
-      if (error.response?.data?.code === "insufficient_stock") refresh();
+      // Likewise a bill that changed under the queue — paid, waived or
+      // cancelled at the cash desk since this page loaded.
+      if (["insufficient_stock", "payment_required", "not_billed", "charge_cancelled"]
+        .includes(error.response?.data?.code)) refresh();
       showToast({
         title: "Could not dispense",
         message: error.response?.data?.detail || "Please try again.",
@@ -168,45 +172,110 @@ function DispensingQueue() {
   return (
     <div className="grid gap-2">
       {pending.map((p) => (
-        <div key={p.id} className="border rounded-lg bg-white p-4 flex items-center justify-between gap-4">
-          <div>
-            <div className="flex items-center gap-2">
-              <span className="font-medium">
-                {productLabel({ strength: p.item_strength, dosage_form: p.item_form }, p.item_name)} ×{p.quantity} {p.item_unit}
-              </span>
-              <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${STATUS_TONE[p.status]}`}>Awaiting dispensing</span>
-            </div>
-            {p.item_category && (
-              <p className="text-sm text-slate-700 mt-1">
-                Category: <span className="font-medium">{p.item_category}</span>
-              </p>
-            )}
-            <p className="text-sm text-slate-600 mt-1">
-              {p.patient_name} · prescribed by Dr. {p.doctor_name} · {new Date(p.created_at).toLocaleString()}
-            </p>
-            {directionsOf(p) && <p className="text-sm text-slate-800 mt-1">{directionsOf(p)}</p>}
-            {p.notes && <p className="text-sm text-slate-600 mt-0.5">Note: {p.notes}</p>}
-          </div>
-          <div className="flex items-center gap-3 text-sm shrink-0">
-            <button
-              onClick={() => dispense.mutate(p.id)}
-              disabled={dispense.isPending}
-              className="bg-brand-600 text-white px-4 py-2 rounded-md hover:bg-brand-700 disabled:opacity-50"
-            >
-              Dispense
-            </button>
-            <Button
-              variant="linkDanger" size="xs"
-              onClick={() => {
-                const reason = prompt("Why is this prescription not being filled?");
-                if (reason !== null) cancel.mutate({ id: p.id, reason });
-              }}
-            >
-              Cancel
-            </Button>
-          </div>
-        </div>
+        <QueueCard key={p.id} p={p} dispense={dispense} cancel={cancel} refresh={refresh} />
       ))}
+    </div>
+  );
+}
+
+/**
+ * One script line at the counter: who it is for, who wrote it, what it is and
+ * — beside it — **this line's own bill**. Dispense is offered only when the
+ * server says the bill lets it go (`dispensable`: paid, written off, or an
+ * authorised Pay later); the dispense service refuses the rest whatever this
+ * button says. Another bill on the patient's account changes nothing here.
+ */
+function QueueCard({ p, dispense, cancel, refresh }) {
+  const { showToast } = useToast();
+  const [paying, setPaying] = useState(false);
+  const money = paymentState(p.billing);
+  const priced = p.billing?.billed || p.billing?.priced;
+
+  const bill = useMutation({
+    mutationFn: () => api.post(`/prescriptions/${p.id}/bill/`),
+    onSuccess: () => { refresh(); showToast({ title: "Bill raised", message: p.item_name }); },
+    onError: (error) => showToast({
+      title: "Could not raise the bill",
+      message: error.response?.data?.detail || "Please try again.",
+      tone: "error",
+    }),
+  });
+
+  return (
+    <div className="rounded-lg border bg-white p-4">
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="font-medium">
+              {productLabel({ strength: p.item_strength, dosage_form: p.item_form }, p.item_name)} ×{p.quantity} {p.item_unit}
+            </span>
+            <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${STATUS_TONE[p.status]}`}>Awaiting dispensing</span>
+            {priced
+              ? <Badge tone={money.tone}>{money.summary}</Badge>
+              : <Badge tone="neutral">NOT BILLED</Badge>}
+          </div>
+          {p.item_category && (
+            <p className="text-sm text-slate-700 mt-1">
+              Category: <span className="font-medium">{p.item_category}</span>
+            </p>
+          )}
+          <p className="text-sm text-slate-700 mt-1">
+            <span className="font-medium text-slate-900">{p.patient_name}</span>
+            {p.patient_number && <span> · {p.patient_number}</span>}
+            {" "}· prescribed by Dr. {p.doctor_name} · {new Date(p.created_at).toLocaleString()}
+          </p>
+          {directionsOf(p) && <p className="text-sm text-slate-800 mt-1">{directionsOf(p)}</p>}
+          {p.notes && <p className="text-sm text-slate-600 mt-0.5">Note: {p.notes}</p>}
+          {!p.dispensable && (
+            <p className="mt-1 text-sm text-amber-800">
+              {!priced
+                ? "Written before prescriptions were billed — raise its bill, then take payment."
+                : money.status === "cancelled"
+                  ? "This line's bill was cancelled, so it cannot be dispensed."
+                  : `${money.detail} It can be dispensed once this bill is paid, waived or set to Pay later.`}
+            </p>
+          )}
+        </div>
+        <div className="flex flex-wrap items-center gap-3 text-sm shrink-0">
+          {!priced && (
+            <Button size="sm" variant="secondary" onClick={() => bill.mutate()} disabled={bill.isPending}>
+              {bill.isPending ? "Raising…" : "Raise bill"}
+            </Button>
+          )}
+          {priced && money.requiresPayment && p.billing?.charge && (
+            <Button size="sm" variant="secondary" onClick={() => setPaying((v) => !v)}>
+              {paying ? "Close" : "Take payment"}
+            </Button>
+          )}
+          <Button
+            size="sm"
+            onClick={() => dispense.mutate(p.id)}
+            disabled={dispense.isPending || !p.dispensable}
+            title={p.dispensable ? undefined : "This prescription's bill is not settled yet"}
+          >
+            Dispense
+          </Button>
+          <Button
+            variant="linkDanger" size="xs"
+            onClick={() => {
+              const reason = prompt("Why is this prescription not being filled?");
+              if (reason !== null) cancel.mutate({ id: p.id, reason });
+            }}
+          >
+            Cancel
+          </Button>
+        </div>
+      </div>
+      {paying && (
+        <PayChargePanel
+          charge={p.billing.charge}
+          patient={p.patient}
+          outstanding={money.outstanding}
+          description={`${p.item_name} ×${p.quantity}`}
+          onDone={() => { setPaying(false); refresh(); }}
+          onCancel={() => setPaying(false)}
+        />
+      )}
     </div>
   );
 }
@@ -419,9 +488,8 @@ function PharmacyOverview({ counter, goTo }) {
   ];
   const actions = [
     ["Dispense prescriptions", () => goTo("queue")],
-    ["Request stock from the store", () => goTo("transfer")],
-    ["Count the shelf", () => goTo("count")],
-    ["Import / export a count", () => goTo("import")],
+    ["Count the shelf", () => goTo("import")],
+    ["Movement history", () => goTo("movements")],
   ];
 
   return (

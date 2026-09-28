@@ -43,8 +43,9 @@ from apps.core.services import notify
 #: categories beneath them are the price-list categories `RouteService` uses,
 #: so the day the eye clinic starts ordering priced examinations it is
 #: already covered. A source type that is not here — a consultation fee, a
-#: card, a prescription, a POS sale — has no unit waiting on payment and
-#: therefore nobody to tell.
+#: card, a POS sale — has no unit waiting on payment and therefore nobody to
+#: tell. A prescription is answered separately (`_announce_script_cleared`):
+#: it waits on a queue, not on a referral.
 SOURCE_PURPOSE = {
     "lab_test": "laboratory",
     "ultrasound": "ultrasound",
@@ -86,6 +87,8 @@ def announce_cleared(charge, *, actor=None):
 
     Returns the notifications raised, so a test can count them.
     """
+    if charge.source_type == "prescription":
+        return _announce_script_cleared(charge, actor=actor)
     if SOURCE_PURPOSE.get(charge.source_type) is None:
         return []
     route = route_for(charge)
@@ -138,3 +141,36 @@ def _station_for(route):
     from apps.workflow.views import PURPOSE_STATION
 
     return PURPOSE_STATION.get(route.purpose, "/queue")
+
+
+def _announce_script_cleared(charge, *, actor=None):
+    """
+    A prescription's own bill has been settled while the script is still
+    waiting at the pharmacy — so the counter can now hand it over
+    (`pharmacy.services.dispensing_clearance`). Told to the pharmacists, the
+    pool that works the dispensing queue, the way `_notify_pharmacy` tells
+    them a script arrived. A dispensed or cancelled script has nobody waiting.
+    """
+    from apps.accounts.models import User
+
+    script = charge.prescriptions.select_related("patient", "item").first()
+    if script is None or script.status != "pending":
+        return []
+    patient = script.patient
+    number = getattr(patient, "patient_number", "") or ""
+    head = f"{number} — " if number else ""
+    if charge.amount_paid <= 0:
+        state = "no payment required"
+    else:
+        state = f"₦{_money(charge.amount_paid)} paid"
+    raised = []
+    for pharmacist in User.objects.filter(role="pharmacist", is_active=True):
+        if actor is not None and pharmacist.pk == actor.pk:
+            continue   # rule 14: never the person who just acted
+        note = notify(recipient=pharmacist,
+                      title=f"Ready to dispense: {patient.display_name}",
+                      message=f"{head}{script.item.name} ×{script.quantity} · {state}.",
+                      category="billing", action_url="/pharmacy")
+        if note is not None:
+            raised.append(note)
+    return raised

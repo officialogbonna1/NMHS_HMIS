@@ -96,6 +96,25 @@ def dispensing_location():
             or StockLocation.objects.filter(code=PHARMACY).first())
 
 
+def expired_q(prefix="batch__"):
+    """
+    **The one definition of an expired lot**, as a `Q` a query excludes.
+
+    Past its printed `expiry_date` on the hospital's own calendar
+    (`timezone.localdate()`, never UTC), *or* marked expired by an inventory
+    administrator. Every place that asks "is this stock usable" — dispensing,
+    the till, FEFO transfers, quantity on hand, the doctor's availability flag
+    — excludes this, so a manual mark reaches all of them at once and there is
+    no second expiry calculation to drift.
+
+    `prefix` is the path from the queried model to `Batch`: `"batch__"` from a
+    `StockRecord`, `""` from a `Batch`.
+    """
+    from django.utils import timezone
+    return (models.Q(**{f"{prefix}expiry_date__lt": timezone.localdate()})
+            | models.Q(**{f"{prefix}marked_expired_at__isnull": False}))
+
+
 class ItemCategory(TimeStampedModel):
     """
     How the catalogue is grouped — Analgesics, Antibiotics, Consumables.
@@ -241,6 +260,18 @@ class Batch(TimeStampedModel):
     supplier = models.CharField(max_length=200, blank=True)
     received_date = models.DateField(auto_now_add=True)
 
+    # **Marked expired by hand** — an inventory administrator taking a lot out
+    # of use before its printed date (recalled, damaged, stored wrong). A state
+    # on the batch itself, never a copy of it: the item, batch number, expiry
+    # date, prices, supplier and every stock record stay exactly as they were,
+    # and the lot stops being usable through the same `expired_q()` every
+    # FEFO query already excludes. `expiry_date` is never rewritten to fake it.
+    marked_expired_at = models.DateTimeField(null=True, blank=True)
+    marked_expired_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.PROTECT,
+        related_name="batches_marked_expired")
+    marked_expired_reason = models.CharField(max_length=255, blank=True)
+
     class Meta:
         ordering = ["expiry_date"]  # FEFO: first-expiry-first-out by default
         indexes = [models.Index(fields=["expiry_date"])]
@@ -250,7 +281,24 @@ class Batch(TimeStampedModel):
         # The hospital's own date, not UTC: they differ between local midnight
         # and 01:00 on Africa/Lagos, and an expired lot must not read as fine.
         from django.utils import timezone
+        return self.marked_expired_at is not None or self.expiry_date < timezone.localdate()
+
+    @property
+    def is_date_expired(self):
+        from django.utils import timezone
         return self.expiry_date < timezone.localdate()
+
+    @property
+    def expiry_status(self):
+        """
+        Why this lot is unusable, or None. The date wins the wording when both
+        apply: a lot past its printed date is expired whatever else was said.
+        """
+        if self.is_date_expired:
+            return "expired"
+        if self.marked_expired_at is not None:
+            return "marked_expired"
+        return None
 
     @property
     def total_quantity(self):

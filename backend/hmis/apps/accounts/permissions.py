@@ -111,8 +111,24 @@ EYE_EXAMINATION_ROLES = ["ophthalmologist"]
 # Who handles money at a counter.
 BILLING_ROLES = ["cashier", "accountant", "reception"]
 
-# Who moves stock.
+# Who **reads** stock: what is on a shelf, where it came from, what moved.
+# The pharmacist reads it constantly — every dispense and every sale resolves a
+# product, a batch and a shelf — and also *counts* their shelf (the CSV export
+# and the preview of a count), because counting is looking.
 STOCK_ROLES = ["pharmacist", "inventory_manager"]
+
+# Who **changes** stock outside dispensing and the till: receiving a delivery,
+# transferring between locations, posting a count (which adjusts the shelf),
+# applying a CSV count, writing expired stock off and marking a batch expired.
+#
+# Inventory administration — the inventory manager, and both administrators
+# (who pass every group). Deliberately **not** the pharmacist: working the
+# pharmacy counter is dispensing, the POS and taking money, and a pharmacy
+# posting does not make somebody an inventory administrator (it is role *and*
+# department, and the department grants nothing on its own). A pharmacist
+# counts the shelf and an inventory administrator applies what was counted —
+# the preview/apply split the CSV import already had.
+STOCK_CONTROL_ROLES = ["inventory_manager"]
 
 # The pharmacy's walk-in till (POS). Pharmacists work the counter and cashiers
 # take money; both open a register, ring up sales and take payment. Admins pass

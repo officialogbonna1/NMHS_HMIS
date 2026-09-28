@@ -22,14 +22,16 @@ from apps.inventory.models import (
 
 class StockControlTests(TestCase):
     def setUp(self):
-        self.pharmacist = User.objects.create_user(username="pharmacist", password="test",
-                                                   role="pharmacist")
+        # Receiving, counting and writing off are inventory administration
+        # (STOCK_CONTROL_ROLES) — the store keeper's work, not the counter's.
+        self.store_keeper = User.objects.create_user(username="stores", password="test",
+                                                     role="inventory_manager")
         self.doctor = User.objects.create_user(username="doctor", password="test", role="doctor")
         self.item = Item.objects.create(name="Paracetamol", reorder_threshold=5)
         self.store = StockLocation.objects.get(code=MAIN_STORE)
         self.pharmacy = StockLocation.objects.get(code=PHARMACY)
         self.client = APIClient()
-        self.client.force_authenticate(self.pharmacist)
+        self.client.force_authenticate(self.store_keeper)
 
     def _receive(self, quantity=20, expiry_days=90, batch_no="B1", location=None):
         payload = {
@@ -51,7 +53,7 @@ class StockControlTests(TestCase):
         self.assertEqual(response.status_code, 201, response.data)
         movement = StockMovement.objects.get()
         self.assertEqual((movement.change, movement.reason), (20, "received"))
-        self.assertEqual(movement.performed_by, self.pharmacist)
+        self.assertEqual(movement.performed_by, self.store_keeper)
         # A delivery arrives at the store, and the movement says so.
         self.assertEqual(movement.location, self.store)
         self.assertEqual(self.item.total_quantity, 20)

@@ -3,6 +3,7 @@ from decimal import Decimal
 from django.test import TestCase
 from django.utils import timezone
 from rest_framework.test import APIClient
+from apps.pharmacy.testing import pay_for
 from apps.accounts.models import User
 from apps.billing.models import Payment
 from apps.inventory.models import PHARMACY, Item, Batch, StockLocation, StockMovement, StockRecord
@@ -11,7 +12,7 @@ from apps.patients.models import Patient
 from apps.pharmacy.models import Prescription
 from apps.pharmacy.services import (
     create_prescription, dispense_prescription, cancel_prescription,
-    create_prescription_and_dispense, OutOfStockError, AlreadyDispensedError,
+    OutOfStockError, AlreadyDispensedError,
 )
 
 
@@ -46,8 +47,10 @@ class PharmacyTestCase(TestCase):
 
 
 class DispensingTests(PharmacyTestCase):
-    def test_dispensing_uses_fefo_and_creates_ledger_charge(self):
-        prescription = create_prescription_and_dispense(patient=self.patient, doctor=self.doctor, item=self.item, quantity=5)
+    def test_dispensing_uses_fefo_and_the_ledger_carries_the_prescription_charge(self):
+        prescription = create_prescription(patient=self.patient, doctor=self.doctor, item=self.item, quantity=5)
+        prescription = dispense_prescription(prescription=pay_for(prescription, by=self.pharmacist),
+                                             pharmacist=self.pharmacist)
         self.assertEqual(prescription.status, "dispensed")
         self.assertEqual(self.held(self.early), 0)
         self.assertEqual(self.held(self.late), 8)
@@ -60,12 +63,15 @@ class DispensingTests(PharmacyTestCase):
         self.assertEqual((self.held(self.early), self.held(self.late)), (3, 10))
         # The two receipts, and nothing since: prescribing moves no stock.
         self.assertFalse(StockMovement.objects.exclude(reason="received").exists())
-        # No charge either — the patient is billed for what is actually handed over.
-        self.assertFalse(self.patient.charges.exists())
+        # The bill is raised now (rule 58): one charge, priced FEFO off the
+        # shelf — 3 at the early lot's price, 2 at the late one's — and unpaid.
+        charge = self.patient.charges.get()
+        self.assertEqual((charge.amount, charge.status), (Decimal("110"), "unpaid"))
+        self.assertEqual(prescription.charge, charge)
 
     def test_dispensing_records_the_pharmacist_not_the_prescriber(self):
         prescription = create_prescription(patient=self.patient, doctor=self.doctor, item=self.item, quantity=5)
-        dispense_prescription(prescription=prescription, pharmacist=self.pharmacist)
+        dispense_prescription(prescription=pay_for(prescription, by=self.pharmacist), pharmacist=self.pharmacist)
         prescription.refresh_from_db()
         self.assertEqual(prescription.dispensed_by, self.pharmacist)
         self.assertIsNotNone(prescription.dispensed_at)
@@ -78,23 +84,23 @@ class DispensingTests(PharmacyTestCase):
 
     def test_a_prescription_cannot_be_dispensed_twice(self):
         prescription = create_prescription(patient=self.patient, doctor=self.doctor, item=self.item, quantity=2)
-        dispense_prescription(prescription=prescription, pharmacist=self.pharmacist)
+        dispense_prescription(prescription=pay_for(prescription, by=self.pharmacist), pharmacist=self.pharmacist)
         with self.assertRaises(AlreadyDispensedError):
-            dispense_prescription(prescription=prescription, pharmacist=self.pharmacist)
+            dispense_prescription(prescription=pay_for(prescription, by=self.pharmacist), pharmacist=self.pharmacist)
         self.assertEqual(self.held(self.early), 1)  # deducted once, not twice
 
     def test_dispensing_fails_when_stock_ran_out_after_prescribing(self):
         prescription = create_prescription(patient=self.patient, doctor=self.doctor, item=self.item, quantity=13)
         self.empty_the_shelf()
         with self.assertRaises(OutOfStockError):
-            dispense_prescription(prescription=prescription, pharmacist=self.pharmacist)
+            dispense_prescription(prescription=pay_for(prescription, by=self.pharmacist), pharmacist=self.pharmacist)
         prescription.refresh_from_db()
         self.assertEqual(prescription.status, "pending")
 
     def test_expired_batches_are_never_dispensed(self):
         Batch.objects.filter(pk=self.early.pk).update(expiry_date=timezone.localdate() - timedelta(days=1))
         prescription = create_prescription(patient=self.patient, doctor=self.doctor, item=self.item, quantity=10)
-        dispense_prescription(prescription=prescription, pharmacist=self.pharmacist)
+        dispense_prescription(prescription=pay_for(prescription, by=self.pharmacist), pharmacist=self.pharmacist)
         self.assertEqual(self.held(self.early), 3)
         self.assertEqual(self.held(self.late), 0)
 
@@ -110,33 +116,40 @@ class DispensingTests(PharmacyTestCase):
         self.assertEqual(prescription.status, "cancelled")
         self.assertEqual(self.held(self.early), 3)
         with self.assertRaises(AlreadyDispensedError):
-            dispense_prescription(prescription=prescription, pharmacist=self.pharmacist)
+            dispense_prescription(prescription=pay_for(prescription, by=self.pharmacist), pharmacist=self.pharmacist)
 
 
 class PharmacyApiTests(PharmacyTestCase):
-    def test_doctor_prescribes_pharmacist_dispenses_and_takes_payment(self):
+    def test_doctor_prescribes_the_counter_takes_payment_then_dispenses(self):
         doctor_client = APIClient(); doctor_client.force_authenticate(self.doctor)
         response = doctor_client.post("/api/prescriptions/", {
             "patient": self.patient.id, "item": self.item.id, "quantity": 5,
             "dosage_instructions": "1 tablet twice daily",
         })
-        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.status_code, 201, response.data)
         self.assertEqual(response.data["status"], "pending")
         prescription_id = response.data["id"]
 
-        pharmacist_client = APIClient(); pharmacist_client.force_authenticate(self.pharmacist)
-        response = pharmacist_client.post(f"/api/prescriptions/{prescription_id}/dispense/")
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.data["status"], "dispensed")
+        charge_id = response.data["charge"]
 
-        response = pharmacist_client.post("/api/payments/", {"patient": self.patient.id, "amount": "110", "method": "cash"})
-        self.assertEqual(response.status_code, 201)
+        pharmacist_client = APIClient(); pharmacist_client.force_authenticate(self.pharmacist)
+        # Unpaid: the counter waits on this line's bill.
+        response = pharmacist_client.post(f"/api/prescriptions/{prescription_id}/dispense/")
+        self.assertEqual((response.status_code, response.data["code"]), (400, "payment_required"))
+
+        response = pharmacist_client.post("/api/payments/", {"patient": self.patient.id, "amount": "110",
+                                                             "method": "cash", "charge": charge_id})
+        self.assertEqual(response.status_code, 201, response.data)
         payment = Payment.objects.get(pk=response.data["id"])
         # Stamped from the collector's role so pharmacy takings reconcile separately.
         self.assertEqual(payment.channel, "pharmacy")
         self.assertEqual(payment.received_by, self.pharmacist)
         self.patient.ledger.refresh_from_db()
         self.assertEqual(self.patient.ledger.outstanding_balance, Decimal("0"))
+
+        response = pharmacist_client.post(f"/api/prescriptions/{prescription_id}/dispense/")
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data["status"], "dispensed")
 
     def test_doctor_cannot_dispense_their_own_prescription(self):
         prescription = create_prescription(patient=self.patient, doctor=self.doctor, item=self.item, quantity=2)
@@ -153,7 +166,7 @@ class PharmacyApiTests(PharmacyTestCase):
 
     def test_pharmacist_cannot_waive_a_charge(self):
         prescription = create_prescription(patient=self.patient, doctor=self.doctor, item=self.item, quantity=2)
-        dispense_prescription(prescription=prescription, pharmacist=self.pharmacist)
+        dispense_prescription(prescription=pay_for(prescription, by=self.pharmacist), pharmacist=self.pharmacist)
         charge = self.patient.charges.get()
         client = APIClient(); client.force_authenticate(self.pharmacist)
         response = client.post(f"/api/charges/{charge.id}/waive/", {"reason": "no"})

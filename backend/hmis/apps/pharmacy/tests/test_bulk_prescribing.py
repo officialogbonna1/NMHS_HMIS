@@ -70,11 +70,13 @@ class BulkPrescribingTests(TestCase):
         self.assertEqual(written.doctor, self.doctor)
 
     def test_writing_the_script_moves_no_stock(self):
-        """Prescribing queues a request; dispensing is what deducts."""
+        """Prescribing queues a request and bills it; dispensing is what deducts."""
         self._send([{"item": self.paracetamol.id, "quantity": 20}])
         self.assertEqual(Batch.objects.get(item=self.paracetamol).total_quantity, 100)
         self.assertFalse(StockMovement.objects.exclude(reason="received").exists())
-        self.assertFalse(Charge.objects.exists())
+        # The bill exists from the moment it is written (rule 58), unpaid.
+        charge = Charge.objects.get()
+        self.assertEqual((charge.amount, charge.status), (Decimal("400"), "unpaid"))
 
     def test_one_drug_short_of_stock_takes_the_whole_script_down(self):
         response = self._send([
@@ -127,14 +129,17 @@ class BulkPrescribingTests(TestCase):
             self.assertEqual(response.status_code, 403, role_user.role)
         self.assertEqual(Prescription.objects.count(), 0)
 
-    def test_dispensing_then_deducts_stock_and_raises_the_charge(self):
-        """The whole point of the queue: the pharmacy is what moves money
-        and stock."""
+    def test_once_paid_dispensing_deducts_stock_and_raises_no_second_charge(self):
+        """The pharmacy moves the stock; the bill was raised when it was written."""
         created = self._send([
             {"item": self.paracetamol.id, "quantity": 20},
             {"item": self.amoxicillin.id, "quantity": 10},
         ])
         pharmacy = APIClient(); pharmacy.force_authenticate(self.pharmacist)
+        for prescription in created.data:
+            self.assertEqual(pharmacy.post("/api/payments/", {
+                "patient": self.patient.id, "amount": prescription["billing"]["outstanding"],
+                "method": "cash", "charge": prescription["charge"]}, format="json").status_code, 201)
         for prescription in created.data:
             self.assertEqual(
                 pharmacy.post(f"/api/prescriptions/{prescription['id']}/dispense/").status_code, 200)
@@ -155,10 +160,9 @@ class BulkPrescribingTests(TestCase):
         # 20 × 20 + 10 × 150
         self.assertEqual(sum(c.amount for c in charges), Decimal("1900"))
 
-    def test_the_money_is_then_collectable_at_the_counter(self):
+    def test_the_money_is_collectable_at_the_counter_before_dispensing(self):
         created = self._send([{"item": self.paracetamol.id, "quantity": 20}])
         pharmacy = APIClient(); pharmacy.force_authenticate(self.pharmacist)
-        pharmacy.post(f"/api/prescriptions/{created.data[0]['id']}/dispense/")
 
         charge = Charge.objects.get(patient=self.patient)
         self.assertEqual(charge.balance, Decimal("400"))
@@ -170,3 +174,6 @@ class BulkPrescribingTests(TestCase):
         charge.refresh_from_db()
         self.assertEqual(charge.balance, Decimal("0"))
         self.assertEqual(charge.status, "paid")
+        # Paid, so the counter hands it over.
+        self.assertEqual(
+            pharmacy.post(f"/api/prescriptions/{created.data[0]['id']}/dispense/").status_code, 200)

@@ -13,8 +13,13 @@ charge whose `LabOrderTest` is cancelled, whose whole order is cancelled, or
 which is no longer there at all (a line with no results is deleted rather than
 cancelled). A charge the counter typed in has no service record to read, so it
 is never flagged — nothing here infers a withdrawal from a description, a date
-or an amount. The pharmacy has no equivalent: only a *pending* prescription can
-be cancelled, and a pending one has not been charged.
+or an amount.
+
+The pharmacy is the same shape now that a prescription is billed when it is
+written: a `prescription` charge whose script was cancelled after money was
+taken for it. (Cancelling an unpaid script cancels its charge there and then,
+`pharmacy.services.cancel_prescription`; a charge raised at dispensing, before
+prescriptions were billed, belongs to a dispensed script and is never flagged.)
 """
 from django.apps import apps
 from django.db.models import BooleanField, Exists, ExpressionWrapper, OuterRef, Q
@@ -30,8 +35,11 @@ def withdrawn_q():
     still_ordered = (LabOrderTest.objects.filter(pk=OuterRef("source_id"))
                      .exclude(status="cancelled")
                      .exclude(order__status="cancelled"))
-    return (Q(status__in=LIVE_STATUSES, source_type="lab_test", source_id__isnull=False)
-            & ~Q(Exists(still_ordered)))
+    Prescription = apps.get_model("pharmacy", "Prescription")
+    script_cancelled = Prescription.objects.filter(pk=OuterRef("source_id"), status="cancelled")
+    live = Q(status__in=LIVE_STATUSES, source_id__isnull=False)
+    return ((live & Q(source_type="lab_test") & ~Q(Exists(still_ordered)))
+            | (live & Q(source_type="prescription") & Q(Exists(script_cancelled))))
 
 
 def annotate_withdrawn(queryset):
