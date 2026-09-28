@@ -3,7 +3,7 @@ import { useConfirm } from "../../components/ConfirmAlert.jsx";
 import { useParams } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import api from "../../api/client";
-import { readError } from "../../api/errors";
+import { fieldErrors, readError } from "../../api/errors";
 import { useToast } from "../../components/Toaster.jsx";
 import {
   Alert, Badge, Button, EmptyState, Field, Input, Page, PageHeader, SearchInput, Select,
@@ -239,10 +239,19 @@ function ResourceScreen({ config }) {
   );
 }
 
-function ResourceForm({ config, row, onDone, onCancel }) {
+/**
+ * The add/edit form for one configuration resource — exported so another
+ * screen that creates the same rows (Inventory → Add item) renders *this* form
+ * rather than a second copy of the field list. `title`, `submitLabel` and
+ * `successTitle` let that screen use its own words; `onCancel` is optional.
+ */
+export function ResourceForm({ config, row, onDone, onCancel, title, submitLabel, successTitle }) {
   const { showToast } = useToast();
   const [form, setForm] = useState(() => initialValues(config, row));
   const [error, setError] = useState(null);
+  // What the server said about individual fields — a duplicate SKU is shown
+  // under the SKU box, not only in the sentence at the bottom.
+  const [fieldErrorsBy, setFieldErrorsBy] = useState({});
 
   const save = useMutation({
     mutationFn: () => {
@@ -251,22 +260,26 @@ function ResourceForm({ config, row, onDone, onCancel }) {
         ? api.patch(`/${config.endpoint}/${row.id}/`, payload)
         : api.post(`/${config.endpoint}/`, payload);
     },
-    onSuccess: () => {
-      showToast({ title: row ? "Saved" : "Added" });
-      onDone();
+    onSuccess: (response) => {
+      showToast({ title: row ? "Saved" : (successTitle ?? "Added"),
+                  message: response?.data?.name });
+      onDone(response?.data);
     },
-    onError: (err) => setError(readError(err, "Could not save this.")),
+    onError: (err) => {
+      setError(readError(err, "Could not save this."));
+      setFieldErrorsBy(fieldErrors(err));
+    },
   });
 
   const set = (name, value) => setForm((f) => ({ ...f, [name]: value }));
 
   return (
     <form
-      onSubmit={(e) => { e.preventDefault(); setError(null); save.mutate(); }}
+      onSubmit={(e) => { e.preventDefault(); setError(null); setFieldErrorsBy({}); save.mutate(); }}
       className="mb-5 space-y-4 rounded-xl border border-slate-200 bg-white p-5"
     >
       <h2 className="font-semibold text-slate-900">
-        {row ? `Edit ${rowLabel(row, config)}` : `New ${singular(config)}`}
+        {title ?? (row ? `Edit ${rowLabel(row, config)}` : `New ${singular(config)}`)}
       </h2>
 
       {sections(config.fields).map(({ title, fields }) => (
@@ -277,7 +290,8 @@ function ResourceForm({ config, row, onDone, onCancel }) {
           <div className="grid gap-4 sm:grid-cols-2">
             {fields.map((field) => (
               <FormField key={field.name} field={field} value={form[field.name]}
-                         onChange={(value) => set(field.name, value)} form={form} />
+                         onChange={(value) => set(field.name, value)} form={form}
+                         error={fieldErrorsBy[field.name]} />
             ))}
           </div>
         </fieldset>
@@ -287,15 +301,17 @@ function ResourceForm({ config, row, onDone, onCancel }) {
 
       <div className="flex flex-wrap gap-2">
         <Button type="submit" disabled={save.isPending}>
-          {save.isPending ? "Saving…" : row ? "Save changes" : "Add"}
+          {save.isPending ? "Saving…" : row ? "Save changes" : (submitLabel ?? "Add")}
         </Button>
-        <Button type="button" variant="secondary" onClick={onCancel}>Cancel</Button>
+        {onCancel && (
+          <Button type="button" variant="secondary" onClick={onCancel}>Cancel</Button>
+        )}
       </div>
     </form>
   );
 }
 
-function FormField({ field, value, onChange, form }) {
+function FormField({ field, value, onChange, form, error }) {
   // A reference field manages a relationship: the options are the other
   // model's rows, fetched from its own endpoint, so nothing is typed by hand.
   const { data: options } = useQuery({
@@ -312,12 +328,13 @@ function FormField({ field, value, onChange, form }) {
                onChange={(e) => onChange(e.target.checked)}
                className="h-4 w-4 rounded border-slate-300" />
         <span className="text-sm font-medium text-slate-800">{field.label}</span>
+        {field.hint && <span className="text-sm text-slate-600">— {field.hint}</span>}
       </label>
     );
   }
 
   return (
-    <Field label={field.label} hint={field.hint} required={field.required}>
+    <Field label={field.label} hint={field.hint} required={field.required} error={error}>
       {field.type === "reference" ? (
         <Select value={value ?? ""} onChange={(e) => onChange(e.target.value)}>
           <option value="">{field.required ? "Select…" : "None"}</option>

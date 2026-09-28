@@ -52,7 +52,9 @@ export const CONFIG_RESOURCES = {
       { name: "unit", label: "Unit", type: "reference", endpoint: "units",
         section: "Basic information" },
       { name: "is_active", label: "Is active", type: "toggle", default: true,
-        section: "Basic information" },
+        section: "Basic information",
+        hint: "An inactive item stays on every record that names it, but cannot be "
+          + "received, transferred or newly prescribed." },
       { name: "sku", label: "SKU", type: "text", section: "Counter identifiers",
         hint: "Optional stock-keeping code, e.g. PH-PARA-500. Unique when set." },
       { name: "barcode", label: "Barcode", type: "text", section: "Counter identifiers",

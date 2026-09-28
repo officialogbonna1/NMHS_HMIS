@@ -106,7 +106,9 @@ describe("Administration → Products", () => {
     await user.type(screen.getByLabelText(/^Name/), "Duplicate");
     await user.type(screen.getByLabelText(/^SKU/), "PH-PARA-500");
     await user.click(screen.getByRole("button", { name: "Add" }));
-    expect(await screen.findByText(/already exists/)).toBeInTheDocument();
+    // Under the SKU box itself, and in the summary beneath the form.
+    await waitFor(() => expect(screen.getByLabelText(/^SKU/)).toHaveAttribute("aria-invalid", "true"));
+    expect(screen.getAllByText(/already exists/)).toHaveLength(2);
   });
 
   it("edits a product with a PATCH of the same fields", async () => {

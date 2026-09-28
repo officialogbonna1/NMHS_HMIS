@@ -390,3 +390,75 @@ class DjangoAdminIsTheSameCatalogueTests(ItemManagementTestCase):
         item.refresh_from_db()
         self.assertFalse(item.is_active)
         self.assertTrue(self.audit(item, "inventory.item_archived").exists())
+
+
+class InventoryAddItemTabTests(ItemManagementTestCase):
+    """
+    Inventory → Add item posts to the same `/api/items/` Administration →
+    Products and Django admin write — so these hold what that tab relies on,
+    beside the classes above.
+    """
+
+    def test_a_consumable_is_an_item_like_any_medicine(self):
+        consumables = category("Medical Consumables")
+        pack = unit("Pack")
+        response = self.create(name="Cotton Wool", strength="", dosage_form="",
+                               category=consumables.pk, unit=pack.pk, sku="CON-COT-01",
+                               barcode="", reorder_threshold=5)
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual((response.data["category_name"], response.data["unit_name"]),
+                         ("Medical Consumables", "Pack"))
+        # Returned by the existing API, and offered by the Receive stock picker.
+        detail = self.client_for(self.store_keeper).get(f"/api/items/{response.data['id']}/")
+        self.assertEqual((detail.status_code, detail.data["name"]), (200, "Cotton Wool"))
+        listed = self.client_for(self.store_keeper).get("/api/items/", {"page_size": 500}).data
+        self.assertIn("Cotton Wool", [row["name"] for row in listed.get("results", listed)])
+
+    def test_the_inventory_manager_cannot_create_one(self):
+        """Catalogue writes stay `IsAdmin` (rule 29) — the store keeper receives, never configures."""
+        response = self.create(self.store_keeper, name="Store keeper's item", sku="SK-1")
+        self.assertEqual(response.status_code, 403)
+        self.assertFalse(Item.objects.filter(name="Store keeper's item").exists())
+
+    def test_every_non_admin_role_is_refused(self):
+        for role in ("pharmacist", "inventory_manager", "cashier", "reception", "doctor", "nurse"):
+            with self.subTest(role=role):
+                user = User.objects.create_user(username=f"u-{role}", password="t", role=role)
+                self.assertEqual(self.create(user, name=f"By {role}", sku=f"X-{role}").status_code,
+                                 403)
+        self.assertFalse(Item.objects.filter(name__startswith="By ").exists())
+
+    def test_a_name_is_required(self):
+        for name in ("", "   "):
+            with self.subTest(name=repr(name)):
+                response = self.create(name=name, sku=None, barcode=None)
+                self.assertEqual(response.status_code, 400)
+                self.assertIn("name", response.data)
+        self.assertFalse(Item.objects.exists())
+
+    def test_a_category_or_unit_that_does_not_exist_is_refused(self):
+        for field in ("category", "unit"):
+            with self.subTest(field=field):
+                response = self.create(**{field: 999999})
+                self.assertEqual(response.status_code, 400)
+                self.assertIn(field, response.data)
+        self.assertFalse(Item.objects.exists())
+
+    def test_the_reorder_threshold_must_be_a_whole_number_of_zero_or_more(self):
+        for value in (-1, "ten", 2.5):
+            with self.subTest(value=value):
+                response = self.create(reorder_threshold=value, sku=None, barcode=None)
+                self.assertEqual(response.status_code, 400)
+                self.assertIn("reorder_threshold", response.data)
+        self.assertEqual(self.create(reorder_threshold=0).status_code, 201)
+
+    def test_creating_one_leaves_every_existing_item_as_it_was(self):
+        existing = product("Paracetamol 500mg", unit_name="Tablet", sku="PH-PARA")
+        stock_the_store(item=existing, quantity=40, actor=self.store_keeper)
+        before = list(Item.objects.values())
+        self.assertEqual(self.create(name="Syringe 5ml", sku="CON-SYR-5", barcode="").status_code,
+                         201)
+        self.assertEqual(list(Item.objects.filter(pk=existing.pk).values()),
+                         [row for row in before if row["id"] == existing.pk])
+        self.assertEqual(existing.total_quantity, 40)
+        self.assertEqual(Item.objects.count(), len(before) + 1)

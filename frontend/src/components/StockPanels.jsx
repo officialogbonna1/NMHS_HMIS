@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { useConfirm } from "./ConfirmAlert.jsx";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import api from "../api/client";
@@ -405,6 +405,94 @@ function StockRow({ record }) {
 
 /* ---------------------------------------------------------------- receiving */
 
+/**
+ * Choose a catalogue item: click to browse the list, type to narrow it by
+ * name, pick a result. The same `/items/` rows the form already loaded,
+ * filtered here, and `onChange` receives the item's id as a string — the
+ * value the old `<select>` gave — so nothing downstream can tell the
+ * difference.
+ */
+function ItemPicker({ items, value, onChange }) {
+  const [open, setOpen] = useState(false);
+  const [term, setTerm] = useState("");
+  const [highlight, setHighlight] = useState(0);
+  const boxRef = useRef(null);
+  const listId = useId();
+
+  const chosen = items.find((i) => String(i.id) === String(value));
+  const matches = useMemo(() => {
+    const needle = term.trim().toLowerCase();
+    return needle ? items.filter((i) => i.name.toLowerCase().includes(needle)) : items;
+  }, [items, term]);
+
+  useEffect(() => setHighlight(0), [term, open]);
+  useEffect(() => {
+    if (!open) return undefined;
+    const close = (e) => { if (boxRef.current && !boxRef.current.contains(e.target)) setOpen(false); };
+    document.addEventListener("mousedown", close);
+    return () => document.removeEventListener("mousedown", close);
+  }, [open]);
+
+  function choose(item) {
+    onChange(String(item.id));
+    setTerm("");
+    setOpen(false);
+  }
+
+  function onKeyDown(e) {
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      if (!open) { setOpen(true); return; }
+      const step = e.key === "ArrowDown" ? 1 : -1;
+      setHighlight((h) => Math.min(Math.max(h + step, 0), Math.max(matches.length - 1, 0)));
+    } else if (e.key === "Enter" && open) {
+      e.preventDefault();
+      if (matches[highlight]) choose(matches[highlight]);
+    } else if (e.key === "Escape" && open) {
+      e.preventDefault();
+      setOpen(false);
+    }
+  }
+
+  return (
+    <div ref={boxRef} className="relative min-w-0">
+      <Input
+        role="combobox"
+        aria-expanded={open}
+        aria-controls={listId}
+        aria-autocomplete="list"
+        autoComplete="off"
+        placeholder="Search or select an item…"
+        // Typing searches; otherwise the field shows what is chosen.
+        value={open || term ? term : (chosen?.name ?? "")}
+        onChange={(e) => { setTerm(e.target.value); setOpen(true); }}
+        onClick={() => setOpen(true)}
+        onKeyDown={onKeyDown}
+      />
+      {open && (
+        <ul id={listId} role="listbox"
+            className="absolute z-30 mt-1 max-h-72 w-full overflow-auto rounded-md border border-slate-200 bg-white py-1 shadow-lg">
+          {matches.length === 0 && (
+            <li className="px-3 py-2 text-sm text-slate-700">
+              {term.trim() ? "No item by that name." : "No items in the catalogue yet."}
+            </li>
+          )}
+          {matches.map((item, index) => (
+            <li key={item.id} role="option" aria-selected={String(item.id) === String(value)}
+                onMouseEnter={() => setHighlight(index)}
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => choose(item)}
+                className={`cursor-pointer px-3 py-2 text-sm text-slate-800 ${
+                  index === highlight ? "bg-brand-50" : "hover:bg-slate-50"}`}>
+              {item.name}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
 export function ReceiveStock({ locations, store }) {
   const { showToast } = useToast();
   const refresh = useRefresh();
@@ -457,11 +545,12 @@ export function ReceiveStock({ locations, store }) {
 
       <div className="grid gap-4 md:grid-cols-2">
         <div className="md:col-span-2">
-          <Field label="Drug" required>
-            <Select value={form.item} onChange={(e) => set("item", e.target.value)}>
-              <option value="">Select drug</option>
-              {(items ?? []).map((i) => <option key={i.id} value={i.id}>{i.name}</option>)}
-            </Select>
+          {/* Any stocked item — a medicine, cotton wool, a syringe, gloves —
+              so the label does not say "drug". The value is still the
+              inventory Item's id, exactly what the form always posted. */}
+          <Field label="Medical item" required>
+            <ItemPicker items={items ?? []} value={form.item}
+                        onChange={(id) => set("item", id)} />
           </Field>
         </div>
         <Field label="Batch number" required>

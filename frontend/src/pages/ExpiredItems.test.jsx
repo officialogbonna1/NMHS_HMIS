@@ -175,8 +175,8 @@ describe("Receive a delivery is unchanged", () => {
     renderWithApp(<ReceiveStock locations={LOCATIONS} store={LOCATIONS[0]} />,
                   { user: { role: "hospital_admin" } });
 
-    await waitFor(() => expect(screen.getByRole("option", { name: "Amoxicillin (new)" })).toBeInTheDocument());
-    await user.selectOptions(screen.getByLabelText(/^Drug/), "3");
+    await user.click(screen.getByLabelText(/^Medical item/));
+    await user.click(await screen.findByRole("option", { name: "Amoxicillin (new)" }));
     await user.type(screen.getByLabelText(/^Batch number/), "AMX-01");
     await user.type(screen.getByLabelText(/^Quantity/), "120");
     await user.type(screen.getByLabelText(/^Cost price/), "10");
