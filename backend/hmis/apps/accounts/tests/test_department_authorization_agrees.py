@@ -61,7 +61,7 @@ class OneDepartment(TestCase):
         self.theatre.staff.add(self.by_relation)
         self.by_name = User.objects.create_user(username="name", password="t",
                                                 role="nurse",
-                                                department="Theatre / Procedures")
+                                                department="Theatre")
         self.by_code = User.objects.create_user(username="code", password="t",
                                                 role="nurse", department="theatre")
         self.outsider = User.objects.create_user(username="out", password="t",
@@ -247,7 +247,7 @@ class DepartmentAuthorizationOnlyNarrows(OneDepartment):
         client = APIClient()
         client.force_authenticate(self.outsider)
         answer = client.patch(f"/api/users/{self.outsider.pk}/",
-                              {"department": "Theatre / Procedures"}, format="json")
+                              {"department": "Theatre"}, format="json")
         self.assertEqual(answer.status_code, 403)
         self.outsider.refresh_from_db()
         self.assertEqual(self.outsider.department, "Front Desk")

@@ -30,6 +30,10 @@ from .models import RouteService
 #: the laboratory raises its own charges through its order (rule 24).
 PURPOSE_CATEGORY = {
     "ultrasound": "ultrasound",
+    # The Procedure Department orders from the price list's `procedure`
+    # category the same way imaging does (rule 59): one charge per procedure
+    # at the catalogue's price, snapshotted at referral.
+    "procedure": "procedure",
 }
 
 #: How the charge describes itself on the patient's bill. The unit, then what

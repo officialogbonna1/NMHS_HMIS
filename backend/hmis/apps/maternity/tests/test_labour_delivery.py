@@ -510,8 +510,10 @@ class ItReusesTheHospital(Labour):
         self.deliver(newborns=[{"sex": "F"}])
         charge = add_charge(patient=self.mother, description="Delivery package",
                             amount=Decimal("45000"), created_by=self.reception,
-                            source_type="procedure")
-        self.assertEqual(charge.department.code, "theatre")
+                            source_type="maternity")
+        # A delivery is the maternity ward's money — not a procedure's, and
+        # not Theatre's (Procedure and Theatre are separate, rule 59).
+        self.assertEqual(charge.department.code, "maternity")
         self.assertEqual(charge.settlement_status, "unpaid")
         self.assertEqual(
             Patient.objects.get(pk=self.mother.pk).ledger.outstanding_balance,

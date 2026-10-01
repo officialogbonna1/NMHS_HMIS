@@ -149,8 +149,25 @@ class PatientRouteSerializer(serializers.ModelSerializer):
         # import would close the circle.
         from .views import PURPOSE_ROLE
 
+        from . import procedures
+
         assigned_to = attrs.get("assigned_to", getattr(self.instance, "assigned_to", None))
         purpose = attrs.get("purpose", getattr(self.instance, "purpose", None))
+        if purpose == procedures.PURPOSE:
+            # A procedure is the Procedure Department's: it is filed there
+            # whatever department was picked, and only its staff (or an
+            # admin) may be named on it — rule 59, the same rule `refer/` uses.
+            if assigned_to and not procedures.may_be_named(assigned_to):
+                raise serializers.ValidationError({"assigned_to": (
+                    f"{assigned_to.get_full_name() or assigned_to.username} is not on the "
+                    f"Procedure Department's staff.")})
+            department = procedures.department()
+            if department is None:
+                raise serializers.ValidationError({"department": (
+                    "The Procedure department is not set up — an admin re-activates "
+                    "'Procedure' under Departments.")})
+            attrs["department"] = department
+            return attrs
         roles = PURPOSE_ROLE.get(purpose)
         if assigned_to and roles and assigned_to.role not in {*roles, *ADMIN_ROLES}:
             raise serializers.ValidationError({"assigned_to": (

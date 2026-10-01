@@ -25,6 +25,9 @@ from apps.patients.models import Patient
 
 EXPECTED_CODES = ["reception", "consultation", "laboratory", "pharmacy",
                   "radiology", "eye", "theatre",
+                  # Procedure is its own department, split from Theatre by
+                  # `departments/0007` (rule 59).
+                  "procedure",
                   # Maternity joined when the hospital configured its price
                   # list — see the note in `billing/departments.py`.
                   "maternity"]
@@ -37,6 +40,8 @@ SEED_MIGRATION = "apps.departments.migrations.0002_seed_revenue_departments"
 # `0002`, which is applied history on every deployment — so the drift test
 # below reads both, which is what the seeded literals actually are.
 MATERNITY_SEED_MIGRATION = "apps.departments.migrations.0006_seed_maternity_department"
+# Procedure is seeded — and Theatre's label corrected — by `0007`.
+PROCEDURE_SEED_MIGRATION = "apps.departments.migrations.0007_separate_procedure_from_theatre"
 
 
 def seed_module():
@@ -46,7 +51,11 @@ def seed_module():
 def seeded_literals():
     """Every (code, name) the migrations actually seed, wherever they seed it."""
     maternity = importlib.import_module(MATERNITY_SEED_MIGRATION)
-    return seed_module().REVENUE_DEPARTMENTS + [(maternity.CODE, maternity.NAME)]
+    split = importlib.import_module(PROCEDURE_SEED_MIGRATION)
+    old, new = split.THEATRE_RENAME
+    seeded = [(code, new if (code == split.THEATRE_CODE and name == old) else name)
+              for code, name in seed_module().REVENUE_DEPARTMENTS]
+    return seeded + [(maternity.CODE, maternity.NAME), (split.CODE, split.NAME)]
 
 
 class SeededRegistryTests(TestCase):

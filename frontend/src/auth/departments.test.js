@@ -61,7 +61,7 @@ describe("a multi-department account", () => {
   });
 
   it("is authorised in nothing else", () => {
-    for (const elsewhere of ["pharmacy", "laboratory", "radiology", "theatre"]) {
+    for (const elsewhere of ["pharmacy", "laboratory", "radiology", "theatre", "procedure"]) {
       expect(worksIn(BOTH, elsewhere)).toBe(false);
     }
   });

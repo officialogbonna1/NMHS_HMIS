@@ -65,6 +65,11 @@ class ReferralNotificationTests(TestCase):
         self.assertNotIn("dera", self._recipients())
 
     def test_a_procedure_named_to_a_doctor_reaches_that_doctor_only(self):
+        # A procedure is the Procedure department's (rule 59), so the doctor
+        # named has to be a member — and naming one still wakes only them, not
+        # the colleague beside them.
+        procedure = Department.objects.get(code="procedure")
+        procedure.staff.add(self.femi, self.nurse)
         self._refer("procedure", assigned_to=self.femi.pk)
         self.assertEqual(self._recipients(), {"femi"})
 

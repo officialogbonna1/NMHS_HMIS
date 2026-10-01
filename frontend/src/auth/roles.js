@@ -89,6 +89,18 @@ export function worksInAs(user, code, roles, { always = [] } = {}) {
   return worksIn(user, code);
 }
 
+// The Procedure department (rule 59): doctors and nurses an administrator has
+// made members of "Procedure" — its own department, never Theatre — plus the
+// administrators. Mirrors `workflow.procedures.in_team` — a courtesy for the nav
+// and the page; the server decides who sees, claims and writes a procedure.
+export const PROCEDURE_DEPARTMENT = "procedure";
+export const PROCEDURE_TEAM_ROLES = ["doctor", "nurse"];
+
+export function isProcedureStaff(user) {
+  if (ADMIN_ROLES.includes(user?.role ?? "")) return true;
+  return worksInAs(user, PROCEDURE_DEPARTMENT, PROCEDURE_TEAM_ROLES);
+}
+
 // Who works the ward for their own patients only. Mirrors
 // OWN_PATIENT_WARD_ROLES — the server hides other patients' names on the bed
 // board and refuses to admit, move or discharge them.

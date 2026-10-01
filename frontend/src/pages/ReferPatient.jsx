@@ -194,6 +194,26 @@ export function LabTestChooser({ chosen, onToggle }) {
   );
 }
 
+// The units that order from the price list at referral (rule 51, and rule 59
+// for procedures): the doctor names the services and each raises its own
+// charge there and then. Mirrors `workflow/services.PURPOSE_CATEGORY`.
+const SERVICE_ORDERS = {
+  ultrasound: {
+    category: "ultrasound",
+    title: "Which examination?",
+    blurb: "These, and only these, go onto the radiology worklist. Each raises a charge on "
+      + "the patient at the price shown — the same configured service Reception bills — "
+      + "which the front desk or the cash desk collects.",
+  },
+  procedure: {
+    category: "procedure",
+    title: "Which procedure?",
+    blurb: "These go to the Procedure Department. Each raises a charge on the patient at the "
+      + "price shown — the same configured service Reception bills — which the front desk or "
+      + "the cash desk collects. The procedure is never held up waiting for payment.",
+  },
+};
+
 export default function ReferPatient() {
   const queryClient = useQueryClient();
   const { showToast } = useToast();
@@ -231,7 +251,7 @@ export default function ReferPatient() {
       // already carries it. The call is separate from the referral for the
       // same reason the lab's is: a catalogue hiccup must not swallow the
       // hand-off that has already been made.
-      if (purpose === "ultrasound" && examinations.length) {
+      if (SERVICE_ORDERS[purpose] && examinations.length) {
         await api.post(`/patient-routes/${route.id}/request-services/`,
           { services: examinations.map((service) => service.id) });
       }
@@ -298,7 +318,7 @@ export default function ReferPatient() {
           {destinations.map((d) => (
             <button
               key={d.purpose}
-              onClick={() => { setPurpose(d.purpose); setError(null); }}
+              onClick={() => { setPurpose(d.purpose); setExaminations([]); setError(null); }}
               disabled={!patient}
               className={`rounded-xl border p-4 text-left transition disabled:opacity-50 ${
                 purpose === d.purpose
@@ -356,14 +376,13 @@ export default function ReferPatient() {
           />
         )}
 
-        {purpose === "ultrasound" && patient && (
+        {SERVICE_ORDERS[purpose] && patient && (
           <ServiceChooser
-            category="ultrasound"
+            key={purpose}
+            category={SERVICE_ORDERS[purpose].category}
             chosen={examinations}
-            title="Which examination?"
-            blurb={"These, and only these, go onto the radiology worklist. Each raises a charge on "
-              + "the patient at the price shown — the same configured service Reception bills — "
-              + "which the front desk or the cash desk collects."}
+            title={SERVICE_ORDERS[purpose].title}
+            blurb={SERVICE_ORDERS[purpose].blurb}
             onToggle={(service) => setExaminations((current) => (
               current.some((s) => s.key === service.key)
                 ? current.filter((s) => s.key !== service.key)
@@ -388,7 +407,7 @@ export default function ReferPatient() {
         <Button variant="link" size="xs" to="/queue">My queue</Button>
         <span className="text-sm text-slate-700">
           {(purpose === "laboratory" && labTests.length > 0)
-            || (purpose === "ultrasound" && examinations.length > 0)
+            || (SERVICE_ORDERS[purpose] && examinations.length > 0)
             ? "The charge is raised with the order; the patient settles it at Reception or the cash desk."
             : "The counter bills the service separately."}
         </span>

@@ -156,8 +156,10 @@ class TheDoctorOrdersFromTheConfiguredCatalogue(Imaging):
         self.assertFalse(RouteService.objects.exists())
 
     def test_a_referral_that_orders_nothing_from_the_price_list_is_refused(self):
+        # The eye clinic has no priced order behind it. (A procedure did not
+        # either, until rule 59 gave the Procedure Department one.)
         response = self.as_(self.doctor).post("/api/patient-routes/refer/", {
-            "patient": self.patient.pk, "purpose": "procedure",
+            "patient": self.patient.pk, "purpose": "eye",
             "department": self.department.pk,
         }, format="json")
         route = PatientRoute.objects.get(pk=response.data["id"])

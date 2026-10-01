@@ -52,9 +52,13 @@ REVENUE_DEPARTMENTS = (
     ("pharmacy", "Pharmacy", ("prescription", "pharmacy", "medication", "pos_sale")),
     ("radiology", "Radiology / Ultrasound", ("ultrasound", "radiology", "imaging")),
     ("eye", "Eye Clinic", ("eye", "optometry", "ophthalmology")),
-    # A procedure is theatre work in this hospital's workflow — `procedure` is
-    # what both the billing catalogue and the referral purposes call it.
-    ("theatre", "Theatre / Procedures", ("procedure", "theatre", "surgery")),
+    # **Theatre and Procedure are two departments** (rule 59,
+    # `departments/0007`). They were one row, "Theatre / Procedures"; a
+    # procedure room and an operating theatre have different staff, so each
+    # takes its own money. `procedure` is what both the billing catalogue and
+    # the referral purpose call a procedure.
+    ("theatre", "Theatre", ("theatre", "surgery")),
+    ("procedure", "Procedure", ("procedure",)),
     # **Maternity joined the registry when it got a price list.**
     #
     # It was deliberately left out while the ward raised no charges of its own

@@ -13,6 +13,8 @@ this note?" (rule 3).
 """
 from apps.accounts.departments import works_in
 
+from . import procedures
+
 
 def may_work(user, route, *, role_purposes, purpose_role):
     """
@@ -27,6 +29,9 @@ def may_work(user, route, *, role_purposes, purpose_role):
         return True
     if route.assigned_to_id:
         return False
+    if route.purpose == procedures.PURPOSE:
+        # The Procedure Department's own staff, and nobody else (rule 59).
+        return procedures.in_team(user)
     if route.purpose in role_purposes.get(getattr(user, "role", ""), []):
         return True
     if route.purpose in purpose_role:

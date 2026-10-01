@@ -28,7 +28,26 @@ Who signed it and when is `result_by` / `result_at`, and whether it has been
 released is the route's own status — neither is repeated here, because two
 columns that must agree are two columns free to disagree.
 """
+import json
+
 from django.core.exceptions import ValidationError
+
+class ReportError(ValidationError):
+    """
+    A refused report, keeping its errors' shape — sections are lists of
+    messages, a procedure's materials are nested by row
+    (`{"materials": {"0": {"quantity_received": [...]}}}`), which Django's own
+    `ValidationError` cannot hold. `message_dict` is what the views answer with.
+    """
+
+    def __init__(self, errors):
+        super().__init__("The report could not be saved.")
+        self._errors = errors
+
+    @property
+    def message_dict(self):
+        return self._errors
+
 
 SHORT, TEXT = "short", "text"
 MAX_LENGTH = {SHORT: 255, TEXT: 4000}
@@ -46,7 +65,26 @@ REPORTS = {
         ("impression", "Impression", TEXT,
          "The conclusion the referring doctor reads first."),
     ],
+    # The Procedure Department (`workflow/procedures.py`). Who performed it and
+    # when are `result_by` / `result_at`, and who asked is `routed_by` — none
+    # of them is repeated as a section.
+    "procedure": [
+        ("procedure_performed", "Procedure performed", SHORT,
+         "What was done — e.g. wound debridement and dressing, left leg."),
+        ("clinical_notes", "Procedure notes", TEXT,
+         "How it was done: anaesthesia, technique, anything that happened."),
+        ("findings", "Findings", TEXT,
+         "What was found."),
+        ("outcome", "Outcome", TEXT,
+         "How the patient tolerated it and the state they left in."),
+        ("follow_up", "Follow-up", TEXT,
+         "What happens next — e.g. review in 48 hours, change dressing daily."),
+    ],
 }
+
+#: Purposes whose report also carries a list of materials used
+#: (`workflow/procedures.clean_materials`). Every other purpose refuses one.
+MATERIAL_PURPOSES = {"procedure"}
 
 
 def sections_for(purpose):
@@ -59,7 +97,7 @@ def schema(purpose):
     sections = sections_for(purpose)
     if sections is None:
         return None
-    return {
+    data = {
         "purpose": purpose,
         "sections": [
             {"key": key, "label": label, "kind": kind, "hint": hint,
@@ -67,6 +105,19 @@ def schema(purpose):
             for key, label, kind, hint in sections
         ],
     }
+    if purpose in MATERIAL_PURPOSES:
+        from . import procedures
+        # The materials table, from the same definition the server validates
+        # against, so the form holds no copy of its columns or limits.
+        data["materials"] = {
+            "max_rows": procedures.MAX_ROWS,
+            "text_fields": [{"key": key, "label": procedures.LABELS[key], "max_length": limit}
+                            for key, limit in procedures.TEXT_FIELDS.items()],
+            "quantities": [{"key": key, "label": procedures.LABELS[key]}
+                           for key in procedures.QUANTITIES],
+            "rule": "Received = Used + Remaining + Wastage",
+        }
+    return data
 
 
 def clean(purpose, value):
@@ -85,6 +136,29 @@ def clean(purpose, value):
         raise ValidationError("This referral's report is written as a single finding.")
     if not isinstance(value, dict):
         raise ValidationError("The report must be a set of sections.")
+
+    # A procedure's materials ride beside its sections. A multipart post (the
+    # one carrying an uploaded document) cannot nest a list, so it sends the
+    # rows as one JSON string in `report.materials`; JSON sends the list.
+    value = dict(value)
+    materials, material_errors = None, {}
+    if "materials" in value:
+        raw = value.pop("materials")
+        if purpose not in MATERIAL_PURPOSES:
+            material_errors = {"materials": ["This report does not record materials."]}
+        else:
+            from . import procedures
+            if isinstance(raw, str):
+                try:
+                    raw = json.loads(raw) if raw.strip() else []
+                except ValueError:
+                    raw = None
+                    material_errors = {"materials": ["The materials could not be read."]}
+            if not material_errors:
+                try:
+                    materials = procedures.clean_materials(raw)
+                except procedures.MaterialsError as exc:
+                    material_errors = {"materials": exc.errors}
 
     allowed = {key: kind for key, _, kind, _ in sections}
     errors, cleaned = {}, {}
@@ -105,12 +179,15 @@ def clean(purpose, value):
             errors[key] = [f"Keep this to {MAX_LENGTH[kind]} characters."]
             continue
         cleaned[key] = text
+    errors.update(material_errors)
     if errors:
-        raise ValidationError(errors)
+        raise ReportError(errors)
+    if materials:
+        cleaned["materials"] = materials
     return cleaned or None
 
 
-def render(purpose, report):
+def render(purpose, report, *, include_materials=True):
     """
     The report as the one line of text every existing reader already shows.
 
@@ -124,5 +201,8 @@ def render(purpose, report):
     if not report or sections is None:
         return ""
     labels = {key: label for key, label, _, _ in sections}
-    return "\n\n".join(f"{labels[key]}:\n{report[key]}"
-                       for key, _, _, _ in sections if report.get(key))
+    blocks = [f"{labels[key]}:\n{report[key]}" for key, _, _, _ in sections if report.get(key)]
+    if include_materials and report.get("materials"):
+        from . import procedures
+        blocks.append(procedures.render_materials(report["materials"]))
+    return "\n\n".join(blocks)

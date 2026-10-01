@@ -28,6 +28,10 @@ class DepartmentAdmin(ProtectedConfigAdmin, admin.ModelAdmin):
     list_editable = ["is_active", "is_appointment_available"]
     list_filter = ["is_active", "is_appointment_available"]
     search_fields = ["name", "code"]
+    # Who works here: the existing `Department.staff` membership, any number of
+    # people, each free to belong to other departments too. The two-pane picker
+    # is the same field, easier to work with a hospital's worth of staff.
+    filter_horizontal = ["staff"]
     actions = ["activate", "deactivate", "open_for_appointments", "close_for_appointments"]
     # A department that has routed a patient, prices a service or has taken
     # money is history. Django admin is held to the same rule the API is.

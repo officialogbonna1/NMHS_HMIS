@@ -163,12 +163,13 @@ person explicitly asks for something different.
    optometrist, ophthalmologist) work a shared queue, so unassigned work is
    broadcast to all of them: that is how a lab request finds whoever is on
    the bench tonight. **A doctor is not a pool.** Doctor-work
-   (consultation, procedure) goes to the named person, else to the doctors
+   (consultation) goes to the named person, else to the doctors
    actually holding that patient (`patients.access.doctors_for_patient`),
    else to nobody — the route still sits in `/queue`, and `refer` answers
    with `notified` and a `notice` so the referrer knows to name somebody.
    Telling every doctor in the hospital about one dressing is how a bell
-   stops being read.
+   stops being read. (A **procedure** is the Procedure Department's, a pool of
+   its posted staff — rule 59.)
 15. **A laboratory result is addressed to one doctor** — `LabOrder.report_to`,
    defaulting to the doctor who referred, redirectable by the bench
    (`notify_doctor` on `save-results` or `verify`) for when that doctor is
@@ -741,9 +742,10 @@ person explicitly asks for something different.
    with the cashier additionally seeing what their own desk took.
 
 
-34. **The seven revenue departments are seeded, and `code` is their identity.**
+34. **The revenue departments are seeded, and `code` is their identity.**
    `apps/billing/departments.py` holds the registry once — reception,
-   consultation, laboratory, pharmacy, radiology, eye, theatre — with the
+   consultation, laboratory, pharmacy, radiology, eye, theatre, procedure,
+   maternity — with the
    `source_type` values that resolve to each. `add_charge` attributes from it,
    `billing/reporting.py` groups by it, and
    `departments/migrations/0002_seed_revenue_departments.py` creates a
@@ -1732,8 +1734,9 @@ person explicitly asks for something different.
    from the price list, and only `ultrasound` does today.
 
    This extends rule 24's exception to a second unit: **ordering a priced
-   study raises its charge**. Referring to the eye clinic or for a procedure
-   still raises none, because neither has a priced order behind it yet.
+   study raises its charge**. A procedure now orders the same way (rule 59);
+   referring to the eye clinic still raises none, because it has no priced
+   order behind it yet.
    The unit reads the money and is **never gated by it** — a patient on the
    couch is scanned and the cash desk chases the balance, the rule the
    laboratory already works to.
@@ -2486,6 +2489,70 @@ person explicitly asks for something different.
      `prescription.billed`).
    - Held by `apps/pharmacy/tests/test_prescription_billing.py` and
      `frontend/src/pages/Pharmacy.billing.test.jsx`.
+
+59. **The Procedure Department is a station, worked by its posted staff.**
+   Doctor refers → the procedure team sees it on `/procedures` → one claims it
+   → performs and documents it, materials included → completes it → it is on
+   the patient's record and prints. **Nothing here is a second system**: the
+   referral is `PatientRoute(purpose="procedure")` from the existing Refer
+   Patient page, the station is `DepartmentStation`'s `STATIONS.procedure`, the
+   record is the route's `result` / `result_data` plus the permanent
+   `MedicalTest` copy (the chart's Procedures tab and Tests & Diagnostics), and
+   the bell, audit log, printing and billing are the existing ones.
+
+   - **Who works it is a department, not a role.** `workflow/procedures.py`
+     `in_team` is the one definition: a `doctor` or `nurse` an administrator
+     has made a member of the **Procedure** department (code `procedure`) —
+     `Department.staff`, the existing many-to-many, read through
+     `accounts.departments.works_in` — plus the administrators. **Procedure is
+     not Theatre**: `departments/0007` split the old combined "Theatre /
+     Procedures" row into Theatre (code `theatre`, its staff and history kept,
+     the label corrected only where unedited) and a new Procedure department,
+     moving only procedure-purpose routes and `source_type="procedure"`
+     charges across. Membership of one grants nothing in the other, and any
+     number of staff may belong to either or both. Django admin's Department
+     page manages the membership (`filter_horizontal = ["staff"]`). A role outside `TEAM_ROLES`
+     gains nothing from being listed there, and an unposted doctor gains no
+     procedure work. Every reader agrees through it: `work_routes_for` (the
+     shared board, rule 54's shape), `route_targets` (unclaimed referrals ring
+     the team, nobody else), `access.may_work`, `accept`, the named-assignee
+     checks in `refer/` and `PatientRouteSerializer.validate`, the printable
+     `document`, and `_route_link_for`. `procedure` stays in `PURPOSE_ROLE` (so
+     appointment booking and `WORKING_ROLES` are unchanged) and is left out of
+     `ROLE_PURPOSES` via `TEAM_PURPOSES`. A procedure is always filed under the
+     Procedure Department, whatever department was picked.
+   - **The record has sections and materials.** `report_fields.REPORTS
+     ["procedure"]`: procedure performed, notes, findings, outcome, follow-up;
+     who performed it and when are `result_by` / `result_at`, who asked is
+     `routed_by`. Materials are rows on the same `result_data`
+     (`procedures.clean_materials`) — name, category, unit, received, used,
+     remaining, wastage, notes — **clinical documentation that never touches
+     stock**. Where `quantity_received` is given the server enforces
+     received = used + remaining + wastage exactly and never corrects a figure;
+     a refusal is keyed by row (`report_fields.ReportError`, because Django's
+     `ValidationError` cannot nest). Other purposes refuse materials.
+     `components/procedureMaterials.js` is the bedside mirror; the server decides.
+   - **Completed is locked; an administrator corrects it.** A completed
+     procedure answers `record_result` with 409 `record_locked` for its staff;
+     an admin's save is audited with `details.correction = true`. Completing
+     needs a record (`record_required`). `record_result` finds a completed
+     *procedure* (only) so the lock can be said rather than a 404; every other
+     unit keeps the live-queue lookup and its re-save behaviour.
+   - **Charged at referral, never gated by money.** `PURPOSE_CATEGORY
+     ["procedure"]`: the doctor names priced procedures (the price list's
+     `procedure` category) and each raises its charge then — rule 51's
+     `RouteService` snapshot, attributed to the **Procedure** department
+     (`REVENUE_DEPARTMENTS` now carries `procedure` on its own; Theatre keeps
+     `theatre` / `surgery`). Payment,
+     part payment, discount, waiver, pay later, refund and cancellation are all
+     the existing billing; the unit sees the status and performs the procedure
+     regardless (rule 54). Settling the bill tells the team
+     (`billing/clearance.py`).
+   - **No new model.** One data migration (`departments/0007`). Held by
+     `apps/workflow/tests/test_procedure_department.py`,
+     `frontend/src/components/procedureMaterials.test.js`,
+     `frontend/src/pages/DepartmentStation.procedure.test.jsx` and
+     `ReferPatient.procedure.test.jsx`.
 
 ## Django admin
 

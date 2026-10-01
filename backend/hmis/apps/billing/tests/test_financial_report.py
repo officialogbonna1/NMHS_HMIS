@@ -182,7 +182,8 @@ class FinancialReportTests(TestCase):
         self.assertEqual(by_key["pharmacy"]["gross"], Decimal("2000.00"))
         self.assertEqual(by_key["radiology"]["gross"], Decimal("7000.00"))
         self.assertEqual(by_key["eye"]["gross"], Decimal("1500.00"))
-        self.assertEqual(by_key["theatre"]["gross"], Decimal("9000.00"))
+        # Procedure's own column since it was split from Theatre (rule 59).
+        self.assertEqual(by_key["procedure"]["gross"], Decimal("9000.00"))
         self.assertEqual(by_key["consultation"]["gross"], Decimal("800.00"))
 
     def test_a_charge_with_no_source_type_is_shown_rather_than_dropped(self):

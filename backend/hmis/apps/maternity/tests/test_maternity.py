@@ -457,7 +457,9 @@ class MaternityReusesTheHospital(Maternity):
         # postnatal check), so the column is not empty and the registry, which
         # is the subset of departments that takes money, now holds it.
         self.assertIn("maternity", DEPARTMENT_CODES)
-        self.assertEqual(len(DEPARTMENT_CODES), 8)
+        # Nine since Procedure was separated from Theatre (rule 59,
+        # `departments/0007`) — a revenue department of its own, not Maternity's.
+        self.assertEqual(len(DEPARTMENT_CODES), 9)
         # And the ward's money is attributed to it rather than falling into
         # "Other / Unclassified", which is the whole reason it joined.
         from apps.billing.departments import department_for_source

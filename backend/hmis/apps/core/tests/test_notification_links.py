@@ -29,7 +29,7 @@ FRONTEND_ROUTES = {
     "/patients/new", "/pharmacy", "/pharmacy/pos", "/pharmacy/sales", "/queue", "/refer",
     "/send-to-doctor",
     "/transactions", "/users", "/vitals",
-    "/laboratory", "/lab-catalogue", "/ultrasound", "/eye", "/admissions",
+    "/laboratory", "/lab-catalogue", "/ultrasound", "/eye", "/procedures", "/admissions",
     "/outstanding", "/waivers", "/refunds", "/service-cancellations",
     "/patients/:id", "/patients/:id/billing", "/patients/:id/notes",
     "/patients/:id/prescribe", "/patients/:id/record", "/patients/:id/vitals",

@@ -18,7 +18,7 @@ from apps.accounts.models import User
 
 FRONTEND_ROUTES = {
     "/", "/admissions", "/appointments", "/billing", "/billing-items", "/departments",
-    "/eye", "/inventory", "/laboratory", "/lab-catalogue", "/login", "/notifications",
+    "/eye", "/procedures", "/inventory", "/laboratory", "/lab-catalogue", "/login", "/notifications",
     "/nursing",
     "/patients", "/patients/new", "/pharmacy", "/queue", "/refer", "/send-to-doctor",
     "/transactions", "/ultrasound", "/users", "/vitals", "/outstanding", "/waivers",
@@ -77,6 +77,9 @@ ROUTE_ROLES = {
     "/lab-catalogue": {"laboratory"},
     "/ultrasound": {"radiology"},
     "/eye": {"optometrist", "ophthalmologist"},
+    # Posted doctors and nurses (rule 59); the guard admits the roles and the
+    # server narrows the board to the Procedure Department's staff.
+    "/procedures": {"doctor", "nurse"},
     "/vitals": {"nurse", "doctor"},
     # Mirrors `QUEUE_ROLES` in roles.js, which mirrors `WORKING_ROLES` — the
     # midwife joined when `maternity` became a route purpose (rule 16).

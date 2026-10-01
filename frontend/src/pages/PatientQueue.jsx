@@ -86,7 +86,7 @@ const PURPOSE_DEPARTMENT = {
   consultation: "consultation",
   laboratory: "laboratory",
   ultrasound: "radiology",
-  procedure: "theatre",
+  procedure: "procedure",
 };
 // Read back the other way, but only for the purposes the desk is actually
 // offered: picking the Laboratory department must not silently set a purpose

@@ -52,7 +52,9 @@ class SourceTypeAttributionTests(TestCase):
             "laboratory": "laboratory",
             "ultrasound": "radiology",
             "eye": "eye",
-            "procedure": "theatre",
+            # Procedure and Theatre are two departments (rule 59).
+            "procedure": "procedure",
+            "surgery": "theatre",
             # What the services stamp.
             "lab_test": "laboratory",
             "prescription": "pharmacy",
@@ -65,10 +67,12 @@ class SourceTypeAttributionTests(TestCase):
                                      f"{source_type!r} was left unattributed")
                 self.assertEqual(charge.department.code, code)
 
-    def test_a_procedure_is_theatre_work(self):
-        """The hospital's own classification: `procedure` is what the billing
-        catalogue and the referral purposes both call theatre work."""
-        self.assertEqual(self.bill("procedure").department.code, "theatre")
+    def test_a_procedure_is_the_procedure_departments_and_surgery_stays_theatres(self):
+        """Two departments since `departments/0007`: a procedure's money is
+        Procedure's, and theatre work is still Theatre's — never merged."""
+        self.assertEqual(self.bill("procedure").department.code, "procedure")
+        self.assertEqual(self.bill("theatre").department.code, "theatre")
+        self.assertEqual(self.bill("surgery").department.code, "theatre")
 
     def test_the_case_of_the_source_type_does_not_matter(self):
         self.assertEqual(self.bill("Prescription").department.code, "pharmacy")

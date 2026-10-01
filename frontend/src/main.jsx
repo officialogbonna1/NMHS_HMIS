@@ -408,6 +408,17 @@ ReactDOM.createRoot(document.getElementById("root")).render(
                 </RequireAuth>
               }
             />
+            <Route
+              path="/procedures"
+              // Doctors and nurses may open it; the board itself is scoped by the
+              // server to those posted to the Procedure Department (rule 59), and
+              // the page says so to anybody who is not.
+              element={
+                <RequireAuth roles={["doctor", "nurse", "admin", "hospital_admin"]}>
+                  <DepartmentStation station="procedure" />
+                </RequireAuth>
+              }
+            />
 
             {/* Notifications raised before the rename still link here. */}
             <Route path="/nursing" element={<Navigate to="/vitals" replace />} />

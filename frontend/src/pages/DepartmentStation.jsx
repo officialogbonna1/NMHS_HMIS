@@ -6,7 +6,7 @@ import { patientNumber } from "../components/patientIdentity.js";
 import { Icon } from "../components/icons.jsx";
 import { readError } from "../api/errors";
 import { useAuth } from "../auth/AuthContext.jsx";
-import { CLINICAL_ROLES } from "../auth/roles.js";
+import { ADMIN_ROLES, CLINICAL_ROLES, isProcedureStaff } from "../auth/roles.js";
 import { useToast } from "../components/Toaster.jsx";
 import {
   Alert, Badge, Button, Card, CardBody, CardFooter, CardHeader, Field, Input,
@@ -17,6 +17,8 @@ import { acceptanceOf } from "../components/routeAcceptance.js";
 import LabResultEntry from "../components/LabResultEntry.jsx";
 import { PaymentBadge, PaymentLines, PaymentNotice } from "../components/PaymentStatus.jsx";
 import { PrintButton } from "../components/printing.jsx";
+import ProcedureMaterials from "../components/ProcedureMaterials.jsx";
+import { materialsBody, rowProblem } from "../components/procedureMaterials.js";
 
 // One working page, three units. Laboratory, Ultrasound and the Eye clinic
 // do the same job in the same order — a doctor refers, somebody claims the
@@ -72,6 +74,31 @@ export const STATIONS = {
     // consultation note (with its eye examination) — the Doctor Desk's own
     // pages, not a second copy of them. The optometrist keeps the findings form.
     chartActions: true,
+  },
+  // The Procedure Department (rule 59). Worked by the doctors and nurses an
+  // administrator has made members of the Procedure department (never Theatre),
+  // not by a role — the
+  // server scopes the board to them, and `allowed` only says so on the page.
+  procedure: {
+    purpose: "procedure",
+    title: "Procedures",
+    icon: "🩹",
+    iconName: "clipboard",
+    blurb: "Procedures the doctors have referred. Claim one, perform it, document it — "
+      + "materials included — and complete it. It goes onto the patient's record.",
+    resultLabel: "Procedure record",
+    resultPlaceholder: "What was done, what was found, and what happens next.",
+    titlePlaceholder: "e.g. Incision and drainage",
+    roles: ["doctor", "nurse"],
+    allowed: isProcedureStaff,
+    notAllowed: "You are not on the Procedure Department's staff, so no procedures are "
+      + "shown to you. An administrator adds staff to 'Procedure' under Departments.",
+    // A completed procedure is a closed clinical record: its staff read it,
+    // an administrator corrects it (the server refuses anyone else, 409).
+    lockOnComplete: true,
+    // The chart opens for the clinician holding the procedure — the Doctor
+    // Desk's own page, not a copy of it.
+    chartLink: true,
   },
 };
 
@@ -194,6 +221,10 @@ export default function DepartmentStation({ station }) {
         }
       />
 
+      {config.allowed && !config.allowed(user) && (
+        <Alert tone="warning" className="mb-4">{config.notAllowed}</Alert>
+      )}
+
       <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
         <div className="flex flex-wrap items-center justify-between gap-3 border-b px-5 py-4">
           <h2 className="font-semibold">Requests</h2>
@@ -270,6 +301,7 @@ export default function DepartmentStation({ station }) {
               route={route}
               user={user}
               chartActions={Boolean(config.chartActions)}
+              adminOpens={Boolean(config.lockOnComplete)}
               onOpen={(updated) => setOpenRoute(updated?.id ? updated : route)}
             />
           ))}
@@ -284,10 +316,13 @@ export default function DepartmentStation({ station }) {
 const opensChart = (route, user) =>
   CLINICAL_ROLES.includes(user?.role) && route.assigned_to === user?.id;
 
-function QueueRow({ route, user, onOpen, chartActions }) {
+function QueueRow({ route, user, onOpen, chartActions, adminOpens = false }) {
   const queryClient = useQueryClient();
   const { showToast } = useToast();
-  const isMine = route.assigned_to === user?.id;
+  // An administrator opens any procedure — that is how a completed, locked
+  // record is reached to be corrected (the server lets admins work any route).
+  const isMine = route.assigned_to === user?.id
+    || (adminOpens && ADMIN_ROLES.includes(user?.role ?? "") && Boolean(route.assigned_to));
   // The server says so on the row itself (`claimed_by_other`, from
   // `workflow/access.py` — the same rule that gates start / record-result),
   // with the local comparison as the fallback for a payload that predates it.
@@ -414,9 +449,23 @@ function Station({ config, route, onBack }) {
       .then((r) => r.data?.schema ?? null),
     staleTime: 300000,
   });
-  const [report, setReport] = useState(route.result_data ?? {});
+  // The sections and — for a procedure — the materials rows, kept apart:
+  // one is a set of text boxes, the other a table of rows.
+  const [report, setReport] = useState(() => {
+    const { materials: _rows, ...sections } = route.result_data ?? {};
+    return sections;
+  });
+  const [materials, setMaterials] = useState(route.result_data?.materials ?? []);
+  const [materialErrors, setMaterialErrors] = useState({});
   const sectioned = Boolean(reportSchema?.sections?.length);
-  const reportFilled = Object.values(report).some((value) => (value ?? "").trim());
+  const recordsMaterials = Boolean(reportSchema?.materials);
+  const reportFilled = Object.values(report).some((value) => typeof value === "string" && value.trim());
+  const materialsInvalid = recordsMaterials && materials.some((row) => rowProblem(row));
+  // A completed procedure is read, not re-worked — except by an administrator
+  // correcting it, which the server audits as a correction.
+  const isAdmin = ADMIN_ROLES.includes(user?.role ?? "");
+  const locked = Boolean(config.lockOnComplete) && route.status === "completed";
+  const readOnly = locked && !isAdmin;
   // Structured entry is the lab's normal way of working; the prose form
   // stays one click away for a result that came in on paper from outside.
   const [mode, setMode] = useState(config.structured ? "structured" : "freeform");
@@ -433,6 +482,9 @@ function Station({ config, route, onBack }) {
         const value = (report[section.key] ?? "").trim();
         if (value) form.append(`report.${section.key}`, value);
       }
+      // Multipart cannot nest a list, so the rows travel as one JSON string;
+      // sent even when empty, so removing the last row removes it.
+      if (recordsMaterials) form.append("report.materials", JSON.stringify(materialsBody(materials)));
     } else {
       form.append("result", result);
     }
@@ -458,7 +510,10 @@ function Station({ config, route, onBack }) {
         message: "It is on the patient's chart, and the doctor who asked has been told.",
       });
     },
-    onError: (err) => setError(readError(err, "Could not save this result.")),
+    onError: (err) => {
+      setError(readError(err, "Could not save this result."));
+      setMaterialErrors(err?.response?.data?.report?.materials ?? {});
+    },
   });
 
   const transition = useMutation({
@@ -474,12 +529,15 @@ function Station({ config, route, onBack }) {
         showToast({ title: "Marked in progress" });
       }
     },
-    onError: (err) => setError(readError(err, "Could not update this request.")),
+    onError: (err) => {
+      setError(readError(err, "Could not update this request."));
+      setMaterialErrors(err?.response?.data?.report?.materials ?? {});
+    },
   });
 
   // A result is typed values, an uploaded report, or both — never neither.
-  const canFinish = (sectioned ? reportFilled : result.trim().length > 0)
-    || Boolean(file) || Boolean(route.result_file_url);
+  const canFinish = ((sectioned ? reportFilled : result.trim().length > 0)
+    || Boolean(file) || Boolean(route.result_file_url)) && !materialsInvalid;
   // Closed work is read from here, never re-worked: completing it again is a
   // refusal the server would have to make, so the button is not offered.
   const open_ = route.status === "queued" || route.status === "in_progress";
@@ -494,6 +552,7 @@ function Station({ config, route, onBack }) {
   // back to whoever referred. The optometrist has no note to write, so for
   // them the form *is* the work. One config, two emphases.
   const clinician = config.chartActions && opensChart(route, user);
+  const chartLink = config.chartLink && opensChart(route, user);
   const notePath = `/patients/${route.patient_uuid}/notes?new=1`;
 
   return (
@@ -603,6 +662,13 @@ function Station({ config, route, onBack }) {
         {/* Everywhere else this patient can be taken, grouped where the
             patient is — the chart, the prescribing page and the doctor's
             referral page, each the hospital's existing one. */}
+        {chartLink && (
+          <CardFooter>
+            <Button variant="secondary" size="sm" to={`/patients/${route.patient_uuid}`}>
+              Open chart
+            </Button>
+          </CardFooter>
+        )}
         {clinician && (
           <CardFooter>
             <Button variant="secondary" size="sm" to={`/patients/${route.patient_uuid}`}>
@@ -670,6 +736,7 @@ function Station({ config, route, onBack }) {
                   {section.kind === "short" ? (
                     <Input
                       value={report[section.key] ?? ""}
+                      disabled={readOnly}
                       onChange={(e) => setReport((current) =>
                         ({ ...current, [section.key]: e.target.value }))}
                       maxLength={section.max_length}
@@ -677,6 +744,7 @@ function Station({ config, route, onBack }) {
                   ) : (
                     <Textarea
                       value={report[section.key] ?? ""}
+                      disabled={readOnly}
                       onChange={(e) => setReport((current) =>
                         ({ ...current, [section.key]: e.target.value }))}
                       rows={section.key === "findings" ? 6 : 3}
@@ -692,6 +760,13 @@ function Station({ config, route, onBack }) {
               </Field>
             )}
 
+            {recordsMaterials && (
+              <ProcedureMaterials schema={reportSchema.materials} rows={materials}
+                                  onChange={(rows) => { setMaterials(rows); setMaterialErrors({}); }}
+                                  readOnly={readOnly} errors={materialErrors} />
+            )}
+
+            {!readOnly && (
             <Field
               label="Upload the report"
               hint="A scan or a photo of the printout, or a PDF. Optional if you have typed the findings above."
@@ -706,6 +781,7 @@ function Station({ config, route, onBack }) {
                   file:text-sm file:font-medium file:text-brand-700 hover:file:bg-brand-100"
               />
             </Field>
+            )}
 
             {file && <p className="text-sm text-slate-700">Ready to upload: {file.name}</p>}
             {!file && route.result_file_url && (
@@ -729,11 +805,21 @@ function Station({ config, route, onBack }) {
           {/* The two ways out sit together, at the foot of the thing they
               save. "Save & mark done" used to be in the masthead, four
               buttons away from the box whose contents it commits. */}
+          {locked && (
+            <div className="px-5 pb-1">
+              <Alert tone="info">
+                {readOnly
+                  ? "This procedure was completed and its record is locked. An administrator can correct it."
+                  : "Completed and locked for the procedure staff. As an administrator you can correct it — the correction is audited."}
+              </Alert>
+            </div>
+          )}
+          {!readOnly && (
           <CardFooter>
             <Button variant="secondary" onClick={() => save.mutate()}
                     disabled={!canFinish || save.isPending} loading={save.isPending}
                     loadingText="Saving…">
-              Save result
+              {locked ? "Save correction" : "Save result"}
             </Button>
             {open_ && (
               <Button
@@ -748,11 +834,14 @@ function Station({ config, route, onBack }) {
               </Button>
             )}
             <span className="min-w-0 text-sm text-slate-600">
-              {canFinish
+              {materialsInvalid
+                ? "Fix the materials that do not add up to save."
+                : canFinish
                 ? "Saving keeps the patient on your list; Save & mark done closes it."
                 : "Type the findings, or attach the report, to save."}
             </span>
           </CardFooter>
+          )}
         </Card>
       )}
     </Page>

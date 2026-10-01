@@ -166,13 +166,13 @@ class TheDepartmentsOnOffer(Booking):
     def test_a_department_that_is_not_switched_on_is_not_offered(self):
         listed = self._named()
         for absent in ("Clinicals (Nursing)", "Pharmacy", "Reception",
-                       "Laboratory", "Theatre / Procedures"):
+                       "Laboratory", "Theatre", "Procedure"):
             self.assertNotIn(absent, listed)
 
     def test_a_retired_department_is_not_offered_however_it_is_switched(self):
         self._open("theatre")
         Department.objects.filter(code="theatre").update(is_active=False)
-        self.assertNotIn("Theatre / Procedures", self._named())
+        self.assertNotIn("Theatre", self._named())
 
     def test_an_opened_department_with_nothing_configured_offers_no_services(self):
         self._open("laboratory")
@@ -190,13 +190,17 @@ class TheDepartmentsOnOffer(Booking):
         names = [s["name"] for s in self._named()["Laboratory"]["services"]]
         self.assertIn("Fasting Blood Sugar (booked)", names)
 
-    def test_theatre_offers_nothing_until_a_procedure_is_ticked(self):
+    def test_procedure_offers_nothing_until_a_procedure_is_ticked(self):
+        # A `procedure` service is the Procedure department's (rule 59), and
+        # never adds itself to Theatre.
+        self._open("procedure")
         self._open("theatre")
-        self.assertEqual(self._named()["Theatre / Procedures"]["services"], [])
+        self.assertEqual(self._named()["Procedure"]["services"], [])
         BillingItem.objects.create(category="procedure", name="Circumcision (booked)",
                                    price=Decimal("25000"), is_appointment_service=True)
-        names = [s["name"] for s in self._named()["Theatre / Procedures"]["services"]]
+        names = [s["name"] for s in self._named()["Procedure"]["services"]]
         self.assertEqual(names, ["Circumcision (booked)"])
+        self.assertEqual(self._named()["Theatre"]["services"], [])
 
     def test_a_department_empties_when_its_last_service_is_unticked(self):
         BillingItem.objects.filter(category="ultrasound").update(is_appointment_service=False)

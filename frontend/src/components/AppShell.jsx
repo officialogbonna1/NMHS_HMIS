@@ -9,7 +9,8 @@ import { useAuth } from "../auth/AuthContext.jsx";
 import {
   MATERNITY_DESK_ROLES,
   ADMIN_ROLES, BED_BOARD_ROLES, BILLING_ROLES, CANCEL_ROLES, CLINICAL_ROLES, FINANCE_REPORT_ROLES,
-  POS_HISTORY_ROLES, POS_ROLES, REFUND_ROLES, STOCK_CONTROL_ROLES, PATIENT_LOOKUP_ROLES, QUEUE_ROLES,
+  POS_HISTORY_ROLES, POS_ROLES, PROCEDURE_TEAM_ROLES, REFUND_ROLES, STOCK_CONTROL_ROLES,
+  isProcedureStaff, PATIENT_LOOKUP_ROLES, QUEUE_ROLES,
   hasRole,
 } from "../auth/roles.js";
 import { Icon } from "./icons.jsx";
@@ -44,6 +45,11 @@ const NAV_ITEMS = [
   ["/lab-catalogue", "Lab Catalogue", "list", ["laboratory"], "Departments"],
   ["/ultrasound", "Ultrasound", "scan", ["radiology"], "Departments"],
   ["/eye", "Eye Clinic", "eye", ["optometrist", "ophthalmologist"], "Departments"],
+  // The Procedure Department works by posting, not by role: a doctor or nurse
+  // on the Procedure department's staff (rule 59) — Theatre membership does not
+  // count. The sixth column narrows a
+  // row further than its roles — it never widens one.
+  ["/procedures", "Procedures", "clipboard", PROCEDURE_TEAM_ROLES, "Departments", isProcedureStaff],
   ["/admissions", "Admissions", "bed", BED_BOARD_ROLES, "Departments"],
   // Both administrators, mirroring `IsAdmin` on the endpoints behind them —
   // the Super Admin and the ordinary `hospital_admin`, because a discharge is
@@ -154,7 +160,7 @@ function Shell() {
   useEffect(() => () => { if (closeTimer.current) clearTimeout(closeTimer.current); }, []);
 
   const name = user?.first_name || user?.username || "Staff";
-  const items = NAV_ITEMS.filter(([, , , roles]) => hasRole(user, roles));
+  const items = NAV_ITEMS.filter(([, , , roles, , when]) => hasRole(user, roles) && (!when || when(user)));
   const groups = GROUP_ORDER
     .map((group) => ({ group, rows: items.filter((item) => item[4] === group) }))
     .filter((section) => section.rows.length > 0);

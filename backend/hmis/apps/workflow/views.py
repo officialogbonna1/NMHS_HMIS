@@ -28,6 +28,8 @@ from .models import Visit, PatientRoute
 from .serializers import VisitSerializer, PatientRouteSerializer
 from apps.accounts.models import User
 from apps.accounts.departments import authorized_departments, staff_of, works_in
+
+from . import procedures
 from apps.accounts.permissions import (CLINICIAN_ROLES, IsReception, NURSING_ROLES,
                                        RoleRequired)
 
@@ -54,8 +56,15 @@ PURPOSE_ROLE = {
     "maternity": ["maternity_nurse"],
     "investigation": ["laboratory"],
 }
+# A procedure is the Procedure Department's, not every doctor's (rule 59):
+# unclaimed procedure work reaches the doctors and nurses posted there
+# (`procedures.in_team`), so it is left out of the role-wide map. It stays in
+# PURPOSE_ROLE above, which appointment booking and WORKING_ROLES read.
+TEAM_PURPOSES = {procedures.PURPOSE}
 ROLE_PURPOSES = {}
 for _purpose, _roles in PURPOSE_ROLE.items():
+    if _purpose in TEAM_PURPOSES:
+        continue
     for _role in _roles:
         ROLE_PURPOSES.setdefault(_role, []).append(_purpose)
 
@@ -152,6 +161,10 @@ def route_targets(route):
 
     if route.assigned_to_id:
         targets = [route.assigned_to] if route.assigned_to.is_active else []
+    elif route.purpose in TEAM_PURPOSES:
+        # The procedure room shares one list, so unclaimed work reaches all of
+        # its staff — and nobody outside it.
+        targets = list(procedures.team())
     else:
         roles = PURPOSE_ROLE.get(route.purpose)
         if roles is None:
@@ -375,6 +388,7 @@ PURPOSE_STATION = {
     "ultrasound": "/ultrasound",
     "eye": "/eye",
     "vitals": "/vitals",
+    "procedure": "/procedures",
 }
 
 
@@ -394,6 +408,8 @@ def _notify_referral(route, doctor):
 
 
 def _route_link_for(user, route):
+    if route.purpose in TEAM_PURPOSES and procedures.in_team(user):
+        return PURPOSE_STATION[route.purpose]
     if user.role == "nurse":
         return "/vitals"
     if user.role in CLINICIAN_ROLES and user.role in STATION_ROLES and route.assigned_to_id != user.pk:
@@ -484,8 +500,16 @@ def work_routes_for(user, statuses=("queued", "in_progress"), include_unit=False
     # The departments this person is authorised in — one helper, so the queue
     # and `access.may_work` cannot disagree about where somebody works.
     by_department = unmapped & models.Q(department__in=authorized_departments(user))
+    # The Procedure Department's staff work procedures as a unit: unclaimed
+    # ones on the queue, and the whole board (claimed by a colleague too) on
+    # the station — rule 54's shared board, drawn by department.
+    procedure_work = models.Q(pk__in=[])
+    if procedures.in_team(user):
+        procedure_work = models.Q(purpose__in=TEAM_PURPOSES)
+        if not include_unit:
+            procedure_work &= models.Q(assigned_to__isnull=True)
     return routes.filter(
-        models.Q(assigned_to=user) | unclaimed_for_me | by_department
+        models.Q(assigned_to=user) | unclaimed_for_me | by_department | procedure_work
     ).distinct()
 
 
@@ -527,6 +551,14 @@ class PatientRouteViewSet(viewsets.ModelViewSet):
         # (`work_routes_for`); only the time limit lifts, exactly as it does
         # for a printable document.
         statuses = None if self.request.query_params.get("status") else ("queued", "in_progress")
+        if self.action == "record_result":
+            # A completed procedure is still *found* — so its staff are told it
+            # is locked rather than that it does not exist, and an
+            # administrator can correct it (`_save_result`). Every other unit
+            # keeps the live queue it always wrote against.
+            return work_routes_for(self.request.user, statuses=None, include_unit=True).filter(
+                models.Q(status__in=("queued", "in_progress")) | models.Q(purpose__in=TEAM_PURPOSES)
+            ).select_related("visit__patient", "department", "assigned_to", "routed_by")
         # The queue page is the unit's board for a station role (see
         # `work_routes_for`): a colleague's claimed request stays on the list,
         # named, rather than vanishing. The dashboard deliberately does *not*
@@ -570,6 +602,8 @@ class PatientRouteViewSet(viewsets.ModelViewSet):
                 | models.Q(visit__patient__in=patient_queryset_for(user)))
         if user.role in POOLED_ROLES:
             mine |= models.Q(purpose__in=ROLE_PURPOSES.get(user.role, []))
+        if procedures.in_team(user):
+            mine |= models.Q(purpose__in=TEAM_PURPOSES)
         return base.filter(mine).distinct()
 
     def get_permissions(self):
@@ -625,12 +659,17 @@ class PatientRouteViewSet(viewsets.ModelViewSet):
         if route is None:
             raise NotFound()
         user = request.user
-        eligible = (
-            user.is_admin
-            or route.assigned_to_id == user.id
-            or route.purpose in ROLE_PURPOSES.get(user.role, [])
-            or works_in(user, route.department)
-        )
+        if route.purpose in TEAM_PURPOSES:
+            # Only the Procedure Department's staff claim a procedure — being
+            # posted to some other department is no claim on it.
+            eligible = user.is_admin or route.assigned_to_id == user.id or procedures.in_team(user)
+        else:
+            eligible = (
+                user.is_admin
+                or route.assigned_to_id == user.id
+                or route.purpose in ROLE_PURPOSES.get(user.role, [])
+                or works_in(user, route.department)
+            )
         if not eligible:
             return Response({"detail": "This patient was not sent to you."}, status=drf_status.HTTP_403_FORBIDDEN)
         if route.status not in ("queued", "in_progress"):
@@ -814,17 +853,30 @@ class PatientRouteViewSet(viewsets.ModelViewSet):
         # Named person optional; it has to be somebody who can do the work.
         assigned_to = None
         if request.data.get("assigned_to"):
-            assigned_to = User.objects.filter(
-                pk=_as_id(request.data.get("assigned_to")),
-                role__in=PURPOSE_ROLE[purpose], is_active=True,
-            ).first()
+            if purpose in TEAM_PURPOSES:
+                candidate = User.objects.filter(pk=_as_id(request.data.get("assigned_to"))).first()
+                assigned_to = candidate if procedures.may_be_named(candidate) else None
+            else:
+                assigned_to = User.objects.filter(
+                    pk=_as_id(request.data.get("assigned_to")),
+                    role__in=PURPOSE_ROLE[purpose], is_active=True,
+                ).first()
             if not assigned_to:
                 return Response({"assigned_to": "That member of staff cannot take this work."},
                                 status=drf_status.HTTP_400_BAD_REQUEST)
 
         previous = visit.routes.order_by("-created_at").first()
-        department = Department.objects.filter(pk=_as_id(request.data.get("department"))).first() or (
-            previous.department if previous else Department.objects.filter(is_active=True).first())
+        if purpose in TEAM_PURPOSES:
+            # A procedure goes to the Procedure Department, whatever the
+            # visit's last route was — that is the unit that performs it.
+            department = procedures.department()
+            if department is None:
+                return Response({"department": "The Procedure department is not set up — an admin "
+                                               "re-activates 'Procedure' under Departments."},
+                                status=drf_status.HTTP_400_BAD_REQUEST)
+        else:
+            department = Department.objects.filter(pk=_as_id(request.data.get("department"))).first() or (
+                previous.department if previous else Department.objects.filter(is_active=True).first())
         if not department:
             return Response({"department": "No department to refer into — an admin adds these."},
                             status=drf_status.HTTP_400_BAD_REQUEST)
@@ -850,6 +902,9 @@ class PatientRouteViewSet(viewsets.ModelViewSet):
         data["notified"] = [_display_name(person) for person in told]
         if not told:
             data["notice"] = (
+                f"{patient.display_name} is in the Procedure Department's queue, but nobody has been "
+                "notified — no staff are posted to it yet. An admin adds them under Departments."
+                if purpose in TEAM_PURPOSES else
                 f"{patient.display_name} is in the queue, but nobody has been notified — no doctor is "
                 "currently holding them. Name who should do this if it is urgent."
             )
@@ -973,12 +1028,14 @@ class PatientRouteViewSet(viewsets.ModelViewSet):
         # vitals does not make the reading ("BP 180/110, referred urgently")
         # the desk's to read back; being the referrer is what earns the answer
         # only when the referrer is a clinician.
+        unit = (procedures.in_team(user) if route.purpose in TEAM_PURPOSES
+                else user.role in PURPOSE_ROLE.get(route.purpose, []))
         may_read_result = user.role != "reception" and (
             user.is_admin
             or route.routed_by_id == user.pk
             or route.assigned_to_id == user.pk
             or route.result_by_id == user.pk
-            or user.role in PURPOSE_ROLE.get(route.purpose, [])
+            or unit
         )
         filed = route.filed_tests.first()
         try:
@@ -1026,8 +1083,16 @@ class PatientRouteViewSet(viewsets.ModelViewSet):
             "result": None,
         }
         if may_read_result and (route.result or filed):
+            structured = route.result_data or {}
             data["result"] = {
                 "text": route.result,
+                # A procedure's materials as rows, so the printed record can
+                # lay them out as a table; `findings_text` is the same report
+                # without them, so the sheet does not print them twice.
+                "materials": structured.get("materials") or [],
+                "findings_text": (report_fields.render(route.purpose, structured,
+                                                       include_materials=False)
+                                  if structured else route.result),
                 "title": filed.title if filed else "",
                 "recorded_by": _display_name(route.result_by) if route.result_by else None,
                 "recorded_at": route.result_at,
@@ -1051,6 +1116,18 @@ class PatientRouteViewSet(viewsets.ModelViewSet):
         if not self._own_route(route):
             return Response({"detail": "This patient is not in your queue."},
                             status=drf_status.HTTP_403_FORBIDDEN)
+        # A completed procedure is a closed clinical record: it locks for the
+        # staff who wrote it, and an administrator corrects it (audited as a
+        # correction below). Other units keep the re-save they always had.
+        correction = route.purpose in TEAM_PURPOSES and route.status == "completed"
+        if correction and not user.is_admin:
+            return Response({"code": "record_locked",
+                             "detail": "This procedure record was completed and is locked. "
+                                       "An administrator can correct it."},
+                            status=drf_status.HTTP_409_CONFLICT)
+        if route.purpose in TEAM_PURPOSES and route.status == "cancelled":
+            return Response({"detail": "This procedure was cancelled."},
+                            status=drf_status.HTTP_400_BAD_REQUEST)
         # A unit whose report has sections (imaging) sends them; one that
         # writes prose sends `result` as it always has. The sections are
         # rendered into `result` so every existing reader — the chart, the
@@ -1077,6 +1154,9 @@ class PatientRouteViewSet(viewsets.ModelViewSet):
         # next time they come in. `filed_test` is that permanent copy.
         _file_result_on_the_record(route, user, title=title, document=document)
         audit_event(actor=user, action="patient.route_result_recorded", instance=route,
+                    details=({"purpose": route.purpose, "correction": correction,
+                              "materials": len((structured or {}).get("materials") or [])}
+                             if route.purpose in TEAM_PURPOSES else None),
                     request=self.request)
         _notify_result(route, user)
         return Response(self.get_serializer(route).data)
@@ -1105,6 +1185,13 @@ class PatientRouteViewSet(viewsets.ModelViewSet):
                             status=drf_status.HTTP_400_BAD_REQUEST)
         rendered = report_fields.render(route.purpose, structured)
         text = rendered or (result or "").strip()
+        if (route.purpose in TEAM_PURPOSES and status == "completed"
+                and not (text or document or route.result)):
+            # "Done" is a claim the procedure happened, so it needs a record —
+            # the vitals route's rule, applied to the procedure room.
+            return Response({"code": "record_required",
+                             "detail": "Record the procedure performed before completing it."},
+                            status=drf_status.HTTP_400_BAD_REQUEST)
         if text or document:
             route.result = text
             route.result_data = structured
@@ -1112,7 +1199,11 @@ class PatientRouteViewSet(viewsets.ModelViewSet):
             route.result_at = timezone.now()
             fields += ["result", "result_data", "result_by", "result_at"]
         route.save(update_fields=fields)
-        audit_event(actor=self.request.user, action=action_name, instance=route, request=self.request)
+        audit_event(actor=self.request.user, action=action_name, instance=route,
+                    details=({"purpose": route.purpose,
+                              "materials": len((structured or {}).get("materials") or [])}
+                             if route.purpose in TEAM_PURPOSES else None),
+                    request=self.request)
         if "result" in fields:
             _file_result_on_the_record(route, user, title=self.request.data.get("title", ""),
                                        document=document)

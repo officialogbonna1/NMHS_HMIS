@@ -361,9 +361,40 @@ export function ReferralDocumentSheet({ routeId, variant = "request", onClose })
 
       {isReport ? (
         <SheetSection title="Findings" note={result.title || undefined}>
+          {/* A procedure's materials print as a table below, so the prose
+              above leaves them out (`findings_text`) rather than say it twice. */}
           <p className="whitespace-pre-wrap text-sm text-slate-900">
-            {result.text || "The report is attached to this patient's record as a document."}
+            {(result.materials?.length ? result.findings_text : result.text)
+              || "The report is attached to this patient's record as a document."}
           </p>
+          {result.materials?.length > 0 && (
+            <table className="mt-3 w-full text-sm" aria-label="Materials used">
+              <thead>
+                <tr className="border-b border-slate-800 text-left">
+                  <th className="py-1 font-semibold">Material</th>
+                  <th className="py-1 text-right font-semibold">Received</th>
+                  <th className="py-1 text-right font-semibold">Used</th>
+                  <th className="py-1 text-right font-semibold">Remaining</th>
+                  <th className="py-1 text-right font-semibold">Wastage</th>
+                  <th className="py-1 font-semibold">Unit</th>
+                  <th className="py-1 font-semibold">Notes</th>
+                </tr>
+              </thead>
+              <tbody>
+                {result.materials.map((row, index) => (
+                  <tr key={index} className="border-b border-slate-300 last:border-b-0">
+                    <td className="py-1">{row.name}{row.category ? ` (${row.category})` : ""}</td>
+                    <td className="py-1 text-right">{row.quantity_received ?? "—"}</td>
+                    <td className="py-1 text-right">{row.quantity_used ?? "—"}</td>
+                    <td className="py-1 text-right">{row.quantity_remaining ?? "—"}</td>
+                    <td className="py-1 text-right">{row.wastage ?? "—"}</td>
+                    <td className="py-1">{row.unit || "—"}</td>
+                    <td className="py-1">{row.notes || ""}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
           {result.file_name && (
             <p className="mt-3 text-sm text-slate-700">
               Report document on file: <span className="font-medium">{result.file_name}</span>
