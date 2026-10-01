@@ -15,6 +15,10 @@ import {
 } from "../auth/roles.js";
 import { Icon } from "./icons.jsx";
 
+// The product's name, shown in the top bar. Not the hospital's identity, which
+// lives in Hospital Settings and prints on every document.
+export const SYSTEM_NAME = "NMHS-HMIS-V1.0";
+
 const VITALS_ROLES = ["nurse"];
 const PHARMACY_ROLES = ["pharmacist"];
 const APPOINTMENT_ROLES = ["reception", "doctor"];
@@ -220,13 +224,17 @@ function Shell() {
               no hospital and, at 36px next to a four-letter acronym, took as
               much of the bar as the name did. The gradient it was filled with
               moved onto the letters, which is the thing worth looking at. */}
+          {/* The bar names the *system* (SYSTEM_NAME), not the hospital: the
+              hospital's short name is `HOSPITAL.name`, read from Hospital
+              Settings by every printed letterhead, and stays as it is. The
+              hover title still names the hospital. */}
           <Link
             to="/"
             className="ml-0.5 flex min-w-0 items-center rounded-lg px-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-300"
             title={HOSPITAL.fullName}
           >
-            <span className="wordmark truncate text-xl font-extrabold tracking-[0.14em] sm:text-2xl">
-              {HOSPITAL.name}
+            <span className="wordmark truncate text-xl font-extrabold tracking-[0.06em] sm:text-2xl">
+              {SYSTEM_NAME}
             </span>
           </Link>
 

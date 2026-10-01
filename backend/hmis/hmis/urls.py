@@ -3,6 +3,8 @@ from django.urls import path, include
 from django.conf import settings
 from django.conf.urls.static import static
 
+from apps.core.health import healthz
+
 # The admin is the back office for this hospital, not a generic Django site.
 admin.site.site_header = "Ngozi Maternity and Hospital Services — administration"
 admin.site.site_title = "NMHS admin"
@@ -10,6 +12,8 @@ admin.site.index_title = "Hospital records and staff"
 
 urlpatterns = [
     path("admin/", admin.site.urls),
+    # Unauthenticated liveness: "healthy" / "unhealthy" and nothing else.
+    path("healthz/", healthz, name="healthz"),
 
     path("api/auth/", include("apps.accounts.urls")),
     path("api/", include("apps.accounts.user_urls")),

@@ -1,4 +1,5 @@
 
+import logging
 from datetime import timedelta
 
 from django.utils import timezone
@@ -21,6 +22,11 @@ from . import lockout
 from .models import User
 from .permissions import IsAdmin
 from .serializers import UserSerializer, UserAdminSerializer, UserDirectorySerializer
+
+
+#: Sign-in, sign-out and lockouts. Never a password, a token, or the username of a
+#: *failed* attempt — people type their password into the username box.
+security_logger = logging.getLogger("hmis.security")
 
 
 def cooldown_minutes(seconds):
@@ -92,6 +98,8 @@ class LoginView(ObtainAuthToken):
         # refused whether or not it has since guessed the right password.
         locked_for = lockout.remaining(request, username)
         if locked_for:
+            security_logger.warning("Sign-in refused while locked out: client=%s",
+                                    lockout.client_ip(request))
             return self._locked(request, locked_for, username)
 
         serializer = self.serializer_class(
@@ -106,7 +114,10 @@ class LoginView(ObtainAuthToken):
             if not triggered:
                 # The ordinary refusal, unchanged — and deliberately identical
                 # for a username that exists and one that does not.
+                security_logger.info("Sign-in failed: client=%s", lockout.client_ip(request))
                 raise
+            security_logger.warning("Sign-in locked after repeated failures: client=%s "
+                                    "seconds=%s", lockout.client_ip(request), triggered)
             # The audit row names the attempt, never whether the account is
             # real: `username` here is whatever was typed.
             audit_event(
@@ -123,6 +134,13 @@ class LoginView(ObtainAuthToken):
         lockout.reset(request, username)
 
         token, _ = Token.objects.get_or_create(user=user)
+
+        # The existing audit trail (core.AuditLog) is where a sign-in is kept;
+        # the log line is for whoever is watching the server. Neither holds the
+        # token.
+        audit_event(actor=user, action="auth.login", request=request)
+        security_logger.info("Sign-in: user=%s role=%s client=%s",
+                             user.pk, user.role or "-", lockout.client_ip(request))
 
         return Response({
             "token": token.key,
@@ -145,6 +163,8 @@ class LogoutView(APIView):
     def post(self, request):
         if hasattr(request.user, "auth_token"):
             request.user.auth_token.delete()
+        audit_event(actor=request.user, action="auth.logout", request=request)
+        security_logger.info("Sign-out: user=%s", request.user.pk)
 
         return Response(status=204)
 

@@ -28,6 +28,7 @@ staticfiles/
 
 # Celery
 celerybeat.pid
+celerybeat-schedule*
 
 # React / Node
 node_modules/

@@ -53,6 +53,7 @@ from rest_framework.response import Response
 from rest_framework.views import exception_handler as drf_exception_handler
 
 logger = logging.getLogger("hmis.api")
+security_logger = logging.getLogger("hmis.security")
 
 #: What the caller is told when the cause is a bug. Deliberately says nothing
 #: about it: the detail is in the log, under `reference`.
@@ -99,7 +100,12 @@ def _conflict(exc):
     table, the column and the constraint, which is internal structure and is
     exactly the kind of thing that must not reach a screen.
     """
-    logger.warning("Integrity error answered as 409: %s", exc, exc_info=False)
+    # The first line names the rule that refused ("duplicate key value violates
+    # unique constraint …"). PostgreSQL's DETAIL line, after it, quotes the
+    # conflicting *values* — a hospital number, a phone, a client token — and is
+    # never logged.
+    first_line = (str(exc).splitlines() or [""])[0][:200]
+    logger.warning("Integrity error answered as 409: %s: %s", type(exc).__name__, first_line)
     conflict = APIException("This conflicts with a record that already exists.")
     conflict.status_code = status.HTTP_409_CONFLICT
     # `APIException.default_code` is "error"; without this the body would say
@@ -165,6 +171,8 @@ def api_exception_handler(exc, context):
         data.setdefault("detail", _detail_from(body))
         data["code"] = _code_for(exc, response)
         response.data = data
+        if response.status_code == status.HTTP_403_FORBIDDEN:
+            _log_refusal(context, data["code"])
         return response
 
     # Nothing above recognised it, so it is not an operational condition: it
@@ -187,6 +195,22 @@ def api_exception_handler(exc, context):
     return Response(
         {"detail": detail, "code": "server_error", "reference": reference},
         status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+    )
+
+
+def _log_refusal(context, code):
+    """
+    A permission refusal, for the security log: who, what, where — never the
+    request's body, headers or the record that was refused.
+    """
+    request = context.get("request")
+    user = getattr(request, "user", None)
+    view = context.get("view").__class__.__name__ if context.get("view") else "?"
+    security_logger.warning(
+        "Permission denied: user=%s role=%s %s %s view=%s code=%s",
+        getattr(user, "pk", None) if getattr(user, "is_authenticated", False) else "-",
+        getattr(user, "role", "") or "-",
+        getattr(request, "method", "?"), getattr(request, "path", "?"), view, code,
     )
 
 

@@ -102,3 +102,13 @@ describe("on a phone", () => {
     }
   });
 });
+
+describe("the top bar", () => {
+  it("names the system, while the hospital's own name stays in its settings", async () => {
+    shellFor("doctor");
+    const home = document.querySelector("header a[href='/']");
+    expect(home).toHaveTextContent("NMHS-HMIS-V1.0");
+    // The hover title is still the hospital; the letterhead's short name is untouched.
+    expect(home.getAttribute("title")).not.toBe("NMHS-HMIS-V1.0");
+  });
+});
