@@ -1,25 +1,30 @@
 # NMHS-HMIS-V1.0 — Railway service "hmis-api" (Django + Gunicorn).
 #
-# In the service's Settings: Root Directory = /backend/hmis, and
-# Config File Path = /railway/api/railway.toml (Railway config files do not
-# follow the root directory; the path is from the repository root).
-# Variables are set in the dashboard — see docs/RAILWAY.md. No secret is here.
+# Service Settings:
+#   Root Directory = /backend/hmis
+#   Config File Path = /railway/api/railway.toml
+#
+# Railway variables/secrets are configured in the dashboard.
+# See docs/RAILWAY.md.
 
 [build]
 builder = "RAILPACK"
-# Runs after Railpack has installed requirements.txt. Static files are collected
-# at build time: the pre-deploy container's filesystem never reaches the app.
+
+# Railpack detects Python and installs requirements.txt.
+# Only run Django's static-file collection here.
 buildCommand = "python manage.py collectstatic --noinput"
+
 watchPatterns = ["/backend/hmis/**"]
 
 [deploy]
-# Once per deploy, in a separate container, before the new release takes
-# traffic; a failure stops the deploy and the previous release keeps serving.
+# Run migrations once before the new release receives traffic.
 preDeployCommand = ["python manage.py migrate --noinput"]
-# Gunicorn binds 0.0.0.0:$PORT on its own when PORT is set (Railway sets it),
-# and takes its worker count from WEB_CONCURRENCY — so the command needs no
-# shell expansion. Never `migrate` here: every replica would run it.
-startCommand = "gunicorn hmis.wsgi:application --timeout 60 --forwarded-allow-ips=* --error-logfile -"
+
+# Railway provides PORT. Gunicorn binds to it through the Railway
+# environment/configuration, and WEB_CONCURRENCY controls workers.
+startCommand = "gunicorn hmis.wsgi:application --timeout 60 --forwarded-allow-ips=\"*\" --error-logfile -"
+
 healthcheckPath = "/healthz/"
+
 restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 10
