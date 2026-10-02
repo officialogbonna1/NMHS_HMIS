@@ -628,7 +628,11 @@ class TheRailwayConfigFiles(SimpleTestCase):
 
     def test_the_api_migrates_once_and_starts_gunicorn(self):
         api = self.load("api")
-        self.assertEqual(api["build"]["buildCommand"], "python manage.py collectstatic --noinput")
+        # Built from Dockerfile.api, not Railpack: Python comes from the image.
+        self.assertEqual((api["build"]["builder"], api["build"]["dockerfilePath"]),
+                         ("DOCKERFILE", "Dockerfile.api"))
+        self.assertNotIn("buildCommand", api["build"])
+        self.assertTrue((BASE_DIR / api["build"]["dockerfilePath"]).exists())
         self.assertEqual(api["deploy"]["preDeployCommand"], ["python manage.py migrate --noinput"])
         self.assertTrue(api["deploy"]["startCommand"].startswith("gunicorn hmis.wsgi:application"))
         self.assertNotIn("migrate", api["deploy"]["startCommand"])
@@ -649,3 +653,50 @@ class TheRailwayConfigFiles(SimpleTestCase):
                          "respond /health 200"):
             self.assertIn(expected, caddy)
         self.assertEqual(self.load("web")["deploy"]["healthcheckPath"], "/health")
+
+
+class TheApiImage(SimpleTestCase):
+    """Dockerfile.api: Python 3.12, collectstatic at build, no migrate, no secrets."""
+
+    def dockerfile(self):
+        return (BASE_DIR / "Dockerfile.api").read_text()
+
+    def instructions(self):
+        return [line.strip() for line in self.dockerfile().splitlines()
+                if line.strip() and not line.strip().startswith("#")]
+
+    def test_python_312_and_pip_through_python(self):
+        lines = self.instructions()
+        self.assertEqual(lines[0], "FROM python:3.12-slim")
+        self.assertIn("RUN python -m pip install -r requirements.txt", lines)
+
+    def test_collectstatic_at_build_and_never_migrate(self):
+        runs = [line for line in self.instructions() if line.startswith("RUN")]
+        self.assertIn("RUN DJANGO_SETTINGS_MODULE=hmis.settings_build python manage.py "
+                      "collectstatic --noinput", runs)
+        self.assertFalse(any("migrate" in line for line in runs))
+
+    def test_gunicorn_takes_railways_port_and_the_image_holds_no_configuration(self):
+        lines = self.instructions()
+        cmd = next(line for line in lines if line.startswith("CMD"))
+        self.assertIn('"gunicorn", "hmis.wsgi:application"', cmd)
+        self.assertNotIn("8000", cmd)                    # no hard-coded bind
+        self.assertNotIn("--bind", cmd)
+        configured = " ".join(line for line in lines if line.startswith(("ENV", "ARG")))
+        for name in ("DJANGO_SECRET_KEY", "DATABASE_URL", "REDIS_URL", "CLOUDINARY",
+                     "CORS_ALLOWED_ORIGINS", "DJANGO_ENV", "RESEND", "ARG "):
+            self.assertNotIn(name, configured)
+
+    def test_the_build_context_leaves_local_and_secret_files_out(self):
+        ignored = (BASE_DIR / ".dockerignore").read_text().splitlines()
+        for entry in (".git", "venv/", "__pycache__/", "db.sqlite3", "*.sqlite3", ".env",
+                      ".env.*", "media/", "staticfiles/", "dump.rdb", "node_modules/"):
+            self.assertIn(entry, ignored)
+
+    def test_build_settings_change_only_the_static_storage(self):
+        from hmis import settings_build
+
+        self.assertEqual(settings_build.STORAGES["staticfiles"]["BACKEND"],
+                         "whitenoise.storage.CompressedManifestStaticFilesStorage")
+        self.assertEqual(settings_build.STORAGES["default"], settings.STORAGES["default"])
+        self.assertEqual(settings_build.HMIS_ENV, "development")   # no production configuration

@@ -1,0 +1,43 @@
+# Docker build context for Dockerfile.api (the backend/hmis directory).
+# Nothing local, secret or generated goes into the image.
+
+# Version control and editors
+.git
+.gitignore
+.vscode/
+.idea/
+
+# Python byproducts and the local virtualenv
+venv/
+.venv/
+env/
+__pycache__/
+**/__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+
+# Local data: databases, Redis dumps, uploads, collected static files
+db.sqlite3
+*.sqlite3
+*.sqlite3.*
+db.sqlite3.bak-*
+dump.rdb
+media/
+staticfiles/
+celerybeat-schedule*
+celerybeat.pid
+
+# Environment files and secrets (the example is documentation, not needed)
+.env
+.env.*
+
+# Logs and frontend artefacts, should any appear here
+*.log
+logs/
+node_modules/
+frontend/
+
+# The image recipe itself
+Dockerfile*
+.dockerignore

@@ -42,7 +42,9 @@ no ASGI.
 
 | File | Purpose |
 |---|---|
-| `railway/api/railway.toml` | API: build, pre-deploy migration, Gunicorn, `/healthz/` |
+| `railway/api/railway.toml` | API: Dockerfile build, pre-deploy migration, Gunicorn, `/healthz/` |
+| `backend/hmis/Dockerfile.api`, `backend/hmis/.dockerignore` | The API image: `python:3.12-slim`, `python -m pip install -r requirements.txt`, `collectstatic` at build, Gunicorn; no variables or secrets baked in |
+| `backend/hmis/hmis/settings_build.py` | Build-only settings for `collectstatic` (development configuration + the production static-file storage) |
 | `railway/worker/railway.toml` | Celery worker |
 | `railway/beat/railway.toml` | Celery Beat (the single scheduler) |
 | `railway/web/railway.toml` | React app: Railpack Vite build + Caddy, `/health` |
@@ -65,7 +67,7 @@ variables (those are §5).
 
 | Service | Root Directory | Config File Path | Build | Pre-deploy | Start |
 |---|---|---|---|---|---|
-| `hmis-api` | `/backend/hmis` | `/railway/api/railway.toml` | Railpack installs `requirements.txt`, then `python manage.py collectstatic --noinput` | `python manage.py migrate --noinput` | `gunicorn hmis.wsgi:application --timeout 60 --forwarded-allow-ips=* --error-logfile -` |
+| `hmis-api` | `/backend/hmis` | `/railway/api/railway.toml` | **Dockerfile** `Dockerfile.api`: `python -m pip install -r requirements.txt`, then `collectstatic` (custom Build Command must be empty) | `python manage.py migrate --noinput` | `gunicorn hmis.wsgi:application --timeout 60 --forwarded-allow-ips=* --error-logfile -` |
 | `hmis-celery-worker` | `/backend/hmis` | `/railway/worker/railway.toml` | Railpack install | — | `celery -A hmis worker -l info --concurrency 2` |
 | `hmis-celery-beat` | `/backend/hmis` | `/railway/beat/railway.toml` | Railpack install | — | `celery -A hmis beat -l info --schedule /tmp/celerybeat-schedule` |
 | `hmis-web` | `/frontend` | `/railway/web/railway.toml` | Railpack: `npm` install + `vite build` | — | Caddy (Railpack), serving `dist/` with `frontend/Caddyfile` |
@@ -74,15 +76,23 @@ variables (those are §5).
 
 * **Gunicorn** binds `0.0.0.0:$PORT` on its own when `PORT` is set (Railway sets
   it) and takes its worker count from `WEB_CONCURRENCY`, so the start command
-  needs no shell expansion. Railpack's own default for Django would run
-  `migrate` in the start command; the config file replaces it.
+  needs no shell expansion. The image's `CMD` is the same command; the config
+  file states it too so a dashboard start command cannot override it.
+* **Why a Dockerfile for the API:** the Railpack build failed with
+  `python: not found` — Railpack had not detected a Python project, so it never
+  installed Python. The image takes Python from `python:3.12-slim` instead, so
+  nothing depends on detection. (The worker and Beat still use Railpack; if they
+  hit the same error, they can use the same `Dockerfile.api` with their own
+  start commands.)
 * **Migrations** run once per deploy in Railway's pre-deploy step — a separate
   container, before the new release takes traffic. A failure stops the deploy
   and the previous release keeps serving. Never in the start command (every
   replica would migrate) and never per request.
-* **Static files** are collected at build time (Railway variables are available
-  during the build, and the pre-deploy container's files never reach the app);
-  WhiteNoise serves them.
+* **Static files** are collected while the image is built. A Docker build gets
+  **no** Railway variables, so it runs with `DJANGO_SETTINGS_MODULE=hmis.settings_build`
+  — no secret or database needed — which writes the same hashed files and
+  `staticfiles.json` manifest that WhiteNoise serves in production. (The
+  pre-deploy container's files never reach the app, so it is not done there.)
 * **Health checks:** API `/healthz/` (200 when the database answers). Railway
   sends `Host: healthcheck.railway.app` over plain HTTP; that host is allowed
   automatically and `/healthz/` is exempt from the HTTPS redirect. Railway uses

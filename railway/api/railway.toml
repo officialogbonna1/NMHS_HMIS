@@ -1,28 +1,31 @@
-# NMHS-HMIS-V1.0 — Railway service "hmis-api" (Django + Gunicorn).
+# NMHS-HMIS-V1.0 — Railway service "hmis-api" (Django + Gunicorn), built from a
+# Dockerfile so Python does not depend on builder auto-detection.
 #
 # Service Settings:
-#   Root Directory = /backend/hmis
-#   Config File Path = /railway/api/railway.toml
+#   Root Directory   = /backend/hmis              (the Docker build context)
+#   Config File Path = /railway/api/railway.toml  (from the repository root)
+#   Custom Build Command: leave EMPTY — a Dockerfile build does not use one.
 #
-# Railway variables/secrets are configured in the dashboard.
+# Railway variables/secrets are configured in the dashboard, never in the image.
 # See docs/RAILWAY.md.
 
 [build]
-builder = "RAILPACK"
-
-# Railpack detects Python and installs requirements.txt.
-# Only run Django's static-file collection here.
-buildCommand = "python manage.py collectstatic --noinput"
-
+builder = "DOCKERFILE"
+# Relative to the Root Directory. Installs requirements.txt with python -m pip
+# and runs collectstatic during the image build (never migrate).
+dockerfilePath = "Dockerfile.api"
 watchPatterns = ["/backend/hmis/**"]
 
 [deploy]
-# Run migrations once before the new release receives traffic.
+# Run migrations once, in a separate container from this image, before the new
+# release receives traffic; a failure stops the deploy.
 preDeployCommand = ["python manage.py migrate --noinput"]
 
-# Railway provides PORT. Gunicorn binds to it through the Railway
-# environment/configuration, and WEB_CONCURRENCY controls workers.
-startCommand = "gunicorn hmis.wsgi:application --timeout 60 --forwarded-allow-ips=\"*\" --error-logfile -"
+# Same as the image's CMD; stated here so a start command left in the dashboard
+# cannot override it. Gunicorn binds 0.0.0.0:$PORT itself when Railway sets
+# PORT, and takes its worker count from WEB_CONCURRENCY — no shell expansion
+# needed. Never migrate here: every replica would run it.
+startCommand = "gunicorn hmis.wsgi:application --timeout 60 --forwarded-allow-ips=* --error-logfile -"
 
 healthcheckPath = "/healthz/"
 

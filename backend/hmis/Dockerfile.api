@@ -1,0 +1,44 @@
+# NMHS-HMIS-V1.0 — container image for the Railway "hmis-api" service.
+#
+# Build context: backend/hmis (the service's Root Directory). Selected by
+# railway/api/railway.toml (builder = "DOCKERFILE", dockerfilePath =
+# "Dockerfile.api"); named Dockerfile.api so Railway's automatic `Dockerfile`
+# detection never applies to the worker and Beat, which share this directory.
+#
+# No secret and no deployment variable is in this image. DATABASE_URL,
+# REDIS_URL, DJANGO_SECRET_KEY, Cloudinary credentials, CORS values and the
+# rest come from Railway at runtime only. Migrations are NOT run here: they are
+# Railway's pre-deploy command (python manage.py migrate --noinput).
+
+FROM python:3.12-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+WORKDIR /app
+
+# Dependencies first, so a code-only change reuses this layer.
+COPY requirements.txt .
+RUN python -m pip install -r requirements.txt
+
+COPY . .
+
+# Static files for Django Admin, with the manifest WhiteNoise serves in
+# production. hmis.settings_build is the development configuration plus the
+# production static-file storage — no production variables are needed, and
+# none are baked in (see that module).
+RUN DJANGO_SETTINGS_MODULE=hmis.settings_build python manage.py collectstatic --noinput
+
+# Run as an unprivileged user; the application only reads its files.
+RUN useradd --system --no-create-home --uid 10001 hmis
+USER hmis
+
+# Gunicorn binds 0.0.0.0:$PORT by itself whenever PORT is set — Railway sets it
+# for the container — and reads its worker count from WEB_CONCURRENCY. The
+# default below only applies when nothing sets PORT (e.g. `docker run`).
+ENV PORT=8000
+EXPOSE 8000
+
+CMD ["gunicorn", "hmis.wsgi:application", "--timeout", "60", "--forwarded-allow-ips=*", "--error-logfile", "-"]
