@@ -8,3 +8,8 @@ redis==5.0.4
 anthropic==0.34.0
 python-dotenv==1.0.1
 gunicorn==22.0.0
+# Production static files (Django Admin) without a reverse proxy in front.
+whitenoise==6.7.0
+# Production uploads in Cloudinary as private (authenticated) assets, delivered
+# only through expiring private download links (apps/core/storage.py).
+cloudinary==1.46.2

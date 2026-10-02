@@ -16,8 +16,9 @@ and hands the logging system the scrubbed text. It knows two kinds of secret:
   `password=` / `secret=` / `api_key=` style assignments, `sessionid` and
   `csrftoken` cookies, the password in a `scheme://user:password@host` URL,
   Resend keys and private-key blocks;
-* **values** — the configured `SECRET_KEY`, database password and Redis URL
-  password, replaced wherever they appear verbatim.
+* **values** — the configured `SECRET_KEY`, database password, Redis URL
+  password, Resend key and Cloudinary API secret, replaced wherever they
+  appear verbatim.
 
 It is not a patient-data scrubber and does not pretend to be: patient
 information is kept out of the logs by never being logged (apps/core/
@@ -65,6 +66,9 @@ def _configured_secrets():
             url = getattr(settings, name, "") or ""
             values.add(urlsplit(url).password or "")
         values.add(getattr(settings, "RESEND_API_KEY", "") or "")
+        # The Cloudinary API secret (production document storage).
+        storage = getattr(settings, "STORAGES", {}).get("default", {})
+        values.add((storage.get("OPTIONS") or {}).get("api_secret") or "")
     except Exception:  # settings not configured (e.g. a bare script)
         pass
     # Short values would redact ordinary words; real secrets are long.

@@ -53,6 +53,22 @@ def production_configuration(app_configs, **kwargs):
          "SQL logging is on.", "SQL and its parameters are never logged in production.",
          "hmis.E010")
 
+    if getattr(settings, "HMIS_ON_RENDER", False):
+        need(bool(getattr(settings, "HMIS_CLIENT_IP_HEADER", "")),
+             "On Render the login lockout reads a client-supplied address: Render's proxy "
+             "appends to X-Forwarded-For, so its first hop can be rotated to bypass the lockout.",
+             "Set HMIS_CLIENT_IP_HEADER=CF-Connecting-IP.", "hmis.E011")
+        need(settings.STORAGES["default"]["BACKEND"] == "apps.core.storage.PrivateCloudinaryStorage",
+             "On Render uploaded documents must go to private Cloudinary storage; the service "
+             "filesystem is lost on every deploy.", "Set DJANGO_MEDIA_STORAGE=cloudinary.",
+             "hmis.E012")
+        if getattr(settings, "LOG_DIR", ""):
+            problems.append(Warning(
+                "DJANGO_LOG_DIR is set on Render, where the filesystem is lost on every "
+                "deploy; Render already keeps stdout.",
+                hint="Unset DJANGO_LOG_DIR; use a Render log stream for longer retention.",
+                id="hmis.W002"))
+
     if not _env_has("REDIS_URL"):
         problems.append(Warning(
             "REDIS_URL is not set; Celery and the shared login-lockout cache are using "

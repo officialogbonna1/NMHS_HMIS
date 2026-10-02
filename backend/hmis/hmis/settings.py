@@ -58,6 +58,8 @@ MIDDLEWARE = [
     # First, so every log line of the request — and the response — carries
     # its X-Request-ID (apps/core/middleware.py).
     "apps.core.middleware.RequestIdMiddleware",
+    # Does nothing unless HMIS_ADMIN_ALLOWED_NETWORKS is set.
+    "apps.core.middleware.AdminNetworkMiddleware",
     "corsheaders.middleware.CorsMiddleware",
     "django.middleware.security.SecurityMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
@@ -67,6 +69,11 @@ MIDDLEWARE = [
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
 ]
+if IS_PRODUCTION:
+    # Serves STATIC_ROOT (Django Admin's assets) from the application itself —
+    # straight after SecurityMiddleware, as WhiteNoise requires.
+    MIDDLEWARE.insert(MIDDLEWARE.index("django.middleware.security.SecurityMiddleware") + 1,
+                      "whitenoise.middleware.WhiteNoiseMiddleware")
 
 ROOT_URLCONF = "hmis.urls"
 
@@ -115,10 +122,23 @@ REST_FRAMEWORK = {
     "EXCEPTION_HANDLER": "apps.core.exceptions.api_exception_handler",
 }
 
-CORS_ALLOWED_ORIGINS = os.environ.get(
-    "CORS_ALLOWED_ORIGINS",
-    "http://localhost:5173,http://127.0.0.1:5173"
-).split(",")
+# The React static site, when it is served from its own origin (Render). The
+# API authenticates with a token in the Authorization header — never a cookie —
+# so no credentials mode is needed. Production: https:// origins only, none by
+# default; development: the Vite origins, as before.
+CORS_ALLOWED_ORIGINS = envconf.cors_origins(os.environ, HMIS_ENV)
+# Lets the frontend read the request ID a support call quotes.
+CORS_EXPOSE_HEADERS = ["X-Request-ID"]
+
+# Which header carries the real client address for the login lockout. Unset:
+# the first X-Forwarded-For hop (behind an Nginx that overwrites it). On Render,
+# `CF-Connecting-IP` — Render's proxy appends to X-Forwarded-For, so its first
+# hop is client-supplied there (see apps/accounts/lockout.py).
+HMIS_CLIENT_IP_HEADER = envconf.client_ip_header(os.environ)
+HMIS_ON_RENDER = envconf.on_render(os.environ)
+# Optional: Django Admin (/admin/) only from these CIDR ranges, judged by the
+# address above (apps/core/middleware.py AdminNetworkMiddleware). Empty: off.
+HMIS_ADMIN_ALLOWED_NETWORKS = envconf.admin_networks(os.environ)
 
 # Development keeps the two Vite origins it always had; production must name
 # its https:// origins (DJANGO_CSRF_TRUSTED_ORIGINS) or it will not start.
@@ -336,6 +356,20 @@ STATIC_URL = "static/"
 # Where `collectstatic` gathers Django Admin's CSS and JS for Nginx to serve.
 # Unused by `runserver`; the directory is gitignored.
 STATIC_ROOT = Path(os.environ.get("DJANGO_STATIC_ROOT") or BASE_DIR / "staticfiles")
+# Django Admin's CSS/JS. Production serves it from the application itself
+# (WhiteNoise, compressed and cache-busted), because Render has no Nginx in
+# front; development keeps Django's default, which `runserver` serves.
+#
+# Uploaded patient documents: `hmis/environment.py` `media_storage` — the local
+# `media/` directory in development; in production an explicit choice of a
+# private Cloudinary storage (authenticated assets, expiring download links —
+# apps/core/storage.py) or a server filesystem.
+STORAGES = {
+    "default": envconf.media_storage(os.environ, HMIS_ENV),
+    "staticfiles": {"BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage"}
+    if IS_PRODUCTION else
+    {"BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage"},
+}
 MEDIA_URL = "/media/"  # root-relative: uploaded files are linked from the SPA, not from a Django template
 MEDIA_ROOT = Path(os.environ.get("DJANGO_MEDIA_ROOT") or BASE_DIR / "media")
 

@@ -56,3 +56,41 @@ class RequestIdMiddleware:
             return response
         finally:
             request_id_var.reset(token)
+
+
+class AdminNetworkMiddleware:
+    """
+    Django Admin only from listed networks — the restriction an Nginx
+    `allow`/`deny` gave on a server, for hosts (Render) where nothing sits in
+    front to do it. Off unless `HMIS_ADMIN_ALLOWED_NETWORKS` lists CIDR ranges.
+
+    The address is the one the login lockout trusts (`lockout.client_ip`, i.e.
+    `HMIS_CLIENT_IP_HEADER` on Render), so it cannot be forged by sending an
+    X-Forwarded-For. Anyone else gets a plain 404: the back office does not
+    advertise that it exists. The HMIS API and its own administration screens
+    are unaffected — they are role-checked on every request as before.
+    """
+
+    def __init__(self, get_response):
+        self.get_response = get_response
+
+    def __call__(self, request):
+        networks = getattr(settings, "HMIS_ADMIN_ALLOWED_NETWORKS", ())
+        if networks and request.path.startswith("/admin/"):
+            import ipaddress
+
+            from django.http import HttpResponseNotFound
+
+            from apps.accounts.lockout import client_ip
+
+            address = client_ip(request)
+            try:
+                allowed = any(ipaddress.ip_address(address) in net for net in networks)
+            except ValueError:
+                allowed = False
+            if not allowed:
+                logging.getLogger("hmis.security").warning(
+                    "Django Admin refused outside the allowed networks: client=%s path=%s",
+                    address, request.path)
+                return HttpResponseNotFound("Not found.")
+        return self.get_response(request)

@@ -16,6 +16,9 @@ re-importing settings. Two environments, named explicitly by `DJANGO_ENV`:
 Production is never inferred from `DEBUG=False`: a developer switching DEBUG off
 to look at the 404 page is not deploying.
 """
+import re
+from urllib.parse import parse_qs, unquote, urlsplit
+
 from django.core.exceptions import ImproperlyConfigured
 
 DEVELOPMENT = "development"
@@ -64,29 +67,85 @@ def missing(env, names):
     return [name for name in names if not (env.get(name) or "").strip()]
 
 
+def on_render(env):
+    """Render sets RENDER=true on every service it runs."""
+    return (env.get("RENDER") or "").strip().lower() == "true"
+
+
+def serves_http(env):
+    """
+    False only for a Render background worker or cron job — a Celery process
+    that answers no HTTP request, and so has no hostname or origin to declare.
+    Everything else (the web service, any non-Render server) serves HTTP.
+    """
+    service_type = (env.get("RENDER_SERVICE_TYPE") or "").strip().lower()
+    return not (on_render(env) and service_type in ("worker", "cron"))
+
+
+def _database_url(url):
+    """
+    A `postgresql://user:password@host:port/name[?sslmode=…]` URL — the shape
+    Render (and most hosts) hand out — as Django's settings. A malformed URL is
+    refused without echoing it, because it carries the password.
+    """
+    try:
+        parts = urlsplit(url.strip())
+        port = parts.port
+    except ValueError:
+        raise ImproperlyConfigured("DATABASE_URL is not a valid URL.") from None
+    if parts.scheme not in ("postgres", "postgresql"):
+        raise ImproperlyConfigured(
+            "DATABASE_URL must be a postgresql:// URL in production. There is no fallback "
+            "to SQLite.")
+    config = {
+        "NAME": unquote(parts.path.lstrip("/")),
+        "USER": unquote(parts.username or ""),
+        "PASSWORD": unquote(parts.password or ""),
+        "HOST": parts.hostname or "",
+        "PORT": str(port or 5432),
+    }
+    absent = [key for key in ("NAME", "USER", "HOST") if not config[key]]
+    if absent:
+        raise ImproperlyConfigured(
+            f"DATABASE_URL is missing its {', '.join(k.lower() for k in absent)}.")
+    sslmode = parse_qs(parts.query).get("sslmode")
+    if sslmode:
+        config["OPTIONS"] = {"sslmode": sslmode[0]}
+    return config
+
+
 def database_config(env, base_dir, name):
     """
     `DATABASES["default"]` for this environment.
 
     Development is the SQLite file the project has always used. Production is
-    PostgreSQL, and only PostgreSQL: missing variables are refused by name (the
-    values are never echoed), so a misconfigured server stops at start-up
-    instead of creating an empty SQLite file and serving a hospital from it.
+    PostgreSQL, and only PostgreSQL — from `DATABASE_URL` when it is set (one
+    string, as Render's dashboard and Blueprint provide it), otherwise from the
+    separate `DB_*` variables. Missing configuration is refused by name (values
+    are never echoed), so a misconfigured server stops at start-up instead of
+    creating an empty SQLite file and serving a hospital from it.
     """
     if name == DEVELOPMENT:
         return {"ENGINE": "django.db.backends.sqlite3", "NAME": base_dir / "db.sqlite3"}
-    absent = missing(env, REQUIRED_DB_VARS)
-    if absent:
-        raise ImproperlyConfigured(
-            "Production uses PostgreSQL and these variables are not set: "
-            f"{', '.join(absent)}. There is no fallback to SQLite.")
+    if (env.get("DATABASE_URL") or "").strip():
+        config = _database_url(env["DATABASE_URL"])
+    else:
+        absent = missing(env, REQUIRED_DB_VARS)
+        if absent:
+            raise ImproperlyConfigured(
+                "Production uses PostgreSQL: set DATABASE_URL, or all of "
+                f"{', '.join(REQUIRED_DB_VARS)} (not set: {', '.join(absent)}). "
+                "There is no fallback to SQLite.")
+        config = {
+            "NAME": env["DB_NAME"],
+            "USER": env["DB_USER"],
+            "PASSWORD": env["DB_PASSWORD"],
+            "HOST": env["DB_HOST"],
+            "PORT": (env.get("DB_PORT") or "5432").strip(),
+        }
     return {
         "ENGINE": "django.db.backends.postgresql",
-        "NAME": env["DB_NAME"],
-        "USER": env["DB_USER"],
-        "PASSWORD": env["DB_PASSWORD"],
-        "HOST": env["DB_HOST"],
-        "PORT": (env.get("DB_PORT") or "5432").strip(),
+        **config,
         # Reuse connections across requests; Gunicorn workers are long-lived.
         "CONN_MAX_AGE": int(env.get("DB_CONN_MAX_AGE") or 60),
         "CONN_HEALTH_CHECKS": True,
@@ -118,6 +177,13 @@ def debug(env, name):
 def hosts(env, name):
     if name == PRODUCTION:
         values = listing(env, "DJANGO_ALLOWED_HOSTS")
+        # Render's own `onrender.com` hostname — what its health check sends
+        # when the service has no custom domain.
+        render_host = (env.get("RENDER_EXTERNAL_HOSTNAME") or "").strip()
+        if render_host and render_host not in values:
+            values.append(render_host)
+        if not values and not serves_http(env):
+            return []
         if not values:
             raise ImproperlyConfigured("DJANGO_ALLOWED_HOSTS must list the production hostnames.")
         if "*" in values:
@@ -129,6 +195,11 @@ def hosts(env, name):
 def csrf_origins(env, name):
     if name == PRODUCTION:
         values = listing(env, "DJANGO_CSRF_TRUSTED_ORIGINS")
+        render_url = (env.get("RENDER_EXTERNAL_URL") or "").strip().rstrip("/")
+        if render_url and render_url not in values:
+            values.append(render_url)
+        if not values and not serves_http(env):
+            return []
         if not values:
             raise ImproperlyConfigured(
                 "DJANGO_CSRF_TRUSTED_ORIGINS must list the https:// origins staff and "
@@ -140,3 +211,119 @@ def csrf_origins(env, name):
         return values
     return listing(env, "DJANGO_CSRF_TRUSTED_ORIGINS",
                    "http://localhost:5173,http://127.0.0.1:5173")
+
+
+def cors_origins(env, name):
+    """
+    Browser origins allowed to call the API from another origin — the React
+    static site when it is served apart from the API (Render). Production
+    defaults to none (a same-origin deployment needs none) and accepts only
+    https:// origins; development keeps the Vite origins.
+    """
+    if name == PRODUCTION:
+        values = listing(env, "CORS_ALLOWED_ORIGINS")
+        if any(not origin.startswith("https://") for origin in values):
+            raise ImproperlyConfigured("CORS_ALLOWED_ORIGINS must be https:// origins in production.")
+        return [origin.rstrip("/") for origin in values]
+    return listing(env, "CORS_ALLOWED_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173")
+
+
+_HEADER_NAME = re.compile(r"^[A-Za-z0-9-]{1,64}$")
+
+
+def client_ip_header(env):
+    """
+    The request header that holds the real client address, as a `META` key.
+
+    Unset means the historical rule (the first `X-Forwarded-For` hop, correct
+    behind an Nginx that overwrites that header). Render's proxy *appends* to
+    X-Forwarded-For, so its first hop is whatever the client sent; there,
+    Cloudflare's `CF-Connecting-IP` — which Cloudflare always overwrites — is
+    the address to trust.
+    """
+    raw = (env.get("HMIS_CLIENT_IP_HEADER") or "").strip()
+    if not raw:
+        return ""
+    if not _HEADER_NAME.match(raw):
+        raise ImproperlyConfigured("HMIS_CLIENT_IP_HEADER must be a header name, "
+                                   "e.g. CF-Connecting-IP.")
+    return "HTTP_" + raw.upper().replace("-", "_")
+
+
+MEDIA_STORAGES = ("filesystem", "cloudinary")
+REQUIRED_CLOUDINARY_VARS = ("CLOUDINARY_CLOUD_NAME", "CLOUDINARY_API_KEY", "CLOUDINARY_API_SECRET")
+#: How long a document link works. Short by default; capped at a day.
+DEFAULT_LINK_SECONDS = 900
+MAX_LINK_SECONDS = 86400
+
+
+def media_storage(env, name):
+    """
+    Where uploaded patient documents are kept: Django's `STORAGES["default"]`.
+
+    Development: the local `media/` directory, as always. Production must say
+    which, explicitly (`DJANGO_MEDIA_STORAGE`), because getting it wrong loses
+    patient documents silently:
+
+    * `cloudinary` — Cloudinary, **privately** (apps/core/storage.py): every
+      file is an `authenticated` asset, which Cloudinary refuses to deliver
+      without a signature, and every link the API returns is a private download
+      URL that expires after `CLOUDINARY_LINK_EXPIRY_SECONDS` (default 900 =
+      15 minutes). Only an endpoint the caller may already read returns one.
+    * `filesystem` — `MEDIA_ROOT` on the server's own disk, served by a
+      restricted reverse proxy. **Refused on Render**: its service filesystem is
+      wiped on every deploy, and nothing there serves `/media/`.
+    """
+    filesystem = {"BACKEND": "django.core.files.storage.FileSystemStorage"}
+    if name == DEVELOPMENT:
+        return filesystem
+    choice = (env.get("DJANGO_MEDIA_STORAGE") or "").strip().lower()
+    if choice not in MEDIA_STORAGES:
+        raise ImproperlyConfigured(
+            "DJANGO_MEDIA_STORAGE must be 'cloudinary' or 'filesystem' in production — where "
+            "uploaded patient documents are kept has to be decided, not defaulted.")
+    if choice == "filesystem":
+        if on_render(env):
+            raise ImproperlyConfigured(
+                "DJANGO_MEDIA_STORAGE=filesystem is refused on Render: the service "
+                "filesystem is lost on every deploy. Use private Cloudinary storage (cloudinary).")
+        return filesystem
+    absent = missing(env, REQUIRED_CLOUDINARY_VARS)
+    if absent:
+        raise ImproperlyConfigured(f"DJANGO_MEDIA_STORAGE=cloudinary needs: {', '.join(absent)}.")
+    raw_seconds = (env.get("CLOUDINARY_LINK_EXPIRY_SECONDS") or str(DEFAULT_LINK_SECONDS)).strip()
+    try:
+        seconds = int(raw_seconds)
+    except ValueError:
+        seconds = 0
+    if not 60 <= seconds <= MAX_LINK_SECONDS:
+        raise ImproperlyConfigured(
+            f"CLOUDINARY_LINK_EXPIRY_SECONDS must be a whole number from 60 to {MAX_LINK_SECONDS}.")
+    folder = (env.get("CLOUDINARY_FOLDER") or "nmhs-hmis/media").strip().strip("/")
+    if not re.fullmatch(r"[A-Za-z0-9_\-/]{1,100}", folder):
+        raise ImproperlyConfigured(
+            "CLOUDINARY_FOLDER may contain only letters, digits, '_', '-' and '/'.")
+    return {
+        "BACKEND": "apps.core.storage.PrivateCloudinaryStorage",
+        "OPTIONS": {
+            "cloud_name": env["CLOUDINARY_CLOUD_NAME"].strip(),
+            "api_key": env["CLOUDINARY_API_KEY"].strip(),
+            "api_secret": env["CLOUDINARY_API_SECRET"].strip(),
+            "folder": folder,
+            "link_seconds": seconds,
+        },
+    }
+
+
+def admin_networks(env):
+    """`HMIS_ADMIN_ALLOWED_NETWORKS` — comma-separated CIDR ranges, or none."""
+    import ipaddress
+
+    networks = []
+    for value in listing(env, "HMIS_ADMIN_ALLOWED_NETWORKS"):
+        try:
+            networks.append(ipaddress.ip_network(value, strict=False))
+        except ValueError:
+            raise ImproperlyConfigured(
+                f"HMIS_ADMIN_ALLOWED_NETWORKS has an invalid range: {value!r}.") from None
+    return tuple(networks)

@@ -64,7 +64,17 @@ def client_ip(request):
     The caller's address, trusting `X-Forwarded-For`'s first hop only because
     this application is expected to sit behind the hospital's own proxy. It is
     an identifier for grouping attempts, never an authorisation.
+
+    Where the proxy *appends* to X-Forwarded-For instead (Render), its first
+    hop is whatever the client sent, and rotating it would hand out fresh
+    attempts against one username. `HMIS_CLIENT_IP_HEADER` names the header the
+    edge proxy overwrites itself — `CF-Connecting-IP` on Render — and when set
+    it is the only address read.
     """
+    trusted = getattr(settings, "HMIS_CLIENT_IP_HEADER", "")
+    if trusted:
+        return request.META.get(trusted, "").strip() or request.META.get("REMOTE_ADDR", "") \
+            or "unknown"
     forwarded = request.META.get("HTTP_X_FORWARDED_FOR", "")
     if forwarded:
         return forwarded.split(",")[0].strip()

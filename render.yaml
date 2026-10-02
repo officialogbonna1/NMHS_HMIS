@@ -1,0 +1,222 @@
+# NMHS-HMIS-V1.0 — Render Blueprint.
+#
+# Six resources: the Django API (web), the React app (static site), PostgreSQL,
+# Key Value (Redis-compatible: Celery broker + login-lockout cache), a Celery
+# worker and exactly one Celery Beat scheduler. docs/DEPLOYMENT.md walks through
+# applying it, and lists what has to be done by hand in the dashboard.
+#
+# No secret is written here. Every `sync: false` value is typed into the Render
+# dashboard when the Blueprint is first applied (or on the service's
+# Environment page afterwards). Uploaded patient documents are stored in
+# Cloudinary, which this file does NOT create or configure: create the
+# Cloudinary account yourself and enter its credentials (docs/DEPLOYMENT.md §3).
+#
+# Plans: the API, worker and Beat need paid instance types — the pre-deploy
+# migration step and background workers are not available on free instances —
+# and a free database expires after 30 days. The plan values below are the
+# smallest paid ones in Render's Blueprint reference at the time of writing;
+# check current pricing and sizing before applying. All resources share one
+# region so they talk over Render's private network.
+
+envVarGroups:
+  - name: hmis-settings
+    envVars:
+      - key: DJANGO_ENV
+        value: production
+      - key: PYTHON_VERSION
+        value: "3.12.8"
+      - key: TIME_ZONE
+        value: Africa/Lagos
+      # Uploaded documents are private (authenticated) Cloudinary assets,
+      # reached only through expiring links. "filesystem" is refused on Render.
+      - key: DJANGO_MEDIA_STORAGE
+        value: cloudinary
+      - key: CLOUDINARY_LINK_EXPIRY_SECONDS
+        value: "900"
+      # Render's proxy appends to X-Forwarded-For; Cloudflare in front of it
+      # overwrites CF-Connecting-IP, which the login lockout must read instead.
+      - key: HMIS_CLIENT_IP_HEADER
+        value: CF-Connecting-IP
+      - key: DJANGO_LOG_LEVEL
+        value: INFO
+
+services:
+  # ---------------------------------------------------------------- Django API
+  - name: hmis-api
+    type: web
+    runtime: python
+    region: frankfurt
+    plan: 0.5c-512mb
+    rootDir: backend/hmis
+    # Static files are collected at build time: the pre-deploy step runs on a
+    # separate instance whose filesystem the running service never sees.
+    buildCommand: pip install -r requirements.txt && python manage.py collectstatic --noinput
+    # Once per deploy, before the new release takes traffic; a failure cancels
+    # the deploy and leaves the previous release running. Never in startCommand,
+    # where every instance would migrate.
+    preDeployCommand: python manage.py migrate --noinput
+    startCommand: >-
+      gunicorn hmis.wsgi:application
+      --bind 0.0.0.0:$PORT
+      --workers ${WEB_CONCURRENCY:-2}
+      --timeout 60
+      --forwarded-allow-ips="*"
+      --error-logfile -
+    healthCheckPath: /healthz/
+    envVars:
+      - fromGroup: hmis-settings
+      - key: DJANGO_SECRET_KEY
+        sync: false
+      - key: DATABASE_URL
+        fromDatabase:
+          name: hmis-db
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: hmis-redis
+          property: connectionString
+      # The static site's https:// origin, e.g. https://hmis-web.onrender.com
+      # (plus the custom domain once added).
+      - key: CORS_ALLOWED_ORIGINS
+        sync: false
+      # The React app's URL — where links in admin emails point.
+      - key: HMIS_BASE_URL
+        sync: false
+      - key: CLOUDINARY_CLOUD_NAME
+        sync: false
+      - key: CLOUDINARY_API_KEY
+        sync: false
+      - key: CLOUDINARY_API_SECRET
+        sync: false
+      # Optional, added on the service's Environment page when wanted (not here,
+      # because a Blueprint prompt may not accept an empty value):
+      #   RESEND_API_KEY, HMIS_EMAIL_FROM, HMIS_ADMIN_EMAIL   — admin email
+      #   HMIS_ADMIN_ALLOWED_NETWORKS                         — Django Admin CIDR allow-list
+      #   DJANGO_ALLOWED_HOSTS, DJANGO_CSRF_TRUSTED_ORIGINS   — a custom API domain
+      # The onrender.com hostname and URL are allowed automatically.
+
+  # ----------------------------------------------------------------- React app
+  - name: hmis-web
+    type: web
+    runtime: static
+    rootDir: frontend
+    buildCommand: npm ci && npm run build
+    staticPublishPath: ./dist
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      # The API's public origin, e.g. https://hmis-api.onrender.com — compiled
+      # into the public bundle, so never a secret.
+      - key: VITE_API_BASE_URL
+        sync: false
+    # Client-side routes (/patients/<uuid>, /pharmacy, …) are the app's; any
+    # path that is not a built file is answered with index.html.
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
+    headers:
+      - path: /*
+        name: X-Frame-Options
+        value: DENY
+      - path: /*
+        name: X-Content-Type-Options
+        value: nosniff
+      - path: /*
+        name: Referrer-Policy
+        value: same-origin
+      - path: /*
+        name: Strict-Transport-Security
+        value: max-age=31536000
+      - path: /assets/*
+        name: Cache-Control
+        value: public, max-age=31536000, immutable
+
+  # ------------------------------------------------------------- Celery worker
+  - name: hmis-celery-worker
+    type: worker
+    runtime: python
+    region: frankfurt
+    plan: 0.5c-512mb
+    rootDir: backend/hmis
+    buildCommand: pip install -r requirements.txt
+    startCommand: celery -A hmis worker -l info --concurrency 2
+    envVars:
+      - fromGroup: hmis-settings
+      - key: DJANGO_SECRET_KEY
+        sync: false
+      - key: DATABASE_URL
+        fromDatabase:
+          name: hmis-db
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: hmis-redis
+          property: connectionString
+      - key: HMIS_BASE_URL
+        sync: false
+      - key: CLOUDINARY_CLOUD_NAME
+        sync: false
+      - key: CLOUDINARY_API_KEY
+        sync: false
+      - key: CLOUDINARY_API_SECRET
+        sync: false
+      # Admin email is sent from this worker: add RESEND_API_KEY,
+      # HMIS_EMAIL_FROM and HMIS_ADMIN_EMAIL here too if email is enabled.
+
+  # ------------------------------------------- Celery Beat — exactly one, ever
+  - name: hmis-celery-beat
+    type: worker
+    runtime: python
+    region: frankfurt
+    plan: 0.5c-512mb
+    # One scheduler: a second instance would run every nightly task twice.
+    numInstances: 1
+    rootDir: backend/hmis
+    buildCommand: pip install -r requirements.txt
+    # The schedule file only records when each task last ran; losing it on a
+    # redeploy is harmless.
+    startCommand: celery -A hmis beat -l info --schedule /tmp/celerybeat-schedule
+    envVars:
+      - fromGroup: hmis-settings
+      - key: DJANGO_SECRET_KEY
+        sync: false
+      - key: DATABASE_URL
+        fromDatabase:
+          name: hmis-db
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: hmis-redis
+          property: connectionString
+      - key: CLOUDINARY_CLOUD_NAME
+        sync: false
+      - key: CLOUDINARY_API_KEY
+        sync: false
+      - key: CLOUDINARY_API_SECRET
+        sync: false
+
+  # -------------------------------------------- Key Value (Redis-compatible)
+  - name: hmis-redis
+    type: keyvalue
+    region: frankfurt
+    # Free Key Value does not persist: a restart drops queued Celery tasks.
+    plan: 256mb
+    # A task queue must never be evicted to make room.
+    maxmemoryPolicy: noeviction
+    # Private network only: no address on the internet may connect.
+    ipAllowList: []
+
+databases:
+  - name: hmis-db
+    region: frankfurt
+    plan: 0.5c-1g
+    postgresMajorVersion: "16"
+    databaseName: hmis
+    user: hmis
+    # Private network only; add a temporary /32 here (or in the dashboard) to
+    # run pg_dump from a trusted machine, then remove it.
+    ipAllowList: []
