@@ -1,0 +1,25 @@
+# NMHS-HMIS-V1.0 — Railway service "hmis-api" (Django + Gunicorn).
+#
+# In the service's Settings: Root Directory = /backend/hmis, and
+# Config File Path = /railway/api/railway.toml (Railway config files do not
+# follow the root directory; the path is from the repository root).
+# Variables are set in the dashboard — see docs/RAILWAY.md. No secret is here.
+
+[build]
+builder = "RAILPACK"
+# Runs after Railpack has installed requirements.txt. Static files are collected
+# at build time: the pre-deploy container's filesystem never reaches the app.
+buildCommand = "python manage.py collectstatic --noinput"
+watchPatterns = ["/backend/hmis/**"]
+
+[deploy]
+# Once per deploy, in a separate container, before the new release takes
+# traffic; a failure stops the deploy and the previous release keeps serving.
+preDeployCommand = ["python manage.py migrate --noinput"]
+# Gunicorn binds 0.0.0.0:$PORT on its own when PORT is set (Railway sets it),
+# and takes its worker count from WEB_CONCURRENCY — so the command needs no
+# shell expansion. Never `migrate` here: every replica would run it.
+startCommand = "gunicorn hmis.wsgi:application --timeout 60 --forwarded-allow-ips=* --error-logfile -"
+healthcheckPath = "/healthz/"
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 10

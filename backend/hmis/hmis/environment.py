@@ -72,14 +72,34 @@ def on_render(env):
     return (env.get("RENDER") or "").strip().lower() == "true"
 
 
+def on_railway(env):
+    """Railway sets RAILWAY_PROJECT_ID / RAILWAY_ENVIRONMENT_ID on every service."""
+    return bool((env.get("RAILWAY_PROJECT_ID") or env.get("RAILWAY_ENVIRONMENT_ID") or "").strip())
+
+
+#: The Host header Railway's deploy-time health check sends (Railway docs:
+#: "add healthcheck.railway.app to your list of allowed hosts").
+RAILWAY_HEALTHCHECK_HOST = "healthcheck.railway.app"
+
+
+def railway_domain(env):
+    """The service's public Railway domain (`*.up.railway.app` or a custom one)."""
+    return (env.get("RAILWAY_PUBLIC_DOMAIN") or "").strip() if on_railway(env) else ""
+
+
 def serves_http(env):
     """
-    False only for a Render background worker or cron job — a Celery process
-    that answers no HTTP request, and so has no hostname or origin to declare.
-    Everything else (the web service, any non-Render server) serves HTTP.
+    False only for a process that answers no HTTP request, and so has no
+    hostname or origin to declare: a Render background worker or cron job, or
+    a Railway service with no public domain (the Celery worker and Beat).
+    Everything else (the web service, any self-hosted server) serves HTTP.
     """
     service_type = (env.get("RENDER_SERVICE_TYPE") or "").strip().lower()
-    return not (on_render(env) and service_type in ("worker", "cron"))
+    if on_render(env) and service_type in ("worker", "cron"):
+        return False
+    if on_railway(env) and not railway_domain(env):
+        return False
+    return True
 
 
 def _database_url(url):
@@ -182,6 +202,12 @@ def hosts(env, name):
         render_host = (env.get("RENDER_EXTERNAL_HOSTNAME") or "").strip()
         if render_host and render_host not in values:
             values.append(render_host)
+        # Railway: the service's public domain, and the Host its health check
+        # sends — only on a service that serves HTTP (has a public domain).
+        for railway_host in ([railway_domain(env), RAILWAY_HEALTHCHECK_HOST]
+                             if railway_domain(env) else []):
+            if railway_host not in values:
+                values.append(railway_host)
         if not values and not serves_http(env):
             return []
         if not values:
@@ -198,6 +224,8 @@ def csrf_origins(env, name):
         render_url = (env.get("RENDER_EXTERNAL_URL") or "").strip().rstrip("/")
         if render_url and render_url not in values:
             values.append(render_url)
+        if railway_domain(env) and f"https://{railway_domain(env)}" not in values:
+            values.append(f"https://{railway_domain(env)}")
         if not values and not serves_http(env):
             return []
         if not values:
@@ -271,8 +299,8 @@ def media_storage(env, name):
       URL that expires after `CLOUDINARY_LINK_EXPIRY_SECONDS` (default 900 =
       15 minutes). Only an endpoint the caller may already read returns one.
     * `filesystem` — `MEDIA_ROOT` on the server's own disk, served by a
-      restricted reverse proxy. **Refused on Render**: its service filesystem is
-      wiped on every deploy, and nothing there serves `/media/`.
+      restricted reverse proxy. **Refused on Render and Railway**: their service
+      filesystems are wiped on every deploy, and nothing there serves `/media/`.
     """
     filesystem = {"BACKEND": "django.core.files.storage.FileSystemStorage"}
     if name == DEVELOPMENT:
@@ -283,9 +311,10 @@ def media_storage(env, name):
             "DJANGO_MEDIA_STORAGE must be 'cloudinary' or 'filesystem' in production — where "
             "uploaded patient documents are kept has to be decided, not defaulted.")
     if choice == "filesystem":
-        if on_render(env):
+        if on_render(env) or on_railway(env):
+            host = "Render" if on_render(env) else "Railway"
             raise ImproperlyConfigured(
-                "DJANGO_MEDIA_STORAGE=filesystem is refused on Render: the service "
+                f"DJANGO_MEDIA_STORAGE=filesystem is refused on {host}: the service "
                 "filesystem is lost on every deploy. Use private Cloudinary storage (cloudinary).")
         return filesystem
     absent = missing(env, REQUIRED_CLOUDINARY_VARS)

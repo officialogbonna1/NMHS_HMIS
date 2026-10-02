@@ -1,0 +1,15 @@
+# NMHS-HMIS-V1.0 — Railway service "hmis-celery-beat": the ONE scheduler.
+#
+# Settings: Root Directory = /backend/hmis,
+# Config File Path = /railway/beat/railway.toml. No public domain, and never
+# more than one replica — a second scheduler would run every nightly task twice.
+
+[build]
+builder = "RAILPACK"
+watchPatterns = ["/backend/hmis/**"]
+
+[deploy]
+# The schedule file only records last run times; losing it on redeploy is harmless.
+startCommand = "celery -A hmis beat -l info --schedule /tmp/celerybeat-schedule"
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 10

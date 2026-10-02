@@ -136,6 +136,7 @@ CORS_EXPOSE_HEADERS = ["X-Request-ID"]
 # hop is client-supplied there (see apps/accounts/lockout.py).
 HMIS_CLIENT_IP_HEADER = envconf.client_ip_header(os.environ)
 HMIS_ON_RENDER = envconf.on_render(os.environ)
+HMIS_ON_RAILWAY = envconf.on_railway(os.environ)
 # Optional: Django Admin (/admin/) only from these CIDR ranges, judged by the
 # address above (apps/core/middleware.py AdminNetworkMiddleware). Empty: off.
 HMIS_ADMIN_ALLOWED_NETWORKS = envconf.admin_networks(os.environ)

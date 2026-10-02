@@ -69,6 +69,20 @@ def production_configuration(app_configs, **kwargs):
                 hint="Unset DJANGO_LOG_DIR; use a Render log stream for longer retention.",
                 id="hmis.W002"))
 
+    if getattr(settings, "HMIS_ON_RAILWAY", False):
+        # The same two filesystem facts as Render (no client-IP rule: Railway
+        # staff state its edge strips client-supplied X-Forwarded-For — see
+        # docs/RAILWAY.md for the recommended X-Real-IP and how to verify it).
+        need(settings.STORAGES["default"]["BACKEND"] == "apps.core.storage.PrivateCloudinaryStorage",
+             "On Railway uploaded documents must go to private Cloudinary storage; the service "
+             "filesystem is lost on every deploy.", "Set DJANGO_MEDIA_STORAGE=cloudinary.",
+             "hmis.E012")
+        if getattr(settings, "LOG_DIR", ""):
+            problems.append(Warning(
+                "DJANGO_LOG_DIR is set on Railway, where the filesystem is lost on every "
+                "deploy; Railway already keeps stdout.",
+                hint="Unset DJANGO_LOG_DIR.", id="hmis.W002"))
+
     if not _env_has("REDIS_URL"):
         problems.append(Warning(
             "REDIS_URL is not set; Celery and the shared login-lockout cache are using "

@@ -1,0 +1,16 @@
+# NMHS-HMIS-V1.0 — Railway service "hmis-web" (React/Vite build served by Caddy).
+#
+# Settings: Root Directory = /frontend, Config File Path = /railway/web/railway.toml.
+# Railpack detects the Vite app, runs the build and serves dist/ with Caddy,
+# using frontend/Caddyfile (index.html fallback + security headers).
+# Set VITE_API_BASE_URL in this service's variables: it is read at build time
+# and compiled into the public bundle — never a secret.
+
+[build]
+builder = "RAILPACK"
+watchPatterns = ["/frontend/**"]
+
+[deploy]
+healthcheckPath = "/health"
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 10

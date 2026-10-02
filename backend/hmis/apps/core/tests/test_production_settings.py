@@ -516,3 +516,136 @@ class TheAdminNetworkRestriction(TestCase):
             # The API and the health check are untouched by it.
             self.assertEqual(self.client.get("/healthz/",
                                              HTTP_CF_CONNECTING_IP="6.6.6.6").status_code, 200)
+
+
+# ------------------------------------------------------------------ Railway
+
+RAILWAY_API = {"RAILWAY_PROJECT_ID": "proj-123", "RAILWAY_ENVIRONMENT_ID": "env-123",
+               "RAILWAY_PUBLIC_DOMAIN": "hmis-api-production.up.railway.app"}
+RAILWAY_WORKER = {"RAILWAY_PROJECT_ID": "proj-123", "RAILWAY_ENVIRONMENT_ID": "env-123"}
+RAILWAY_DATABASE_URL = "postgresql://postgres:pg-railway-pass@postgres.railway.internal:5432/railway"
+
+
+class RailwaysOwnAddresses(SimpleTestCase):
+    def test_the_public_domain_and_the_healthcheck_host_are_allowed(self):
+        self.assertEqual(envconf.hosts(RAILWAY_API, "production"),
+                         ["hmis-api-production.up.railway.app", "healthcheck.railway.app"])
+        self.assertEqual(envconf.csrf_origins(RAILWAY_API, "production"),
+                         ["https://hmis-api-production.up.railway.app"])
+        custom = {**RAILWAY_API, "DJANGO_ALLOWED_HOSTS": "api.example-hospital.org"}
+        self.assertEqual(envconf.hosts(custom, "production")[0], "api.example-hospital.org")
+
+    def test_a_service_without_a_public_domain_is_a_celery_process(self):
+        self.assertFalse(envconf.serves_http(RAILWAY_WORKER))
+        self.assertEqual(envconf.hosts(RAILWAY_WORKER, "production"), [])
+        self.assertEqual(envconf.csrf_origins(RAILWAY_WORKER, "production"), [])
+        self.assertTrue(envconf.serves_http(RAILWAY_API))
+
+    def test_railway_variables_mean_nothing_off_railway(self):
+        env = {"RAILWAY_PUBLIC_DOMAIN": "x.up.railway.app"}      # no project/environment id
+        self.assertFalse(envconf.on_railway(env))
+        with self.assertRaises(ImproperlyConfigured):
+            envconf.hosts(env, "production")
+
+    def test_filesystem_media_is_refused_on_railway(self):
+        with self.assertRaisesMessage(ImproperlyConfigured, "Railway"):
+            envconf.media_storage({"DJANGO_MEDIA_STORAGE": "filesystem", **RAILWAY_API},
+                                  "production")
+        self.assertEqual(envconf.media_storage({**CLOUD, **RAILWAY_API}, "production")["BACKEND"],
+                         "apps.core.storage.PrivateCloudinaryStorage")
+
+    def test_railways_database_url(self):
+        config = envconf.database_config({"DATABASE_URL": RAILWAY_DATABASE_URL}, BASE_DIR,
+                                         "production")
+        self.assertEqual((config["HOST"], config["NAME"], config["USER"]),
+                         ("postgres.railway.internal", "railway", "postgres"))
+
+
+def _railway_settings(extra):
+    script = (
+        "import json, os; os.environ['DJANGO_SETTINGS_MODULE']='hmis.settings'\n"
+        "from django.conf import settings as s\n"
+        "print(json.dumps({'engine': s.DATABASES['default']['HOST'],"
+        " 'hosts': s.ALLOWED_HOSTS, 'csrf': s.CSRF_TRUSTED_ORIGINS,"
+        " 'railway': s.HMIS_ON_RAILWAY, 'render': s.HMIS_ON_RENDER,"
+        " 'media': s.STORAGES['default']['BACKEND'], 'ip_header': s.HMIS_CLIENT_IP_HEADER}))\n"
+    )
+    env = {"PATH": os.environ.get("PATH", ""), "DJANGO_ENV": "production",
+           "DJANGO_SECRET_KEY": GOOD_KEY, "DATABASE_URL": RAILWAY_DATABASE_URL,
+           "REDIS_URL": "redis://default:redis-pass@redis.railway.internal:6379",
+           "HMIS_CLIENT_IP_HEADER": "X-Real-IP", **CLOUD, **extra}
+    return subprocess.run([sys.executable, "-c", script], cwd=BASE_DIR, env=env,
+                          capture_output=True, text=True, timeout=120)
+
+
+class TheRailwayEnvironment(SimpleTestCase):
+    """The variables docs/RAILWAY.md lists are enough for the API, worker and Beat."""
+
+    def test_the_api_service(self):
+        result = _railway_settings({**RAILWAY_API,
+                                    "CORS_ALLOWED_ORIGINS": "https://hmis-web.up.railway.app"})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        built = json.loads(result.stdout)
+        self.assertEqual(built["engine"], "postgres.railway.internal")
+        self.assertIn("healthcheck.railway.app", built["hosts"])
+        self.assertEqual(built["csrf"], ["https://hmis-api-production.up.railway.app"])
+        self.assertEqual((built["railway"], built["render"]), (True, False))
+        self.assertEqual(built["media"], "apps.core.storage.PrivateCloudinaryStorage")
+        self.assertEqual(built["ip_header"], "HTTP_X_REAL_IP")
+
+    def test_the_worker_and_beat_start_without_a_domain(self):
+        result = _railway_settings(RAILWAY_WORKER)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)["hosts"], [])
+
+    def test_production_without_postgres_still_refuses(self):
+        result = _railway_settings({**RAILWAY_API, "DATABASE_URL": ""})
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("no fallback to SQLite", result.stderr)
+
+
+class RailwayDeployChecks(SimpleTestCase):
+    def test_documents_must_be_on_cloudinary_on_railway(self):
+        local = {"default": {"BACKEND": "django.core.files.storage.FileSystemStorage"},
+                 "staticfiles": settings.STORAGES["staticfiles"]}
+        with override_settings(**SECURE, HMIS_ON_RAILWAY=True, STORAGES=local):
+            self.assertIn("hmis.E012", CheckDeployFails.ids(self))
+        cloud = {**local, "default": {"BACKEND": "apps.core.storage.PrivateCloudinaryStorage"}}
+        with override_settings(**SECURE, HMIS_ON_RAILWAY=True, STORAGES=cloud):
+            self.assertNotIn("hmis.E012", CheckDeployFails.ids(self))
+
+
+class TheRailwayConfigFiles(SimpleTestCase):
+    """railway/*/railway.toml say what docs/RAILWAY.md says, and nothing else."""
+
+    ROOT = BASE_DIR.parent.parent
+
+    def load(self, service):
+        import tomllib
+
+        with open(self.ROOT / "railway" / service / "railway.toml", "rb") as handle:
+            return tomllib.load(handle)
+
+    def test_the_api_migrates_once_and_starts_gunicorn(self):
+        api = self.load("api")
+        self.assertEqual(api["build"]["buildCommand"], "python manage.py collectstatic --noinput")
+        self.assertEqual(api["deploy"]["preDeployCommand"], ["python manage.py migrate --noinput"])
+        self.assertTrue(api["deploy"]["startCommand"].startswith("gunicorn hmis.wsgi:application"))
+        self.assertNotIn("migrate", api["deploy"]["startCommand"])
+        self.assertEqual(api["deploy"]["healthcheckPath"], "/healthz/")
+
+    def test_celery_commands_are_the_existing_ones(self):
+        self.assertEqual(self.load("worker")["deploy"]["startCommand"],
+                         "celery -A hmis worker -l info --concurrency 2")
+        self.assertEqual(self.load("beat")["deploy"]["startCommand"],
+                         "celery -A hmis beat -l info --schedule /tmp/celerybeat-schedule")
+        for service in ("worker", "beat"):
+            self.assertNotIn("preDeployCommand", self.load(service)["deploy"])
+
+    def test_the_frontend_falls_back_to_index_and_sends_the_headers(self):
+        caddy = (self.ROOT / "frontend" / "Caddyfile").read_text()
+        for expected in ("/index.html", 'X-Frame-Options "DENY"', 'X-Content-Type-Options "nosniff"',
+                         'Referrer-Policy "same-origin"', "Strict-Transport-Security",
+                         "respond /health 200"):
+            self.assertIn(expected, caddy)
+        self.assertEqual(self.load("web")["deploy"]["healthcheckPath"], "/health")
