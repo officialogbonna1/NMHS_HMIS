@@ -69,7 +69,12 @@ export default function Login() {
         </div>
         <div className="bg-white rounded-2xl p-7 shadow-xl">
           <h1 className="text-lg font-semibold text-slate-900 mb-1">Sign in</h1>
-          <p className="mb-5 text-sm text-slate-600">Hospital Management Information System</p>
+          <p className="mb-2 text-sm text-slate-600">
+  Internal Hospital Management Information System
+</p>
+<p className="mb-5 text-xs text-slate-500">
+  Authorized NMHS staff only
+</p>
           <form onSubmit={handleSubmit} className="space-y-3">
             <input
               className="w-full border rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand-400 focus:border-transparent"
